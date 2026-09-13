@@ -1,0 +1,585 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+  --tabler-page-bg: #0b1220;
+  --tabler-sidebar-bg: oklch(12.9% 0.042 264.695);
+  --tabler-surface-1: #ffffff;
+  --tabler-surface-2: #f8fafc;
+  --tabler-surface-3: #f1f5f9;
+  --tabler-border: #d9e1ec;
+  --tabler-border-strong: #c9d4e3;
+  --tabler-text: #1f2937;
+  --tabler-text-soft: #64748b;
+  --tabler-primary: #206bc4;
+  --tabler-primary-hover: #1c5da9;
+  --tabler-danger: #d63939;
+  --tabler-success: #2fb344;
+  --tabler-radius-sm: 0.5rem;
+  --tabler-radius-md: 0.75rem;
+  --tabler-radius-lg: 1rem;
+  --tabler-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --tabler-shadow-md: 0 8px 24px rgba(15, 23, 42, 0.08);
+
+  /* Semantic tokens - light */
+  --color-page-bg: var(--tabler-page-bg);
+  --color-page-grad-a: oklch(12.9% 0.042 264.695 / 0.58);
+  --color-page-grad-b: oklch(12.9% 0.042 264.695 / 0.42);
+  --color-sidebar-bg: var(--tabler-sidebar-bg);
+  --color-overlay: rgb(2 6 23 / 0.62);
+
+  --color-surface-1: var(--tabler-surface-1);
+  --color-surface-2: var(--tabler-surface-2);
+  --color-surface-3: var(--tabler-surface-3);
+
+  --color-text-primary: var(--tabler-text);
+  --color-text-secondary: color-mix(in srgb, var(--tabler-text) 78%, white);
+  --color-text-muted: var(--tabler-text-soft);
+  --color-text-inverse: #ffffff;
+
+  --color-border: var(--tabler-border);
+  --color-border-strong: var(--tabler-border-strong);
+  --color-border-accent: color-mix(in srgb, var(--tabler-primary) 42%, transparent);
+  --color-border-focus: color-mix(in srgb, var(--tabler-primary) 55%, white);
+
+  --color-accent: var(--tabler-primary);
+  --color-accent-hover: var(--tabler-primary-hover);
+  --color-accent-soft: color-mix(in srgb, var(--tabler-primary) 16%, transparent);
+  --color-accent-contrast: #ffffff;
+
+  --color-success: var(--tabler-success);
+  --color-warning: #f59e0b;
+  --color-danger: var(--tabler-danger);
+  --color-info: #0ea5e9;
+
+  --radius-sm: var(--tabler-radius-sm);
+  --radius-md: var(--tabler-radius-md);
+  --radius-lg: var(--tabler-radius-lg);
+  --shadow-sm: var(--tabler-shadow-sm);
+  --shadow-md: var(--tabler-shadow-md);
+}
+
+:root:not(.dark)[data-theme="blue"] {
+  --tabler-page-bg: #f4f6fb;
+  --tabler-sidebar-bg: linear-gradient(180deg, #eef4fb 0%, #e3edf9 100%);
+  --tabler-surface-1: #ffffff;
+  --tabler-surface-2: #f8fafc;
+  --tabler-surface-3: #f1f5f9;
+  --tabler-border: #d9e1ec;
+  --tabler-border-strong: #c9d4e3;
+  --tabler-text: #1f2937;
+  --tabler-text-soft: #64748b;
+  --tabler-primary: #206bc4;
+  --tabler-primary-hover: #1c5da9;
+}
+
+:root:not(.dark)[data-theme="light-blue"] {
+  --tabler-page-bg: #f6faff;
+  --tabler-sidebar-bg: linear-gradient(180deg, #e9f3ff 0%, #dcecff 100%);
+  --tabler-surface-1: #ffffff;
+  --tabler-surface-2: #f8fbff;
+  --tabler-surface-3: #eef6ff;
+  --tabler-border: #cfe0f5;
+  --tabler-border-strong: #b8d0ee;
+  --tabler-text: #1e3a5f;
+  --tabler-text-soft: #5f7fa6;
+  --tabler-primary: #3b82f6;
+  --tabler-primary-hover: #2563eb;
+}
+
+.dark {
+  color-scheme: dark;
+  --tabler-page-bg: #0b0e14;
+  --tabler-sidebar-bg: oklch(12.9% 0.042 264.695);
+  --tabler-surface-1: #12151c;
+  --tabler-surface-2: #171b24;
+  --tabler-surface-3: #1e232e;
+  --tabler-border: #2a3040;
+  --tabler-border-strong: #3b4354;
+  --tabler-text: #f1f3f7;
+  --tabler-text-soft: #a6adbb;
+  --tabler-primary: #2563eb;
+  --tabler-primary-hover: #3b82f6;
+  --tabler-danger: #fb7185;
+  --tabler-success: #4ade80;
+  --tabler-shadow-sm: 0 2px 5px rgba(0, 0, 0, 0.55);
+  --tabler-shadow-md: 0 18px 44px rgba(0, 0, 0, 0.7);
+
+  /* Semantic tokens - dark */
+  --color-page-bg: var(--tabler-page-bg);
+  --color-page-grad-a: oklch(12.9% 0.042 264.695 / 0.62);
+  --color-page-grad-b: oklch(12.9% 0.042 264.695 / 0.5);
+  --color-sidebar-bg: var(--tabler-sidebar-bg);
+  --color-overlay: rgb(1 4 10 / 0.74);
+
+  --color-surface-1: var(--tabler-surface-1);
+  --color-surface-2: var(--tabler-surface-2);
+  --color-surface-3: var(--tabler-surface-3);
+
+  --color-text-primary: var(--tabler-text);
+  --color-text-secondary: color-mix(in srgb, var(--tabler-text) 84%, black);
+  --color-text-muted: var(--tabler-text-soft);
+  --color-text-inverse: #ffffff;
+
+  --color-border: var(--tabler-border);
+  --color-border-strong: var(--tabler-border-strong);
+  --color-border-accent: color-mix(in srgb, var(--tabler-primary) 52%, transparent);
+  --color-border-focus: color-mix(in srgb, var(--tabler-primary) 62%, white);
+
+  --color-accent: var(--tabler-primary);
+  --color-accent-hover: var(--tabler-primary-hover);
+  --color-accent-soft: color-mix(in srgb, var(--tabler-primary) 24%, transparent);
+  --color-accent-contrast: #ffffff;
+
+  --color-success: var(--tabler-success);
+  --color-warning: #f59e0b;
+  --color-danger: var(--tabler-danger);
+  --color-info: #38bdf8;
+
+  --radius-sm: var(--tabler-radius-sm);
+  --radius-md: var(--tabler-radius-md);
+  --radius-lg: var(--tabler-radius-lg);
+  --shadow-sm: var(--tabler-shadow-sm);
+  --shadow-md: var(--tabler-shadow-md);
+}
+
+body {
+  @apply min-h-dvh antialiased transition-colors;
+  background:
+    radial-gradient(circle at 0% 0%, var(--color-page-grad-a), transparent 44%),
+    radial-gradient(circle at 100% 0%, var(--color-page-grad-b), transparent 46%),
+    var(--color-page-bg);
+  color: var(--color-text-primary);
+  font-feature-settings: "cv11", "ss01";
+}
+
+.dark body {
+  background:
+    radial-gradient(circle at 0% 0%, var(--color-page-grad-a), transparent 44%),
+    radial-gradient(circle at 100% 0%, var(--color-page-grad-b), transparent 46%),
+    var(--color-page-bg);
+}
+
+@layer base {
+  * {
+    border-color: var(--tabler-border);
+  }
+}
+
+@layer components {
+  .tabler-shell {
+    @apply w-full px-0 py-0;
+  }
+
+  /* Semantic utility classes */
+  .app-page {
+    @apply relative min-h-dvh overflow-x-clip;
+    background: transparent;
+    color: var(--color-text-primary);
+  }
+
+  .app-sidebar {
+    background: var(--color-sidebar-bg);
+    border-color: var(--color-border-strong);
+    box-shadow: var(--shadow-md);
+  }
+
+  .app-card {
+    background: var(--color-surface-1);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .app-panel {
+    background: var(--color-surface-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+  }
+
+  .text-primary {
+    color: var(--color-text-primary);
+  }
+
+  .text-secondary {
+    color: var(--color-text-secondary);
+  }
+
+  .text-muted {
+    color: var(--color-text-muted);
+  }
+
+  .border-default {
+    border-color: var(--color-border);
+  }
+
+  .border-strong {
+    border-color: var(--color-border-strong);
+  }
+
+  .border-accent {
+    border-color: var(--color-border-accent);
+  }
+
+  .focus-ring {
+    outline: none;
+    border-color: var(--color-border-focus);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 30%, transparent);
+  }
+
+  .btn-primary-semantic {
+    background: var(--color-accent);
+    color: var(--color-accent-contrast);
+    border: 1px solid var(--color-accent);
+    border-radius: var(--radius-sm);
+  }
+
+  .btn-primary-semantic:hover {
+    background: var(--color-accent-hover);
+    border-color: var(--color-accent-hover);
+  }
+
+  .btn-secondary-semantic {
+    background: var(--color-surface-2);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
+  }
+
+  .btn-secondary-semantic:hover {
+    background: color-mix(in srgb, var(--color-surface-3) 88%, transparent);
+  }
+
+  .btn-danger-semantic {
+    background: var(--color-danger);
+    color: var(--color-accent-contrast);
+    border: 1px solid var(--color-danger);
+    border-radius: var(--radius-sm);
+  }
+
+  .btn-ghost-semantic {
+    background: transparent;
+    color: var(--color-text-secondary);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+  }
+
+  .btn-ghost-semantic:hover {
+    background: var(--color-accent-soft);
+    color: var(--color-text-primary);
+    border-color: var(--color-border-accent);
+  }
+
+  .input-semantic {
+    background: var(--color-surface-1);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+  }
+
+  .input-semantic::placeholder {
+    color: var(--color-text-muted);
+  }
+
+  .input-semantic:focus {
+    border-color: var(--color-border-focus);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 28%, transparent);
+    outline: none;
+  }
+
+  :root {
+    --table-surface-bg: color-mix(in srgb, var(--color-surface-2) 92%, transparent);
+    --table-head-bg: color-mix(in srgb, var(--color-surface-3) 70%, transparent);
+  }
+
+  .dark {
+    --table-surface-bg: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+    --table-head-bg: color-mix(in srgb, var(--color-surface-3) 58%, transparent);
+  }
+
+  .table-shell {
+    border: 1px solid var(--color-border-strong);
+    background: var(--table-surface-bg);
+    border-radius: var(--radius-md);
+  }
+
+  .table-head {
+    background: transparent;
+  }
+
+  .table-head th {
+    color: var(--color-text-muted);
+    border-bottom: 1px solid var(--color-border-strong);
+  }
+
+  .table-row {
+    border-top: 1px solid var(--color-border);
+  }
+
+  .table-row:hover {
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  }
+
+  .table-cell {
+    color: var(--color-text-primary);
+    border-top: 1px solid var(--color-border);
+  }
+
+  /* Transaction semantic treatments — reuse state tokens, never color alone */
+  .txn-type-badge {
+    @apply inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold leading-tight;
+  }
+
+  .txn-type-income {
+    border-color: color-mix(in srgb, var(--color-success) 42%, transparent);
+    background: color-mix(in srgb, var(--color-success) 16%, transparent);
+    color: var(--color-success);
+  }
+
+  .txn-type-expense {
+    border-color: color-mix(in srgb, var(--color-danger) 42%, transparent);
+    background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+    color: var(--color-danger);
+  }
+
+  .txn-type-transfer {
+    border-color: color-mix(in srgb, var(--color-info) 42%, transparent);
+    background: color-mix(in srgb, var(--color-info) 16%, transparent);
+    color: var(--color-info);
+  }
+
+  .txn-type-opening {
+    border-color: color-mix(in srgb, var(--color-warning) 46%, transparent);
+    background: color-mix(in srgb, var(--color-warning) 18%, transparent);
+    color: var(--color-warning);
+  }
+
+  .txn-amount {
+    @apply font-semibold tabular-nums;
+  }
+
+  .txn-amount-income {
+    color: var(--color-success);
+  }
+
+  .txn-amount-expense {
+    color: var(--color-danger);
+  }
+
+  .txn-amount-transfer {
+    color: var(--color-info);
+  }
+
+  .tabler-card {
+    border: 1px solid var(--tabler-border);
+    border-radius: var(--tabler-radius-lg);
+    background: var(--tabler-surface-1);
+    box-shadow: var(--tabler-shadow-sm);
+  }
+
+  .tabler-panel {
+    border: 1px solid var(--tabler-border);
+    border-radius: var(--tabler-radius-md);
+    background: var(--tabler-surface-2);
+  }
+
+  .drawer-header-semantic {
+    @apply sticky top-0 z-10 border-b px-4 py-3 backdrop-blur sm:px-5 sm:py-4;
+    border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+    background: color-mix(in srgb, var(--color-sidebar-bg) 82%, transparent);
+  }
+
+  .drawer-footer-semantic {
+    @apply border-t px-4 py-3 sm:px-5 sm:py-4;
+    border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
+    background: color-mix(in srgb, var(--color-sidebar-bg) 82%, transparent);
+  }
+
+  .drawer-section-semantic {
+    @apply space-y-2 rounded-2xl border p-3;
+    border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  }
+
+  .btn-close-semantic {
+    @apply h-8 rounded-md px-2.5 text-[11px] font-semibold;
+    border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    color: var(--color-accent-contrast);
+  }
+
+  .btn-close-semantic:hover {
+    border-color: color-mix(in srgb, var(--color-accent) 65%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 24%, transparent);
+  }
+
+  .tabler-badge {
+    @apply inline-flex items-center gap-1 border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide;
+    border-radius: var(--tabler-radius-sm);
+    border-color: var(--tabler-border-strong);
+    background: var(--tabler-surface-3);
+    color: var(--tabler-text-soft);
+  }
+
+  .tabler-badge-solid {
+    @apply border-transparent text-white;
+  }
+
+  .tabler-badge-primary.tabler-badge-solid {
+    background: #2563eb;
+  }
+
+  .tabler-badge-success.tabler-badge-solid {
+    background: #16a34a;
+  }
+
+  .tabler-badge-danger.tabler-badge-solid {
+    background: #dc2626;
+  }
+
+  .tabler-badge-muted.tabler-badge-solid {
+    background: #475569;
+  }
+
+  .app-grid-skin table thead {
+    background: color-mix(in srgb, var(--color-surface-3) 92%, transparent);
+  }
+
+  .app-grid-skin table thead th {
+    @apply px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.08em];
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border-strong) 82%, transparent);
+    color: var(--color-text-muted);
+  }
+
+  .app-grid-skin table tbody tr {
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  }
+
+  .app-grid-skin table tbody tr:nth-child(odd) {
+    background: color-mix(in srgb, var(--color-surface-2) 84%, transparent);
+  }
+
+  .app-grid-skin table tbody tr:nth-child(even) {
+    background: color-mix(in srgb, var(--color-surface-3) 58%, transparent);
+  }
+
+  .app-grid-skin table tbody tr:hover {
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent) !important;
+  }
+
+  .app-grid-skin table tbody td {
+    @apply px-4 py-3;
+    border-color: var(--color-border);
+    color: var(--color-text-primary);
+  }
+
+  .app-grid-skin table tbody td p {
+    color: var(--color-text-primary);
+  }
+
+  .app-grid-skin table tbody td .text-slate-500,
+  .app-grid-skin table tbody td .text-slate-600,
+  .app-grid-skin table tbody td .dark\:text-slate-400 {
+    color: var(--color-text-muted);
+  }
+
+  .app-grid-skin .overflow-x-auto {
+    @apply overflow-hidden rounded-2xl;
+    border: 1px solid color-mix(in srgb, var(--color-border-strong) 85%, transparent);
+    background: color-mix(in srgb, var(--color-surface-2) 88%, transparent);
+    box-shadow: var(--shadow-md);
+  }
+
+  .app-grid-skin table tbody tr:first-child td:first-child {
+    border-top-left-radius: 0.85rem;
+  }
+
+  .app-grid-skin table tbody tr:first-child td:last-child {
+    border-top-right-radius: 0.85rem;
+  }
+
+  .app-grid-skin table tbody tr:last-child td:first-child {
+    border-bottom-left-radius: 0.85rem;
+  }
+
+  .app-grid-skin table tbody tr:last-child td:last-child {
+    border-bottom-right-radius: 0.85rem;
+  }
+
+  .app-grid-skin .tabler-badge {
+    border-color: color-mix(in srgb, var(--color-border-strong) 75%, transparent);
+    background: color-mix(in srgb, var(--color-surface-3) 88%, transparent);
+    color: var(--color-text-primary);
+  }
+
+  .app-grid-skin .tabler-badge.tabler-badge-primary {
+    border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+    color: var(--color-text-primary);
+  }
+
+  .app-grid-skin .tabler-badge.tabler-badge-success {
+    border-color: color-mix(in srgb, var(--color-success) 50%, transparent);
+    background: color-mix(in srgb, var(--color-success) 20%, transparent);
+    color: var(--color-success);
+  }
+
+  .app-grid-skin .tabler-badge.tabler-badge-danger {
+    border-color: color-mix(in srgb, var(--color-danger) 50%, transparent);
+    background: color-mix(in srgb, var(--color-danger) 20%, transparent);
+    color: var(--color-danger);
+  }
+
+  .subcategories-flat-table > .space-y-2 {
+    @apply space-y-0;
+  }
+
+  .subcategories-flat-table .overflow-x-auto {
+    @apply border-0 bg-transparent shadow-none;
+  }
+
+  .subcategories-flat-table table thead,
+  .subcategories-flat-table table thead th,
+  .subcategories-flat-table table tbody tr,
+  .subcategories-flat-table table tbody tr:nth-child(odd),
+  .subcategories-flat-table table tbody tr:nth-child(even),
+  .subcategories-flat-table table tbody tr:hover,
+  .subcategories-flat-table table tbody td {
+    background: transparent !important;
+  }
+
+  .tabler-table {
+    @apply w-full text-sm;
+  }
+
+  .tabler-table thead th {
+    @apply px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide;
+    color: var(--tabler-text-soft);
+    background: color-mix(in srgb, var(--tabler-surface-2) 88%, transparent);
+  }
+
+  .tabler-table tbody td {
+    @apply px-3 py-2.5 align-middle;
+    border-top: 1px solid var(--tabler-border);
+  }
+
+  .tabler-page {
+    @apply relative min-h-dvh overflow-x-clip;
+    background: transparent;
+  }
+
+  .tabler-page-gradient {
+    @apply pointer-events-none absolute inset-0;
+    background:
+      radial-gradient(circle at 0% 0%, rgb(32 107 196 / 0.2), transparent 32%),
+      radial-gradient(circle at 100% 0%, rgb(59 130 246 / 0.16), transparent 34%);
+  }
+
+  .dark .tabler-page-gradient {
+    background:
+      radial-gradient(circle at 0% 0%, rgb(59 130 246 / 0.16), transparent 30%),
+      radial-gradient(circle at 100% 0%, rgb(37 99 235 / 0.24), transparent 34%);
+  }
+}

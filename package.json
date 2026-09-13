@@ -1,0 +1,14 @@
+{
+  "name": "dealext-dev-tools",
+  "private": true,
+  "scripts": {
+    "dev:web": "pnpm --prefix Deals.Web  dev",
+    "dev:api": "dotenv -e .env -- dotnet run --project Deals.API/Deals.API.csproj",
+    "dev": "concurrently -k -n WEB,API -c cyan,green \"pnpm  dev:web\" \"pnpm  dev:api\"",
+    "dev:all": "pnpm  dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "dotenv-cli": "^7.4.4"
+  }
+}

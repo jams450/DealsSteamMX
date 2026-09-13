@@ -1,0 +1,47 @@
+services:
+  # Frontend Next.js
+  frontend:
+    build:
+      context: ./Deals.Web
+      dockerfile: Dockerfile
+    container_name: dealext-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - API_BASE_URL=${API_BASE_URL}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - CSRF_ENFORCE=${CSRF_ENFORCE}
+      - CSRF_TRUSTED_ORIGINS=${CSRF_TRUSTED_ORIGINS}
+    depends_on:
+      - api
+    networks:
+      - dealext-network
+    restart: "no"
+
+  # API .NET
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: dealext-api
+    ports:
+      - "5000:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:8080
+      - ConnectionStrings__DefaultConnection=${ConnectionStrings__DefaultConnection}
+      - Jwt__Key=${Jwt__Key}
+      - Jwt__Issuer=${Jwt__Issuer}
+      - Jwt__Audience=${Jwt__Audience}
+      - Cors__AllowedOrigins=${Cors__AllowedOrigins}
+    networks:
+      - dealext-network
+      - shared-db-network
+    restart: "no"
+
+networks:
+  dealext-network:
+    driver: bridge
+  shared-db-network:
+    external: true

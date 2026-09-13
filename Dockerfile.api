@@ -1,0 +1,32 @@
+# Stage 1: Build
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+WORKDIR /src
+
+# Copy all project files first (for layer caching)
+COPY Deals.API/*.csproj Deals.API/
+COPY Deals.BusinessLogic/*.csproj Deals.BusinessLogic/
+COPY Deals.Models/*.csproj Deals.Models/
+
+# Restore dependencies
+RUN dotnet restore Deals.API/Deals.API.csproj
+
+# Copy all source code
+COPY Deals.API/ Deals.API/
+COPY Deals.BusinessLogic/ Deals.BusinessLogic/
+COPY Deals.Models/ Deals.Models/
+
+# Build and publish
+WORKDIR /src/Deals.API
+RUN dotnet publish -c Release -o /app/publish
+
+# Stage 2: Runtime
+FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
+WORKDIR /app
+COPY --from=build /app/publish .
+
+# Expose port
+EXPOSE 8080
+
+# Run the app
+ENTRYPOINT ["dotnet", "Deals.API.dll"]
+
