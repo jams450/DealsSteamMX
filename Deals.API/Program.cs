@@ -7,6 +7,7 @@ builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ExceptionHandler>();
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection(AuthOptions.SectionName));
+builder.Services.Configure<SteamOptions>(builder.Configuration.GetSection(SteamOptions.SectionName));
 
 builder.Services
     .AddApiMvc()

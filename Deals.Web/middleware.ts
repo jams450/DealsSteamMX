@@ -3,8 +3,7 @@ import { NextResponse } from "next/server";
 import { decryptSession, isSessionUsable, SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import { csrfRejected, unauthorized } from "@/lib/bff/http";
 import { CSRF_COOKIE_NAME, CSRF_HEADER_NAME, isCsrfEnforced, isMutatingMethod, isTrustedOrigin } from "@/lib/security/csrf";
-
-const publicAuthPaths = new Set(["/api/auth/login", "/api/auth/refresh", "/api/auth/session"]);
+import { isPublicRoute } from "@/lib/security/route-policy";
 
 function clearSessionCookies(response: NextResponseType) {
   response.cookies.delete(SESSION_COOKIE_NAME);
@@ -34,7 +33,7 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  if (publicAuthPaths.has(pathname)) {
+  if (isPublicRoute(pathname)) {
     return NextResponse.next();
   }
 
@@ -48,7 +47,7 @@ export async function middleware(request: NextRequest) {
     }
 
     if (hasUsableSession) {
-      return NextResponse.redirect(new URL("/users", request.url));
+      return NextResponse.redirect(new URL("/", request.url));
     }
 
     return rawCookie ? clearSessionCookies(NextResponse.next()) : NextResponse.next();
@@ -68,4 +67,3 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:css|js|map|txt|xml|ico|png|jpg|jpeg|gif|svg|webp|avif|woff|woff2|ttf|eot)$).*)"]
 };
-

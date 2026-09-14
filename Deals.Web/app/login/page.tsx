@@ -33,7 +33,7 @@ export default function LoginPage() {
         return;
       }
 
-      router.replace("/users");
+      router.replace("/");
       router.refresh();
     } catch {
       setError("No se pudo conectar con el servidor");
@@ -56,7 +56,7 @@ export default function LoginPage() {
             DealExt
           </p>
           <h1 className="text-2xl font-semibold tracking-tight text-[var(--tabler-text)]">Inicia sesión</h1>
-          <p className="text-sm text-[var(--tabler-text-soft)]">Ingresa con tus credenciales para continuar a usuarios.</p>
+          <p className="text-sm text-[var(--tabler-text-soft)]">Ingresa con tus credenciales para continuar.</p>
         </header>
 
         <form onSubmit={onSubmit} className="space-y-4">

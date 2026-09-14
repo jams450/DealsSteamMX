@@ -34,3 +34,39 @@ CREATE TABLE user_sessions (
 CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
 CREATE INDEX idx_user_sessions_expires_at ON user_sessions(expires_at);
 
+CREATE TABLE steam_games (
+    steam_game_id SERIAL PRIMARY KEY,
+    app_id INT NOT NULL,
+    name VARCHAR(512) NOT NULL,
+    type VARCHAR(32),
+    is_free BOOLEAN NOT NULL DEFAULT FALSE,
+    currency VARCHAR(3),
+    initial_price_minor INT,
+    current_price_minor INT,
+    discount_percent INT,
+    region VARCHAR(2) NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100),
+    updated_by VARCHAR(100),
+    CONSTRAINT uq_steam_games_app_region UNIQUE (app_id, region)
+);
+
+CREATE TABLE steam_price_observations (
+    steam_price_observation_id BIGSERIAL PRIMARY KEY,
+    steam_game_id INT NOT NULL REFERENCES steam_games(steam_game_id) ON DELETE CASCADE,
+    currency VARCHAR(3),
+    initial_price_minor INT,
+    current_price_minor INT,
+    discount_percent INT,
+    observed_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100),
+    updated_by VARCHAR(100)
+);
+
+CREATE INDEX idx_steam_price_observations_game_observed
+    ON steam_price_observations(steam_game_id, observed_at);
+

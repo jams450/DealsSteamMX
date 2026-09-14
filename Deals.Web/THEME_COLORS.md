@@ -24,13 +24,28 @@ Ahí se controla el gradiente global (radial/colores/opacidades).
 
 ### Menú lateral (hover de opciones)
 Archivo:
-- `components/navigation/admin-shell.tsx`
+- `components/navigation/admin-shell.tsx` → `Navigation()`
 
-Clases relevantes de hover:
-- opción normal sidebar: `hover:border-blue-300/60 hover:bg-blue-400/20 hover:text-blue-100`
-- opción activa sidebar: `border-[#0F3158] bg-[#0F3158] text-white`
+Clases reales (tokens semánticos, no utilidades de paleta):
+- opción normal: `border-transparent text-secondary hover:border-accent hover:bg-[var(--color-accent-soft)] hover:text-primary`
+- opción activa: `border-accent bg-[var(--color-accent-soft)] text-primary`
+- foco: `focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]`
 
-Si quieres ajustar tono o intensidad del hover, cambia esas clases Tailwind.
+Para ajustar el hover, cambia esas clases o el token `--color-accent-soft` en `app/globals.css`.
+
+### Capa semántica (usar en componentes)
+Los componentes consumen `--color-*`, no `--tabler-*` directo:
+
+- `--color-page-bg`, `--color-surface-1/2/3`, `--color-border` / `--color-border-strong`
+- `--color-text-primary` / `-secondary` / `-muted`, `--color-border-focus`
+- `--color-accent` / `-hover` / `-soft` / `-contrast`
+- `--color-success`, `--color-warning`, `--color-danger`, `--color-info`
+
+Paletas alternativas en claro: `[data-theme="blue"]` y `[data-theme="light-blue"]`
+(solo aplican fuera de `.dark`). En oscuro manda el bloque `.dark`.
+
+Deuda pendiente: `:root` (sin `.dark`) declara `color-scheme: light` pero
+`--tabler-page-bg: #0b1220`; el default dark de `app/layout.tsx` evita el choque.
 
 ### Nota importante
 La app inicia en dark por defecto (ver `app/layout.tsx`, script de tema).

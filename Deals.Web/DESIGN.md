@@ -7,7 +7,7 @@ or in `app/globals.css`. When a new value is needed, add the token (here + `glob
 
 Tailwind v4 is configured in CSS (`@import "tailwindcss"` in `app/globals.css`); there is
 no `tailwind.config.*`. Tokens are CSS custom properties consumed through semantic utility
-classes (`.text-primary`, `.app-panel`, `.input-semantic`, `.table-*`, `.txn-*`).
+classes (`.text-primary`, `.input-semantic`, `.table-*`, `.btn-*-semantic`).
 
 ## 0. Source Analysis (no greenfield research lanes)
 
@@ -17,7 +17,7 @@ This contract was extracted from the existing app, not invented:
 - Existing primitives: `components/ui/{button,input,alert,card,select}.tsx`,
   `lib/ui/cn.ts`, `lib/ui/table-action-styles.ts`, `components/data-grid/data-grid.tsx`.
 - Existing patterns: semantic classes (`btn-*-semantic`, `input-semantic`, `table-*`,
-  `app-panel`, `app-card`) instead of raw Tailwind color utilities.
+  `app-card`, `tabler-panel`) instead of raw Tailwind color utilities.
 - Theme starts dark by default (`app/layout.tsx` init script), so dark values are the
   primary surface and are tuned as such.
 - No new external design reference or imagegen lane was run: the task is a reconciliation
@@ -32,7 +32,7 @@ This contract was extracted from the existing app, not invented:
 3. **Semantics over decoration.** Money direction is encoded by sign + token color, not by
    ornament. Motion only communicates a real state change.
 4. **Additive compatibility.** Shared primitives (`DataGrid`) may gain optional props but
-   never rename/remove existing props or column IDs — nine screens depend on them.
+   never rename/remove existing props or the `actions` column ID.
 5. **Accessible by default.** Every interactive element exposes a visible keyboard focus
    state and a semantic role/label.
 
@@ -54,25 +54,23 @@ Authoritative definitions live in `app/globals.css`. Summary of the contract:
 Dark surface tuning (this contract): slate/warm neutrals replacing near-black.
 Light themes keep white/very light surfaces.
 
-Transaction semantics reuse existing state tokens — no new colors:
+Price semantics reuse existing state tokens — no new colors for the first version:
 
-| Transaction | Token | Treatment |
+| Signal | Token | Treatment |
 |---|---|---|
-| `income` | `--color-success` | `+` amount, success badge/tint |
-| `expense` / `opening_credit` | `--color-danger` | `−` amount, danger badge/tint |
-| `transfer` | `--color-info` | unsigned neutral amount, info badge/tint |
-| `opening_credit` (label) | `--color-warning` | warning badge, danger-signed amount (inherited debt) |
+| Best price / saving | `--color-success` | Badge + signed delta, never color alone |
+| Price increase / unavailable | `--color-danger` | Badge + label |
+| Stale or estimated data | `--color-warning` | Badge + explicit "estimado"/"desactualizado" text |
+| Source freshness | `--color-info` | Muted meta line |
 
-Encoded as reusable classes (in `globals.css`): `.txn-type-badge` + `.txn-type-income`,
-`.txn-type-expense`, `.txn-type-transfer`, `.txn-type-opening`;
-`.txn-amount` + `.txn-amount-income`, `.txn-amount-expense`, `.txn-amount-transfer`.
-Components use these classes; they never re-declare the mixins inline.
+Store provenance is communicated by name/icon, not by a per-store color palette.
 
 ## 3. Typography
 
 - Family: system stack (body in `globals.css`, `font-feature-settings: "cv11","ss01"`).
 - Scale in use: `text-xs` (11–12px meta), `text-sm` (body/table), `text-base` (density
-  "normal"), `text-lg+` (page headings via shell). No ad-hoc `font-size` in px.
+  "normal"), `text-lg+` (page headings via shell). Arbitrary `text-[10px]`/`text-[11px]`
+  are allowed for uppercase meta labels only.
 - Table numbers use `tabular-nums`; amounts are `font-semibold`.
 - Headings/badges may use `uppercase tracking-wide` at `text-[10px]`/`text-[11px]`.
 
@@ -93,14 +91,14 @@ Components use these classes; they never re-declare the mixins inline.
   stickyHeader, stickyActionsColumn`.
 - Added (optional, default off): `enableGlobalFilter`, `globalFilterPlaceholder`,
   `globalFilterFn`.
-- Column IDs are a public contract (`actions`, `sharedExpense`, `categoryId`, …) — never
-  renamed.
+- Column IDs are a public contract. `actions` is the only ID consumed today; never rename
+  or remove IDs an existing consumer already uses.
 - Client sorting and client global filtering are built-in via `@tanstack/react-table`
   (`getSortedRowModel`, `getFilteredRowModel`). No new dependency.
 
 ### Panels / cards
-- `.app-panel` (surface-2 + border + radius-md) for grouped content.
-- `.app-card` (surface-1) for standalone cards.
+- `.app-card` (surface-1 + radius-lg) for standalone cards and grouped content.
+- `.tabler-panel` (surface-2 + radius-md) is retained for the existing toast stack.
 - No hardcoded palette utilities (`bg-blue-50`, `border-blue-200`) for structural panels.
 
 ### Buttons / inputs
@@ -118,15 +116,29 @@ Components use these classes; they never re-declare the mixins inline.
 - **Loading:** row-level "Cargando..." text (existing behavior) — no layout shift.
 - **Empty:** `emptyMessage` rendered in muted text, filter-aware copy from consumers.
 
-## 7. Transaction History Layout
+## 7. Alcance v1 — Comparador de precios (Fase 0)
 
-- Two independent client grids (regular transactions, transfer groups) inside collapsible
-  `.app-panel` sections; state and callbacks preserved.
-- **Type** column: `.txn-type-badge` pill with the semantic label.
-- **Amount** column: `.txn-amount` with `+`/`−` sign and semantic color; transfers neutral.
-- **Surfaces:** slate/warm neutrals; the near-black table shell is removed.
-- Filters (type/account/category) plus in-grid text search (global filter) — both
-  client-side.
+Product UI only, authenticated, backed by **local typed fixtures**. No real provider,
+backend, persistence or pricing logic in this phase.
+
+| Ruta | Objetivo | Datos |
+|---|---|---|
+| `/` | Home: buscar y explorar | fixtures |
+| `/search?q=` | Resultados de búsqueda | fixtures |
+| `/games/[steamAppId]` | Detalle + comparación por fuente | fixtures |
+| `/watchlist` | Seguimiento (mock, sin persistencia) | fixtures locales |
+| `/alerts` | Alertas (mock/coming-soon) | fixtures locales |
+| `/users` | Admin existente (compatibilidad) | API real |
+
+Estados mínimos por vista: `loading`, `empty`, `error`, `partial` (una fuente falla sin
+ocultar las buenas) y `notFound` en detalle.
+
+Fuera de alcance v1: integraciones reales (Steam/ITAD/gg.deals/FX), backend/EF/DB,
+scraping, reglas de "mejor precio", conversión de moneda, bundles, persistencia de
+watchlist/alerts, rediseño de `/login` y `/users`, i18n/multi-región, dependencias nuevas.
+
+Decisiones pendientes antes de Fase 2: destino de `/steam`, destino post-login (hoy
+`/users`), y contrato `Offer`/`ExternalBundle`/`SourceStatus`.
 
 ## 8. Responsive & Containment
 
@@ -153,13 +165,11 @@ Components use these classes; they never re-declare the mixins inline.
 
 ## 11. Accepted Debt
 
-- `use-history-columns.tsx` sorts lookup columns by resolved display name instead of raw
-  ID (e.g. category name) and exposes the display value to the global filter. If a future
-  server-side sort needs raw IDs, add explicit `sortFn`/`sortingFn` per column rather than
-  reverting the accessor.
-- Credit-status pill keeps its existing Tailwind emerald/amber/rose/slate tone classes
-  (already consistent with the semantic palette); migrate to `.txn-*` tokens only if more
-  statuses are introduced.
+- `lib/ui/table-action-styles.ts` uses raw Tailwind tones (emerald/blue/amber) for action
+  buttons; it violates principle 1 and should migrate to semantic tokens before being
+  reused outside the admin Users slice.
+- `DataGrid`'s `onGlobalFilterChange` always writes `internalGlobalFilter`, so a future
+  server-side global filter needs dedicated wiring.
 - No visual-regression/Lighthouse run was executed in this change: the checkout has no
   test project and the API/BFF is required for a live data render. Manual browser QA is
   still owed (see task report).
