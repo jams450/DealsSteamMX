@@ -7,6 +7,12 @@ export async function searchSteam(query: string): Promise<readonly SteamSearchRe
   return normalizeSteamSearch(await response.json());
 }
 
+export async function suggestGames(query: string, signal?: AbortSignal): Promise<readonly SteamSearchResult[]> {
+  const response = await fetch(`/api/bff/steam/suggestions?query=${encodeURIComponent(query)}`, { cache: "no-store", signal });
+  if (!response.ok) throw await parseApiError(response, "No se pudieron cargar las sugerencias");
+  return normalizeSteamSearch(await response.json());
+}
+
 export async function getSteamGame(appId: number): Promise<SteamGame> {
   const response = await fetch(`/api/bff/steam/games/${appId}`, { cache: "no-store" });
   if (!response.ok) throw await parseApiError(response, "No se pudo cargar el juego");

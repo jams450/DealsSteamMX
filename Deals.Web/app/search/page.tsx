@@ -9,7 +9,11 @@ export default async function SearchPage() {
   if (!session) redirect("/login");
 
   return (
-    <ProductShell title="Comparar precios" subtitle="Encuentra el mejor precio entre distintas tiendas.">
+    <ProductShell
+      title="Comparar precios"
+      subtitle="Consulta el precio de Steam para México, su descuento y la fecha de actualización."
+      meta={<span className="tabler-badge tabler-badge-info">Steam · México</span>}
+    >
       <Suspense fallback={<p className="app-card p-5 text-sm text-muted">Cargando...</p>}>
         <SearchClient />
       </Suspense>

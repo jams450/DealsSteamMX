@@ -13,6 +13,8 @@ export type SteamGame = SteamSearchResult & {
   readonly initialPriceMinor: number | null;
   readonly currentPriceMinor: number | null;
   readonly discountPercent: number | null;
+  readonly lowestPriceMinor: number | null;
+  readonly lowestPriceAt: string | null;
   readonly region: string | null;
   readonly observedAt: string | null;
 };
@@ -80,6 +82,8 @@ export function normalizeSteamGame(input: unknown): SteamGame | null {
     initialPriceMinor: toPriceMinor(value.initialPriceMinor ?? value.InitialPriceMinor),
     currentPriceMinor: toPriceMinor(value.currentPriceMinor ?? value.CurrentPriceMinor),
     discountPercent: toPercent(value.discountPercent ?? value.DiscountPercent),
+    lowestPriceMinor: toPriceMinor(value.lowestPriceMinor ?? value.LowestPriceMinor),
+    lowestPriceAt: toText(value.lowestPriceAt ?? value.LowestPriceAt),
     region: toText(value.region ?? value.Region),
     observedAt: toText(value.observedAt ?? value.ObservedAt)
   };

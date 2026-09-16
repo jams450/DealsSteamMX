@@ -1,12 +1,12 @@
 "use client";
 
-import { Menu, X } from "lucide-react";
+import { Gamepad2, Menu, Search, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/ui/cn";
 import { isRouteActive, productNavItems } from "./nav-config";
 
@@ -58,6 +58,33 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
     };
   }, [mobileOpen]);
 
+  function SearchForm({ mobile = false }: { mobile?: boolean }) {
+    const inputId = mobile ? "shell-search-mobile" : "shell-search";
+    return (
+      <form
+        role="search"
+        action="/search"
+        method="get"
+        onSubmit={mobile ? () => setMobileOpen(false) : undefined}
+        className={cn("flex items-center gap-2", mobile && "mb-4")}
+      >
+        <div className="min-w-0 flex-1">
+          <Input
+            id={inputId}
+            name="q"
+            type="search"
+            aria-label="Buscar juegos"
+            placeholder="Buscar un juego..."
+            autoComplete="off"
+          />
+        </div>
+        <Button type="submit" variant="secondary" className="h-10 shrink-0 px-3" aria-label="Buscar juegos">
+          <Search className="h-4 w-4" aria-hidden="true" />
+        </Button>
+      </form>
+    );
+  }
+
   function Navigation({ mobile = false }: { mobile?: boolean }) {
     return (
       <nav
@@ -66,14 +93,16 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
       >
         {productNavItems.map((item) => {
           const Icon = item.icon;
+          const active = isRouteActive(pathname, item.href);
           return (
             <Link
               key={item.href}
               href={item.href}
               onClick={() => mobile && setMobileOpen(false)}
+              aria-current={active ? "page" : undefined}
               className={cn(
                 "flex h-10 items-center rounded-lg border px-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]",
-                isRouteActive(pathname, item.href)
+                active
                   ? "border-accent bg-[var(--color-accent-soft)] text-primary"
                   : "border-transparent text-secondary hover:border-accent hover:bg-[var(--color-accent-soft)] hover:text-primary"
               )}
@@ -90,7 +119,7 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
   return (
     <main className="app-page">
       <div className="mx-auto max-w-7xl space-y-4 p-2 md:p-4">
-        <Card className="flex min-h-16 items-center gap-3 px-3 py-2 md:px-4">
+        <header className="app-topbar flex min-h-16 items-center gap-3 px-3 py-2 md:px-4">
           <Button
             ref={triggerRef}
             type="button"
@@ -105,12 +134,18 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
           </Button>
           <Link
             href="/"
-            className="shrink-0 text-sm font-semibold tracking-wide text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+            className="flex shrink-0 items-center gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
           >
-            DealExt
+            <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-accent bg-[var(--color-accent-soft)] text-accent">
+              <Gamepad2 className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <span className="text-sm font-semibold tracking-tight text-primary">DealExt</span>
           </Link>
-          <div className="hidden min-w-0 flex-1 md:block">
+          <div className="hidden md:block">
             <Navigation />
+          </div>
+          <div className="hidden min-w-0 flex-1 justify-end lg:flex">
+            <SearchForm />
           </div>
           <div className="ml-auto flex items-center gap-2">
             {meta ? <div className="hidden sm:block">{meta}</div> : null}
@@ -122,7 +157,7 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
               DE
             </span>
           </div>
-        </Card>
+        </header>
         <header className="px-2 py-1">
           <h1 className="text-xl font-semibold tracking-tight text-primary md:text-2xl">{title}</h1>
           {subtitle ? <p className="mt-1 text-sm text-muted">{subtitle}</p> : null}
@@ -137,13 +172,14 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
             onClick={() => setMobileOpen(false)}
             aria-label="Cerrar menú"
           />
-          <aside ref={drawerRef} id="product-navigation-drawer" className="app-sidebar relative h-full w-[min(21rem,88vw)] p-3 shadow-[var(--shadow-md)]">
+          <aside ref={drawerRef} id="product-navigation-drawer" className="app-sidebar relative h-full w-[min(21rem,88vw)] overflow-y-auto p-3 shadow-[var(--shadow-md)]">
             <div className="mb-4 flex items-center justify-between border-b border-strong px-2 pb-4">
-              <p className="text-sm font-semibold tracking-wide text-primary">DealExt</p>
+              <p className="text-sm font-semibold tracking-tight text-primary">DealExt</p>
               <Button ref={closeRef} type="button" variant="ghost" className="h-10 w-10 p-0" onClick={() => setMobileOpen(false)} aria-label="Cerrar menú">
                 <X className="h-5 w-5" aria-hidden="true" />
               </Button>
             </div>
+            <SearchForm mobile />
             <Navigation mobile />
             <ThemeToggle className="mt-6 w-full" />
           </aside>

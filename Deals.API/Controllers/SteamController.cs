@@ -27,6 +27,15 @@ public sealed class SteamController(ISteamGameService steamGameService) : Contro
         }
     }
 
+    [HttpGet("suggestions")]
+    public async Task<ActionResult<IReadOnlyList<SteamSearchResponse>>> Suggestions(
+        [FromQuery] string? query,
+        CancellationToken cancellationToken)
+    {
+        var results = await steamGameService.GetSuggestionsAsync(query, cancellationToken);
+        return Ok(results.Select(ToResponse));
+    }
+
     [HttpGet("games/{appId:int}")]
     public async Task<ActionResult<SteamGameResponse>> GetGame(int appId, CancellationToken cancellationToken)
     {
@@ -45,6 +54,7 @@ public sealed class SteamController(ISteamGameService steamGameService) : Contro
         new(result.AppId, result.Name, result.Type, result.ImageUrl);
 
     private static SteamGameResponse ToResponse(SteamGameDetails game) =>
-        new(game.AppId, game.Name, game.Type, game.IsFree, game.Currency, game.InitialPriceMinor,
-            game.CurrentPriceMinor, game.DiscountPercent, game.Region, game.ObservedAt);
+        new(game.AppId, game.Name, game.Type, game.ImageUrl, game.IsFree, game.Currency, game.InitialPriceMinor,
+            game.CurrentPriceMinor, game.DiscountPercent, game.LowestPriceMinor, game.LowestPriceAt,
+            game.Region, game.ObservedAt);
 }

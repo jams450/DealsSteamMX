@@ -64,7 +64,8 @@ public sealed class SteamStoreClient(HttpClient httpClient) : ISteamStoreClient
                 GetInt32(data, "price_overview", "final"),
                 GetInt32(data, "price_overview", "discount_percent"),
                 Region,
-                DateTime.UtcNow);
+                DateTime.UtcNow,
+                GetString(data, "header_image"));
     }
 
     private static SteamSearchResult? ToSearchResult(JsonElement item)

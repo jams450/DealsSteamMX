@@ -91,15 +91,15 @@
 
 .dark {
   color-scheme: dark;
-  --tabler-page-bg: #0c1222;
-  --tabler-sidebar-bg: #0f172a;
-  --tabler-surface-1: #1e293b;
-  --tabler-surface-2: #162032;
-  --tabler-surface-3: #253347;
-  --tabler-border: #334155;
-  --tabler-border-strong: #475569;
-  --tabler-text: #f1f5f9;
-  --tabler-text-soft: #94a3b8;
+  --tabler-page-bg: #0d0f13;
+  --tabler-sidebar-bg: #14171c;
+  --tabler-surface-1: #1b1f26;
+  --tabler-surface-2: #16191f;
+  --tabler-surface-3: #23272f;
+  --tabler-border: #2b3038;
+  --tabler-border-strong: #3c424c;
+  --tabler-text: #f2f4f7;
+  --tabler-text-soft: #9aa4b0;
   --tabler-primary: #3b82f6;
   --tabler-primary-hover: #60a5fa;
   --tabler-danger: #fb7185;
@@ -119,9 +119,9 @@
   --color-surface-3: var(--tabler-surface-3);
 
   --color-text-primary: var(--tabler-text);
-  --color-text-secondary: #cbd5e1;
+  --color-text-secondary: #c4cbd4;
   --color-text-muted: var(--tabler-text-soft);
-  --color-text-inverse: #0f172a;
+  --color-text-inverse: #0d0f13;
 
   --color-border: var(--tabler-border);
   --color-border-strong: var(--tabler-border-strong);
@@ -193,6 +193,46 @@ body {
     box-shadow: var(--shadow-sm);
   }
 
+  /* Accent-rimmed card: product hero and offer summary surfaces. */
+  .app-card-accent {
+    background:
+      linear-gradient(155deg, color-mix(in srgb, var(--color-accent) 14%, var(--color-surface-1)) 0%, var(--color-surface-1) 58%);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 38%, var(--color-border));
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-md);
+  }
+
+  /* Sticky shell header: translucent surface so page content scrolls behind it. */
+  .app-topbar {
+    position: sticky;
+    top: 0.5rem;
+    z-index: 30;
+    border: 1px solid color-mix(in srgb, var(--color-border-strong) 72%, transparent);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--color-surface-1) 84%, transparent);
+    backdrop-filter: blur(10px);
+    box-shadow: var(--shadow-sm);
+  }
+
+  @media (min-width: 768px) {
+    .app-topbar {
+      top: 1rem;
+    }
+  }
+
+  /* Price typography for offer rows and the game detail price block. */
+  .deal-price {
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .deal-price-strike {
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+    text-decoration: line-through;
+  }
+
   .text-primary {
     color: var(--color-text-primary);
   }
@@ -203,6 +243,18 @@ body {
 
   .text-muted {
     color: var(--color-text-muted);
+  }
+
+  .text-accent {
+    color: var(--color-accent);
+  }
+
+  .text-success {
+    color: var(--color-success);
+  }
+
+  .text-danger {
+    color: var(--color-danger);
   }
 
   .border-default {
@@ -385,6 +437,12 @@ body {
     border-color: color-mix(in srgb, var(--color-danger) 50%, transparent);
     background: color-mix(in srgb, var(--color-danger) 20%, transparent);
     color: var(--color-danger);
+  }
+
+  .tabler-badge.tabler-badge-info:not(.tabler-badge-solid) {
+    border-color: color-mix(in srgb, var(--color-info) 50%, transparent);
+    background: color-mix(in srgb, var(--color-info) 18%, transparent);
+    color: var(--color-info);
   }
 
   .tabler-badge-warning.tabler-badge-solid {

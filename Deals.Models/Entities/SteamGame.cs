@@ -23,6 +23,10 @@ public class SteamGame : BaseModel
     [StringLength(32)]
     public string? Type { get; set; }
 
+    [Column("image_url")]
+    [StringLength(512)]
+    public string? ImageUrl { get; set; }
+
     [Column("is_free")]
     public bool IsFree { get; set; }
 
@@ -38,6 +42,12 @@ public class SteamGame : BaseModel
 
     [Column("discount_percent")]
     public int? DiscountPercent { get; set; }
+
+    [Column("lowest_price_minor")]
+    public int? LowestPriceMinor { get; set; }
+
+    [Column("lowest_price_at", TypeName = "timestamp with time zone")]
+    public DateTime? LowestPriceAt { get; set; }
 
     [Column("region")]
     [Required]

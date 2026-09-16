@@ -10,4 +10,7 @@ public sealed record SteamGameDetails(
     int? CurrentPriceMinor,
     int? DiscountPercent,
     string Region,
-    DateTime ObservedAt);
+    DateTime ObservedAt,
+    string? ImageUrl = null,
+    int? LowestPriceMinor = null,
+    DateTime? LowestPriceAt = null);
