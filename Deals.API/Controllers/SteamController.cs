@@ -73,12 +73,15 @@ public sealed class SteamController(ISteamGameService steamGameService) : Contro
             game.Region, game.ObservedAt,
             (game.Offers ?? []).Select(ToResponse).ToList(),
             game.OffersRefreshedAt,
-            game.OffersStale);
+            game.OffersStale,
+            game.GgDealsRefreshedAt,
+            game.GgDealsStale);
 
     private static SteamGameOfferResponse ToResponse(SteamGameOffer offer) =>
         new(offer.Source, offer.OfferKey, offer.ShopId, offer.ShopName, offer.Classification,
             offer.OriginalCurrency, offer.OriginalRegularPriceMinor, offer.OriginalCurrentPriceMinor,
             offer.MxnRegularPriceMinor, offer.MxnCurrentPriceMinor, offer.FxRate, offer.FxRateDate,
             offer.FxSource, offer.PricingType, offer.DiscountPercent, offer.DealUrl, offer.ObservedAt,
-            offer.DrmNames ?? [], offer.PlatformNames ?? []);
+            offer.DrmNames ?? [], offer.PlatformNames ?? [],
+            offer.HistoryLowAllMinor, offer.HistoryLowCurrency);
 }

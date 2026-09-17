@@ -62,8 +62,8 @@ public static class ServiceCollectionExtensions
             return new SteamOffersSettings(options.RefreshAfterDays);
         });
 
-        // Shared in-process ITAD budget (1 req/s, burst 10, no queueing) across all clients and requests.
-        services.AddSingleton<ItadRequestGovernor>();
+        // Shared in-process provider budget (1 req/s, burst 10, no queueing) across every price provider and request.
+        services.AddSingleton<ProviderRequestGovernor>();
 
         services.AddHttpClient<IItadClient, ItadClient>((serviceProvider, client) =>
         {
@@ -75,6 +75,34 @@ public static class ServiceCollectionExtensions
             }
 
             client.BaseAddress = baseUri;
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.TimeoutSeconds, 1, 60));
+        });
+
+        services.AddOptions<GgDealsOptions>()
+            .Validate(
+                options => IsHttps(options.BaseUrl),
+                "GgDeals:BaseUrl must be an absolute HTTPS URL.")
+            .Validate(
+                options => !string.IsNullOrWhiteSpace(options.ApiKey) &&
+                           !options.ApiKey.StartsWith("SET_", StringComparison.OrdinalIgnoreCase),
+                "GgDeals:ApiKey must be configured with a non-placeholder value.")
+            .ValidateOnStart();
+
+        services.AddSingleton(serviceProvider =>
+        {
+            var options = serviceProvider.GetRequiredService<IOptions<GgDealsOptions>>().Value;
+            return new GgDealsClientSettings(options.ApiKey, options.Region);
+        });
+
+        services.AddHttpClient<IGgDealsClient, GgDealsClient>((serviceProvider, client) =>
+        {
+            var options = serviceProvider.GetRequiredService<IOptions<GgDealsOptions>>().Value;
+            if (!IsHttps(options.BaseUrl))
+            {
+                throw new InvalidOperationException("GgDeals:BaseUrl must be an absolute HTTPS URL.");
+            }
+
+            client.BaseAddress = new Uri(options.BaseUrl);
             client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.TimeoutSeconds, 1, 60));
         });
 

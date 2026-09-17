@@ -25,7 +25,7 @@ Las fases 1–4 de `PLAN_ITAD.md` están **implementadas** (staged, sin commitea
 |---|---|
 | `steam_games.itad_game_id` (`VARCHAR(36)`) | Es la identidad canónica cross-store. Se persiste al abrir el detalle, así que la consulta "¿ya lo tengo?" es un `SELECT` local sin llamadas a la API. |
 | `IItadClient.LookupSteamAppIdAsync(int appId, CancellationToken)` | Resuelve el UUID de un appid de Steam. **El shop id 61 está hardcodeado** en el path `lookup/id/shop/61/v1`. |
-| `ItadRequestGovernor` — token bucket 1 req/s, burst 10 | Reutilizable tal cual para el import. Ya hace retry en 429 con `Retry-After`. |
+| `ProviderRequestGovernor` — token bucket 1 req/s, burst 10 | Reutilizable tal cual para el import. Ya hace retry en 429 con `Retry-After`. |
 | `ItadOptions.OfficialShopIds` | Sirve de base para la tabla de `store` → shopId del import. |
 | `game_offers` — snapshot por `(steam_game_id, source, offer_key)` con precios originales y derivados en MXN | Fuente de la comparación de precios de las alertas. |
 | `IFxRateService.GetLatestRateAsync(...)` — contrato de solo lectura, **sin fetch**, para requests de usuario | Usar solo esa variante desde el scheduler y desde la UI. `GetRateAsync` es el que hace fetch. |
@@ -187,7 +187,7 @@ Diseño:
 
 - Tabla `price_alerts`: `user_id`, `steam_game_id`, `target_price_minor`, `currency`, `max_price_type` (`current` | `history_low`), `is_active`, `last_notified_at`.
 - `Deals.API/HostedServices/PriceAlertScheduler.cs` (`BackgroundService`), junto a `FxRateRefreshJob` y siguiendo su misma estructura (delay de arranque, `CreateScope` por ciclo, catch que no tumba el proceso).
-- Corrida: juegos de `user_library` con `state = 'wished'` + `price_alerts` activas → agrupar por moneda → `prices/v3` en lotes de hasta **200 UUIDs por llamada**, pasando por `ItadRequestGovernor`.
+- Corrida: juegos de `user_library` con `state = 'wished'` + `price_alerts` activas → agrupar por moneda → `prices/v3` en lotes de hasta **200 UUIDs por llamada**, pasando por `ProviderRequestGovernor`.
 - Consultar el precio con `IFxRateService.GetLatestRateAsync`, **nunca** `GetRateAsync`: el contrato es que los requests de usuario y los jobs periódicos no disparan fetch de FX.
 - **Excluir los juegos poseídos.** `user_library` con `state = 'owned'` filtra antes de consultar: no se alerta de lo que ya se tiene.
 

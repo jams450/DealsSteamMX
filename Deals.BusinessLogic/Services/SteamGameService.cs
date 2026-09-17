@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Deals.BusinessLogic.Interfaces;
+using Deals.BusinessLogic.Models.GgDeals;
 using Deals.BusinessLogic.Models.Itad;
 using Deals.BusinessLogic.Models.Steam;
 using Deals.Models.Entities;
@@ -18,14 +19,21 @@ public sealed class SteamGameService(
     IRepository repository,
     ISteamStoreClient steamClient,
     IItadClient itadClient,
+    IGgDealsClient ggDealsClient,
     IFxRateService fxRateService,
     SteamOffersSettings? offersSettings = null) : ISteamGameService
 {
     private const string Region = "mx";
     private const string GameType = "game";
     private const string ItadSource = "itad";
+    private const string GgDealsSource = "ggdeals";
+    private const string GgDealsRetailOfferKey = "retail";
+    private const string GgDealsKeyshopOfferKey = "keyshop";
+    private const string GgDealsRetailShopName = "GG.deals";
+    private const string GgDealsKeyshopShopName = "GG.deals keyshops";
     private const string OfficialClassification = "official";
     private const string AuthorizedClassification = "authorized";
+    private const string KeyshopClassification = "keyshop";
     private const string RegionalPricing = "regional";
     private const string FxEstimatePricing = "fx_estimate";
     private const string UnconvertedPricing = "unconverted";
@@ -149,6 +157,8 @@ public sealed class SteamGameService(
         IReadOnlyList<SteamGameOffer> persistedOffers = [];
         DateTime? offersRefreshedAt = null;
         var offersStale = false;
+        DateTime? ggDealsRefreshedAt = null;
+        var ggDealsStale = false;
 
         await repository.ExecuteInTransactionAsync(async () =>
         {
@@ -235,7 +245,7 @@ public sealed class SteamGameService(
                 {
                     // Nothing comparable to ask ITAD for; drop any snapshot left from when it was
                     // comparable and record the decision so it is not retried every request.
-                    removedOffers.AddRange(RemoveItadOffers(game));
+                    removedOffers.AddRange(RemoveOffersBySource(game, ItadSource));
                     game.OffersRefreshedAt = observedAt;
                     offersStale = false;
                 }
@@ -256,6 +266,32 @@ public sealed class SteamGameService(
                 }
             }
 
+            // gg.deals runs on the same refresh window (there is no separate setting) but on its own
+            // gate and its own try/catch: both providers share one rate-limit bucket, so a failure or an
+            // exhausted budget in one must never cancel the other's refresh.
+            ggDealsStale = game.Offers.Any(offer => string.Equals(offer.Source, GgDealsSource, StringComparison.OrdinalIgnoreCase)) &&
+                (game.GgDealsRefreshedAt is null || game.GgDealsRefreshedAt.Value < refreshWindowStart);
+
+            var needsGgDeals = forceRefresh
+                || game.GgDealsRefreshedAt is null
+                || game.GgDealsRefreshedAt.Value < refreshWindowStart;
+
+            if (needsGgDeals)
+            {
+                try
+                {
+                    removedOffers.AddRange(await RefreshGgDealsOffersAsync(game, observedAt, cancellationToken));
+                    game.GgDealsRefreshedAt = observedAt;
+                    ggDealsStale = false;
+                }
+                catch (Exception exception) when (IsDegradableProviderFailure(exception, cancellationToken))
+                {
+                    // Provider down, unparseable, timed out, or out of the shared budget: keep the
+                    // persisted snapshot and leave GgDealsRefreshedAt untouched so the next request
+                    // retries, with GgDealsStale still reporting the last successful refresh.
+                }
+            }
+
             await repository.SaveChangesAsync();
 
             persistedImageUrl = game.ImageUrl;
@@ -267,6 +303,7 @@ public sealed class SteamGameService(
                 .Select(ToOfferModel)
                 .ToList();
             offersRefreshedAt = game.OffersRefreshedAt;
+            ggDealsRefreshedAt = game.GgDealsRefreshedAt;
             return true;
         });
 
@@ -277,7 +314,9 @@ public sealed class SteamGameService(
             LowestPriceAt = persistedLowestPriceAt,
             Offers = persistedOffers,
             OffersRefreshedAt = offersRefreshedAt,
-            OffersStale = offersStale
+            OffersStale = offersStale,
+            GgDealsRefreshedAt = ggDealsRefreshedAt,
+            GgDealsStale = ggDealsStale
         };
     }
 
@@ -291,14 +330,34 @@ public sealed class SteamGameService(
         exception is HttpRequestException or JsonException or OperationCanceledException;
 
     /// <summary>
-    /// Reads the persisted snapshot's ITAD offers and schedules them for deletion. Returns the entities
-    /// removed so the response can exclude them even before the change tracker reports the delete.
+    /// Reads the persisted snapshot and schedules every offer of one provider for deletion. Returns the
+    /// entities removed so the response can exclude them even before the change tracker reports the delete.
     /// </summary>
-    private IReadOnlyList<GameOffer> RemoveItadOffers(SteamGame game)
+    private IReadOnlyList<GameOffer> RemoveOffersBySource(SteamGame game, string source)
     {
         var obsolete = game.Offers
-            .Where(offer => string.Equals(offer.Source, ItadSource, StringComparison.OrdinalIgnoreCase))
+            .Where(offer => string.Equals(offer.Source, source, StringComparison.OrdinalIgnoreCase))
             .ToList();
+        return RemoveTracked(obsolete);
+    }
+
+    /// <summary>
+    /// Schedules the offers of one provider that the provider itself no longer returned. Every provider
+    /// shares <c>game_offers</c>, so the delete is scoped to <paramref name="source"/>: without that
+    /// filter, a refresh of one provider would wipe the rows belonging to the other.
+    /// </summary>
+    private IReadOnlyList<GameOffer> RemoveObsoleteOffers(SteamGame game, string source, IReadOnlySet<string> returnedKeys)
+    {
+        var obsolete = game.Offers
+            .Where(offer =>
+                string.Equals(offer.Source, source, StringComparison.OrdinalIgnoreCase) &&
+                !returnedKeys.Contains(offer.OfferKey))
+            .ToList();
+        return RemoveTracked(obsolete);
+    }
+
+    private IReadOnlyList<GameOffer> RemoveTracked(IReadOnlyList<GameOffer> obsolete)
+    {
         if (obsolete.Count == 0)
         {
             return [];
@@ -314,6 +373,31 @@ public sealed class SteamGameService(
     }
 
     /// <summary>
+    /// Finds the persisted row for (source, offer key) or creates it, so a refresh replaces the snapshot
+    /// instead of inserting a duplicate against the unique constraint.
+    /// </summary>
+    private GameOffer GetOrCreateOffer(SteamGame game, DbSet<GameOffer> tracked, string source, string offerKey)
+    {
+        var offer = game.Offers.FirstOrDefault(existing =>
+            string.Equals(existing.Source, source, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(existing.OfferKey, offerKey, StringComparison.OrdinalIgnoreCase));
+        if (offer is not null)
+        {
+            return offer;
+        }
+
+        offer = new GameOffer
+        {
+            SteamGameId = game.SteamGameId,
+            Source = source,
+            OfferKey = offerKey
+        };
+        tracked.Add(offer);
+        // EF fixup attaches the tracked entity to game.Offers.
+        return offer;
+    }
+
+    /// <summary>
     /// ITAD lookup + prices for a single game. Every HTTP call happens before any state is mutated,
     /// so a provider failure from here leaves the persisted offers untouched. Returns the offers whose
     /// deletion this call scheduled (a successful no-match is authoritative and clears the snapshot).
@@ -325,7 +409,7 @@ public sealed class SteamGameService(
         {
             // Delisted / unknown / not a comparable item: ITAD returned an authoritative no-match, so the
             // previous snapshot is dropped rather than reported as fresh.
-            return RemoveItadOffers(game);
+            return RemoveOffersBySource(game, ItadSource);
         }
 
         game.ItadGameId = itadId;
@@ -334,6 +418,7 @@ public sealed class SteamGameService(
         var match = prices.FirstOrDefault(pricesEntry =>
             string.Equals(pricesEntry.ItadId, itadId, StringComparison.OrdinalIgnoreCase));
         var deals = match?.Deals ?? [];
+        var historyLowAll = match?.HistoryLowes?.All;
 
         // Read-only lookup of the persisted daily rate; this path performs no provider fetch.
         var rate = await fxRateService.GetLatestRateAsync(FxBaseCurrency, FxQuoteCurrency, cancellationToken);
@@ -348,58 +433,158 @@ public sealed class SteamGameService(
                 continue;
             }
 
-            var offer = game.Offers.FirstOrDefault(existing =>
-                string.Equals(existing.Source, ItadSource, StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(existing.OfferKey, deal.ShopId, StringComparison.OrdinalIgnoreCase));
-
-            if (offer is null)
-            {
-                offer = new GameOffer
-                {
-                    SteamGameId = game.SteamGameId,
-                    Source = ItadSource,
-                    OfferKey = deal.ShopId
-                };
-                offers.Add(offer);
-                // EF fixup attaches the tracked entity to game.Offers.
-            }
-
-            ApplyDeal(offer, deal, rate, observedAt);
+            ApplyDeal(GetOrCreateOffer(game, offers, ItadSource, deal.ShopId), deal, historyLowAll, rate, observedAt);
         }
 
         // A successful response (even empty) is authoritative: drop ITAD offers no longer returned.
-        var obsolete = game.Offers
-            .Where(existing =>
-                string.Equals(existing.Source, ItadSource, StringComparison.OrdinalIgnoreCase) &&
-                !returnedKeys.Contains(existing.OfferKey))
-            .ToList();
-        foreach (var offer in obsolete)
-        {
-            offers.Remove(offer);
-        }
-
-        return obsolete;
+        return RemoveObsoleteOffers(game, ItadSource, returnedKeys);
     }
 
-    private static void ApplyDeal(GameOffer offer, ItadDeal deal, FxRate? rate, DateTime observedAt)
+    /// <summary>
+    /// gg.deals lookup for a single game. The provider reports one current price per bucket (retail and
+    /// keyshops) instead of a list of shops, so each bucket becomes one persisted row under a fixed
+    /// offer key. Returns the offers whose deletion this call scheduled: an authoritative "not tracked by
+    /// gg.deals" answer clears the previous snapshot, exactly like an ITAD no-match.
+    /// </summary>
+    private async Task<IReadOnlyList<GameOffer>> RefreshGgDealsOffersAsync(SteamGame game, DateTime observedAt, CancellationToken cancellationToken)
     {
-        var currency = deal.Currency.Trim().ToUpperInvariant();
+        var prices = await ggDealsClient.GetPricesAsync([game.AppId], cancellationToken);
 
+        // No entry for this app id means gg.deals does not track the game; a payload without a currency
+        // cannot be stored because the column is not nullable. Both are authoritative answers, not
+        // failures: clearing the snapshot lets the caller advance GgDealsRefreshedAt. Otherwise a game
+        // gg.deals never matches would be asked for on every single request, forever.
+        if (!prices.TryGetValue(game.AppId, out var price) || string.IsNullOrWhiteSpace(price.Currency))
+        {
+            return RemoveOffersBySource(game, GgDealsSource);
+        }
+
+        // Read-only lookup of the persisted daily rate; this path performs no provider fetch.
+        var rate = await fxRateService.GetLatestRateAsync(FxBaseCurrency, FxQuoteCurrency, cancellationToken);
+
+        var offers = repository.GetTrack<GameOffer>();
+        var returnedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (offerKey, keyshop) in new[] { (GgDealsRetailOfferKey, false), (GgDealsKeyshopOfferKey, true) })
+        {
+            var currentPriceMinor = keyshop ? price.CurrentKeyshopsMinor : price.CurrentRetailMinor;
+            if (currentPriceMinor is null)
+            {
+                // No price in this bucket: no row is created and any stale one is purged below.
+                continue;
+            }
+
+            returnedKeys.Add(offerKey);
+            ApplyGgDealsBucket(GetOrCreateOffer(game, offers, GgDealsSource, offerKey), price, keyshop, rate, observedAt);
+        }
+
+        return RemoveObsoleteOffers(game, GgDealsSource, returnedKeys);
+    }
+
+    private static void ApplyDeal(
+        GameOffer offer,
+        ItadDeal deal,
+        ItadAmount? historyLowAll,
+        FxRate? rate,
+        DateTime observedAt)
+    {
         offer.ShopId = deal.ShopId;
         offer.ShopName = deal.ShopName;
         offer.Classification = deal.IsOfficial ? OfficialClassification : AuthorizedClassification;
-        offer.OriginalCurrency = currency;
-        offer.OriginalRegularPriceMinor = deal.RegularPriceMinor;
-        offer.OriginalCurrentPriceMinor = deal.CurrentPriceMinor;
         offer.DiscountPercent = deal.DiscountPercent;
         offer.DealUrl = deal.DealUrl;
         offer.ObservedAt = observedAt;
+
+        // historyLow.all is the provider-neutral lowest price ever seen. ItadAmount carries its own
+        // currency; the deal's currency is only a fallback for a provider payload that omits it.
+        if (historyLowAll?.AmountMinor is null)
+        {
+            offer.HistoryLowAllMinor = null;
+            offer.HistoryLowCurrency = null;
+        }
+        else
+        {
+            offer.HistoryLowAllMinor = historyLowAll.AmountMinor;
+            offer.HistoryLowCurrency = string.IsNullOrWhiteSpace(historyLowAll.Currency)
+                ? deal.Currency.Trim().ToUpperInvariant()
+                : historyLowAll.Currency.Trim().ToUpperInvariant();
+        }
 
         // Snapshot fields are replaced, never merged, so a provider dropping a DRM or platform is
         // reflected instead of leaving a stale name behind.
         offer.DrmNames = [.. deal.DrmNames];
         offer.PlatformNames = [.. deal.PlatformNames];
 
+        ApplyPricing(offer, deal.Currency, deal.RegularPriceMinor, deal.CurrentPriceMinor, rate);
+    }
+
+    /// <summary>
+    /// Writes one gg.deals bucket (retail or keyshops) onto its row. gg.deals reports a single current
+    /// price per bucket and no base price or discount, so <see cref="GameOffer.OriginalRegularPriceMinor"/>
+    /// and <see cref="GameOffer.DiscountPercent"/> stay null by design; its historical low maps to the
+    /// provider-neutral history columns.
+    /// </summary>
+    private static void ApplyGgDealsBucket(
+        GameOffer offer,
+        GgDealsGamePrice price,
+        bool keyshop,
+        FxRate? rate,
+        DateTime observedAt)
+    {
+        var currency = price.Currency.Trim().ToUpperInvariant();
+        var historyLowMinor = keyshop ? price.HistoricalKeyshopsMinor : price.HistoricalRetailMinor;
+
+        offer.ShopId = null;
+        offer.ShopName = keyshop ? GgDealsKeyshopShopName : GgDealsRetailShopName;
+        // The retail bucket is an aggregate over official and authorized stores and never identifies
+        // which one, so it must not claim officiality; "authorized" is the closest truthful label and
+        // the UI renders it without a badge.
+        offer.Classification = keyshop ? KeyshopClassification : AuthorizedClassification;
+        offer.DiscountPercent = null;
+        offer.DealUrl = price.Url;
+        offer.ObservedAt = observedAt;
+
+        // Snapshot fields are replaced, never merged; the provider reports neither DRM nor platforms.
+        offer.DrmNames = [];
+        offer.PlatformNames = [];
+
+        if (historyLowMinor is null)
+        {
+            offer.HistoryLowAllMinor = null;
+            offer.HistoryLowCurrency = null;
+        }
+        else
+        {
+            offer.HistoryLowAllMinor = historyLowMinor;
+            offer.HistoryLowCurrency = currency;
+        }
+
+        ApplyPricing(
+            offer,
+            currency,
+            regularPriceMinor: null,
+            currentPriceMinor: keyshop ? price.CurrentKeyshopsMinor : price.CurrentRetailMinor,
+            rate);
+    }
+
+    /// <summary>
+    /// Pricing columns shared by every provider: the original currency, the pricing type and the derived
+    /// MXN value with its FX metadata. Amounts stay in integer minor units; only the rate is decimal.
+    /// </summary>
+    private static void ApplyPricing(
+        GameOffer offer,
+        string currency,
+        int? regularPriceMinor,
+        int? currentPriceMinor,
+        FxRate? rate)
+    {
+        var normalized = currency.Trim().ToUpperInvariant();
+
+        offer.OriginalCurrency = normalized;
+        // Written here rather than by each caller: applying pricing without persisting the original
+        // amount is precisely how a provider ends up silently losing its price.
+        offer.OriginalRegularPriceMinor = regularPriceMinor;
+        offer.OriginalCurrentPriceMinor = currentPriceMinor;
         // Derived values are recomputed on every refresh; a stale conversion is never carried forward.
         offer.MxnRegularPriceMinor = null;
         offer.MxnCurrentPriceMinor = null;
@@ -407,18 +592,18 @@ public sealed class SteamGameService(
         offer.FxRateDate = null;
         offer.FxSource = null;
 
-        if (string.Equals(currency, MxnCurrency, StringComparison.Ordinal))
+        if (string.Equals(normalized, MxnCurrency, StringComparison.Ordinal))
         {
-            offer.MxnRegularPriceMinor = deal.RegularPriceMinor;
-            offer.MxnCurrentPriceMinor = deal.CurrentPriceMinor;
+            offer.MxnRegularPriceMinor = regularPriceMinor;
+            offer.MxnCurrentPriceMinor = currentPriceMinor;
             offer.PricingType = RegionalPricing;
             return;
         }
 
-        if (string.Equals(currency, FxBaseCurrency, StringComparison.Ordinal) && rate is not null)
+        if (string.Equals(normalized, FxBaseCurrency, StringComparison.Ordinal) && rate is not null)
         {
-            offer.MxnRegularPriceMinor = ConvertMinor(deal.RegularPriceMinor, rate.Rate);
-            offer.MxnCurrentPriceMinor = ConvertMinor(deal.CurrentPriceMinor, rate.Rate);
+            offer.MxnRegularPriceMinor = ConvertMinor(regularPriceMinor, rate.Rate);
+            offer.MxnCurrentPriceMinor = ConvertMinor(currentPriceMinor, rate.Rate);
             offer.FxRate = rate.Rate;
             offer.FxRateDate = rate.RateDate;
             offer.FxSource = rate.Source;
@@ -463,7 +648,9 @@ public sealed class SteamGameService(
             offer.DealUrl,
             offer.ObservedAt,
             offer.DrmNames ?? [],
-            offer.PlatformNames ?? []);
+            offer.PlatformNames ?? [],
+            offer.HistoryLowAllMinor,
+            offer.HistoryLowCurrency);
 
     private static string NormalizeQuery(string query)
     {

@@ -33,7 +33,7 @@ Shop IDs confirmados en `/service/shops/v1?country=MX`: Steam `61`, GOG `35`, Ep
   - `lookup/id/shop/61/v1` (POST, body `["app/<appId>"]`) — **sin key**, shop id de Steam hardcodeado.
   - `games/prices/v3?country={Country}&shops={shopIds}` (POST, lotes de hasta **200 UUIDs**).
   - **Key por header `ITAD-API-Key`**, nunca en query.
-  - `ItadRequestGovernor` con token bucket 1 req/s y burst 10; retry único en 429 respetando `Retry-After`.
+  - `ProviderRequestGovernor` con token bucket 1 req/s y burst 10; retry único en 429 respetando `Retry-After`.
   - Clasificación por **allowlist de configuración** (`IsOfficial = OfficialShopIds.Contains(shopId)`), no por el payload de ITAD.
 - `Deals.BusinessLogic/Models/Itad/ItadDeal.cs` — `(ShopId, ShopName, IsOfficial, Currency, RegularPriceMinor, CurrentPriceMinor, DiscountPercent, DealUrl, ObservedAt)`.
 - `Deals.BusinessLogic/Models/Itad/ItadGamePrices.cs` — `ItadAmount(AmountMinor, Currency)`, `ItadHistoryLow(All, YearToDate, ThreeMonths)`, `ItadGamePrices(ItadId, HistoryLowes, Deals)`.
@@ -135,7 +135,7 @@ Resumen:
 |---|---|
 | Un appid mapea a un pack o familia distinta | Persistir `itad_game_id`, comparar título, marcar como no comparable en vez de unir en silencio |
 | `lookup` devuelve `null` (delisted, DLC, demo) | Limitar a `type == "game"` y mostrar estado explícito |
-| Un bug dispara N llamadas por render | Gate de 7 días + `ItadRequestGovernor` + gates por appId + `Retry-After` |
+| Un bug dispara N llamadas por render | Gate de 7 días + `ProviderRequestGovernor` + gates por appId + `Retry-After` |
 | Moneda distinta a MXN presentada como regional | Columna de moneda siempre visible; el convertido va marcado como aproximado con tasa y fecha |
 | ITAD cambia o revoca acceso | Degradación a snapshot persistido + `offersStale`; el detalle nunca queda vacío |
 | Divergencia de índices entre `AppDbContext` y `schema.sql` | Revisar al añadir la migración de `historyLow` |

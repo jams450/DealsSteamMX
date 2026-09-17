@@ -59,6 +59,22 @@ public class GameOffer : BaseModel
     [Column("mxn_current_price_minor")]
     public int? MxnCurrentPriceMinor { get; set; }
 
+    /// <summary>
+    /// Provider-neutral lowest price ever seen for the offer, in minor units. Nullable: only
+    /// providers that report it fill it (ITAD historyLow.all, gg.deals historicalRetail /
+    /// historicalKeyshops).
+    /// </summary>
+    [Column("history_low_all_minor")]
+    public int? HistoryLowAllMinor { get; set; }
+
+    /// <summary>
+    /// Currency of <see cref="HistoryLowAllMinor"/>, provider-neutral. Nullable: null when the
+    /// provider reported no history low.
+    /// </summary>
+    [Column("history_low_currency")]
+    [StringLength(3)]
+    public string? HistoryLowCurrency { get; set; }
+
     [Column("fx_rate", TypeName = "numeric(18,8)")]
     public decimal? FxRate { get; set; }
 

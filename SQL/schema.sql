@@ -49,6 +49,7 @@ CREATE TABLE steam_games (
     lowest_price_at TIMESTAMPTZ,
     itad_game_id VARCHAR(36),
     offers_refreshed_at TIMESTAMPTZ,
+    ggdeals_refreshed_at TIMESTAMPTZ,
     region VARCHAR(2) NOT NULL,
     observed_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -78,6 +79,8 @@ CREATE INDEX idx_steam_price_observations_game_observed
 -- Provider-neutral current offer snapshot per (game, source, offer_key). Not history:
 -- append-only price history stays in steam_price_observations. MXN columns are derived;
 -- the original price columns are never overwritten.
+-- history_low_all_minor / history_low_currency are provider-neutral: ITAD fills them from
+-- historyLow.all, gg.deals from historicalRetail / historicalKeyshops.
 CREATE TABLE game_offers (
     game_offer_id BIGSERIAL PRIMARY KEY,
     steam_game_id INT NOT NULL REFERENCES steam_games(steam_game_id) ON DELETE CASCADE,
@@ -91,6 +94,8 @@ CREATE TABLE game_offers (
     original_current_price_minor INT,
     mxn_regular_price_minor INT,
     mxn_current_price_minor INT,
+    history_low_all_minor INT,
+    history_low_currency VARCHAR(3),
     fx_rate NUMERIC(18,8),
     fx_rate_date DATE,
     fx_source VARCHAR(32),

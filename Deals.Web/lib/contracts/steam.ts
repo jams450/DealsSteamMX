@@ -7,7 +7,7 @@ export type SteamSearchResult = {
   readonly imageUrl: string | null;
 };
 
-export const STEAM_OFFER_CLASSIFICATIONS = ["official", "authorized"] as const;
+export const STEAM_OFFER_CLASSIFICATIONS = ["official", "authorized", "keyshop"] as const;
 export type SteamOfferClassification = (typeof STEAM_OFFER_CLASSIFICATIONS)[number];
 
 export const STEAM_PRICING_TYPES = ["regional", "fx_estimate", "unconverted"] as const;
@@ -24,6 +24,9 @@ export type SteamGameOffer = {
   readonly originalCurrency: string;
   readonly originalRegularPriceMinor: number | null;
   readonly originalCurrentPriceMinor: number | null;
+  // Mínimo histórico del proveedor, en su propia moneda. Genérico: lo puebla ITAD y gg.deals.
+  readonly historyLowAllMinor: number | null;
+  readonly historyLowCurrency: string | null;
   readonly mxnRegularPriceMinor: number | null;
   readonly mxnCurrentPriceMinor: number | null;
   readonly fxRate: number | null;
@@ -48,6 +51,8 @@ export type SteamGame = SteamSearchResult & {
   readonly offers: readonly SteamGameOffer[];
   readonly offersRefreshedAt: string | null;
   readonly offersStale: boolean;
+  readonly ggDealsRefreshedAt: string | null;
+  readonly ggDealsStale: boolean;
 };
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -84,7 +89,10 @@ function toCurrencyCode(value: unknown): string | null {
 
 function toClassification(value: unknown): SteamOfferClassification | null {
   const text = toText(value)?.toLowerCase();
-  return text === "official" || text === "authorized" ? text : null;
+  // Toda clasificación nueva debe añadirse aquí **y** al array de arriba: `normalizeOffer` descarta
+  // (null) la oferta entera cuando esto no valida, así que una clasificación sin soporte desaparece
+  // en silencio, sin error de build y sin fallo visible en la UI.
+  return text === "official" || text === "authorized" || text === "keyshop" ? text : null;
 }
 
 function toPricingType(value: unknown): SteamPricingType | null {
@@ -207,6 +215,8 @@ function normalizeOffer(value: unknown): SteamGameOffer | null {
     originalCurrency,
     originalRegularPriceMinor: toPriceMinor(read(value, "originalRegularPriceMinor")),
     originalCurrentPriceMinor: toPriceMinor(read(value, "originalCurrentPriceMinor")),
+    historyLowAllMinor: toPriceMinor(read(value, "historyLowAllMinor")),
+    historyLowCurrency: toCurrencyCode(read(value, "historyLowCurrency")),
     mxnRegularPriceMinor: toPriceMinor(read(value, "mxnRegularPriceMinor")),
     mxnCurrentPriceMinor: toPriceMinor(read(value, "mxnCurrentPriceMinor")),
     fxRate: toPositiveDecimal(read(value, "fxRate")),
@@ -246,6 +256,8 @@ export function normalizeSteamGame(input: unknown): SteamGame | null {
     observedAt: toIsoDateTime(value.observedAt ?? value.ObservedAt),
     offers: normalizeSteamOffers(read(value, "offers")),
     offersRefreshedAt: toIsoDateTime(read(value, "offersRefreshedAt")),
-    offersStale: read(value, "offersStale") === true
+    offersStale: read(value, "offersStale") === true,
+    ggDealsRefreshedAt: toIsoDateTime(read(value, "ggDealsRefreshedAt")),
+    ggDealsStale: read(value, "ggDealsStale") === true
   };
 }

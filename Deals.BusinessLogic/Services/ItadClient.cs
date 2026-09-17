@@ -11,10 +11,11 @@ namespace Deals.BusinessLogic.Services;
 public sealed record ItadClientSettings(string ApiKey, string Country, IReadOnlySet<string> OfficialShopIds);
 
 /// <summary>
-/// Global in-process request budget for IsThereAnyDeal: 1 request/second sustained, burst of 10,
-/// no queueing. Registered as a singleton so every caller shares one bucket.
+/// Shared, provider-agnostic request budget for every price provider (ITAD, gg.deals, ...):
+/// 1 request/second sustained, burst of 10, no queueing. Registered as a singleton so every caller
+/// shares one bucket.
 /// </summary>
-public sealed class ItadRequestGovernor : IDisposable
+public sealed class ProviderRequestGovernor : IDisposable
 {
     private readonly TokenBucketRateLimiter limiter = new(new TokenBucketRateLimiterOptions
     {
@@ -34,7 +35,7 @@ public sealed class ItadRequestGovernor : IDisposable
         if (!lease.IsAcquired)
         {
             lease.Dispose();
-            throw new HttpRequestException("IsThereAnyDeal request budget is exhausted.");
+            throw new HttpRequestException("Shared price provider request budget is exhausted.");
         }
 
         return lease;
@@ -43,7 +44,7 @@ public sealed class ItadRequestGovernor : IDisposable
     public void Dispose() => limiter.Dispose();
 }
 
-public sealed class ItadClient(HttpClient httpClient, ItadClientSettings settings, ItadRequestGovernor governor)
+public sealed class ItadClient(HttpClient httpClient, ItadClientSettings settings, ProviderRequestGovernor governor)
     : IItadClient
 {
     private const string ApiKeyHeader = "ITAD-API-Key";

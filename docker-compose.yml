@@ -41,6 +41,10 @@ services:
       - ITAD__RefreshAfterDays=${ITAD__RefreshAfterDays}
       - ITAD__TimeoutSeconds=${ITAD__TimeoutSeconds}
       - ITAD__OfficialShopIds=${ITAD__OfficialShopIds}
+      - GgDeals__ApiKey=${GgDeals__ApiKey}
+      - GgDeals__BaseUrl=${GgDeals__BaseUrl}
+      - GgDeals__Region=${GgDeals__Region}
+      - GgDeals__TimeoutSeconds=${GgDeals__TimeoutSeconds}
       - FX__BanxicoToken=${FX__BanxicoToken}
       - FX__BaseUrl=${FX__BaseUrl}
       - FX__BaseCurrency=${FX__BaseCurrency}

@@ -23,7 +23,9 @@ public sealed record SteamGameOffer(
     string? DealUrl,
     DateTime ObservedAt,
     IReadOnlyList<string> DrmNames,
-    IReadOnlyList<string> PlatformNames);
+    IReadOnlyList<string> PlatformNames,
+    int? HistoryLowAllMinor = null,
+    string? HistoryLowCurrency = null);
 
 public sealed record SteamGameDetails(
     int AppId,
@@ -41,4 +43,6 @@ public sealed record SteamGameDetails(
     DateTime? LowestPriceAt = null,
     IReadOnlyList<SteamGameOffer>? Offers = null,
     DateTime? OffersRefreshedAt = null,
-    bool OffersStale = false);
+    bool OffersStale = false,
+    DateTime? GgDealsRefreshedAt = null,
+    bool GgDealsStale = false);

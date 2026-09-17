@@ -56,6 +56,9 @@ public class SteamGame : BaseModel
     [Column("offers_refreshed_at", TypeName = "timestamp with time zone")]
     public DateTime? OffersRefreshedAt { get; set; }
 
+    [Column("ggdeals_refreshed_at", TypeName = "timestamp with time zone")]
+    public DateTime? GgDealsRefreshedAt { get; set; }
+
     [Column("region")]
     [Required]
     [StringLength(2)]
