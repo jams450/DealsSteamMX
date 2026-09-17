@@ -31,7 +31,7 @@ when it was last observed.
 |---|---|---|---|
 | `/` | `app/page.tsx` | Product | Home: search as the central CTA, how-it-works, price source note |
 | `/search` | `app/search/page.tsx`, `app/search/search-client.tsx` | Product | Text search; `?q=` pre-runs the query; local suggestions while typing (≥2 chars) |
-| `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: cover, price block, local-low row, source table |
+| `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: cover, Steam price block, local-low row, Steam source table, multi-store offers (official stores only in v1) |
 | `/login` | `app/login/page.tsx` | Public | Only public page, plus `/api/auth/{login,refresh,session}` |
 | `/users` | `app/users/*` | Admin | Reference admin slice (`AdminShell` + `DataGrid`), admin role only |
 | `/steam` | `app/steam/*` | Product (legacy) | Earlier Steam page rendered inside `AdminShell`; not part of `ProductShell` |
@@ -41,10 +41,18 @@ when it was last observed.
   surface; "product" means the consumer-facing area (`/`, `/search`, `/games/*`), not anonymous access.
 - **Scope of this contract:** `/`, `/search`, `/games/[steamAppId]` and `ProductShell`. `/users` and
   `/steam` keep `AdminShell` and their current layout.
-- **Data reality:** the only price source is Steam (`/api/bff/steam/search`, `/api/bff/steam/games/[appId]`,
-  `/api/bff/steam/suggestions`), MXN / Mexico region. There is **no multi-store aggregation**; the UI must not claim one or name
-  stores that do not exist in the API. The "local low" (`lowestPriceMinor`/`lowestPriceAt`) is the lowest price
-  observed locally in the app's own database, not a Steam-provided value, and it is never a discount.
+- **Data reality:** two sources feed the detail page. The regional price is Steam
+  (`/api/bff/steam/search`, `/api/bff/steam/games/[appId]`, `/api/bff/steam/suggestions`), MXN / Mexico
+  region. Cross-store offers ride on the same game payload (`offers`); the explicit refresh uses
+  `POST /api/bff/steam/games/[appId]` and comes from IsThereAnyDeal. The provider-neutral contract keeps
+  `classification` for future sources, but v1 renders **official stores only** (single
+  group) and drops authorized rows at the UI boundary. ITAD does not cover keyshops or grey market,
+  so the UI never claims "all stores" and never uses the word "keys".
+  ITAD returns each offer in the store's own currency (`original*` fields, the source of truth); the
+  MXN columns (`mxn*`) are derived from the day's FX rate (Banxico FIX, Frankfurter fallback),
+  nullable, and always presented as approximate. Offers are a per-shop snapshot, not history. The
+  "local low" (`lowestPriceMinor`/`lowestPriceAt`) is the lowest price observed locally in the app's
+  own database, not a Steam-provided value, and it is never a discount.
 
 ## 2. Principles
 
@@ -123,6 +131,55 @@ Rules currently implemented in `app/games/[steamAppId]/game-client.tsx`:
 | `observedAt` missing | `tabler-badge-warning` "Sin fecha de actualización" |
 | fetch failure | `Alert variant="danger"` with the message and a link back to `/search` |
 
+Rules currently implemented for the multi-store offers section (same file). External data is treated
+as untrusted: the normalizer in `lib/contracts/steam.ts` drops what it cannot validate instead of
+rendering it.
+
+| Condition | Treatment |
+|---|---|
+| `classification === "official"` | rendered as the only group, under the `Tiendas oficiales` heading; the shop cell also carries `tabler-badge-info` "Oficial" |
+| `classification !== "official"` (authorized) | not rendered in v1; filtered out before grouping, counting and empty-state decisions |
+| a group has no rows | the group's heading and table are not rendered at all |
+| `pricingType === "regional"` | `Aprox. MXN` shows the stored MXN snapshot plainly (no `≈`) |
+| `pricingType === "fx_estimate"` | `Aprox. MXN` is prefixed `≈` and carries `Tasa <rate> · <dd/MM/yyyy> · <source>` underneath |
+| `pricingType === "unconverted"` | `tabler-badge-warning` "Sin conversión" in `Aprox. MXN`; no MXN value is invented |
+| `pricingType` missing or unknown | the whole offer is invalid and is dropped (never silently mapped to `unconverted`) |
+| any required offer field missing (`source`, `offerKey`, `shopName`, `classification`, `originalCurrency`) | the offer is dropped |
+| `mxnCurrentPriceMinor` missing | `Aprox. MXN` reads "—" |
+| `originalCurrentPriceMinor === 0` | `Precio` reads "Gratis" in `.text-success` |
+| `originalCurrentPriceMinor` missing | `Precio` reads "—" in `.text-muted` |
+| `discountPercent` present | `tabler-badge-success` `-N%` in `Descuento`; `Precio base` switches to `.deal-price-strike` |
+| `dealUrl` present as an absolute `https:` URL | the shop name is the external link described in §8; the URL is used verbatim, affiliate tag included |
+| `dealUrl` missing, not a string, not absolute, or not `https:` | the shop name is plain text (the value is ignored, never rewritten) |
+| `observedAt` invalid or missing | `Observado` reads "—" |
+| `offersStale` | `tabler-badge-warning` "Datos posiblemente desactualizados" |
+| `offersRefreshedAt` missing or invalid while official offers exist | `tabler-badge-warning` "Sin fecha de actualización de ofertas" |
+| official `offers` empty | muted empty state inside the section; the refresh button stays available |
+| "Actualizar ofertas" in flight | button `loading` (own state, page does not re-enter its loading state) |
+| refresh failure | inline `Alert variant="danger"`; the already loaded game and its offers stay on screen |
+| timestamps (`observedAt`, `lowestPriceAt`, `offersRefreshedAt`) that are not valid ISO date-time strings | normalized to `null` and rendered as "—" / "Sin fecha"; the date formatter is guarded so it can never throw |
+| offer comparable in MXN (`mxnCurrentPriceMinor` present **and** `pricingType !== "unconverted"`) | eligible for the cheapest tally and for the summary's `Mejor precio comparable`; original currencies are never compared across rows |
+| one or more comparable official offers tie at the lowest `mxnCurrentPriceMinor` | **every** tied row carries `tabler-badge-success` "Más barato" (with an `sr-only` " entre las tiendas comparadas en MXN") and its `Precio` and `Aprox. MXN` cells switch to `.text-success`. The row background is never set, so `.table-row:hover` keeps working |
+| cheapest offer is also `originalCurrentPriceMinor === 0` | `Precio` stays "Gratis" (already `.text-success`); the badge and the MXN cell still mark the win |
+| `drmNames` non-empty | up to two `tabler-badge-info` badges after the store name; the remainder becomes a `+N` info badge whose hidden text lists the names, behind an `sr-only` "DRM:" legend |
+| `platformNames` non-empty | same shape in `tabler-badge-muted`, legend "Plataformas:" |
+| `drmNames` / `platformNames` empty | nothing renders — no placeholder, no empty badge |
+
+Best-price strip inside the `app-card-accent` summary (same file):
+
+| Condition | Treatment |
+|---|---|
+| candidates | the direct Steam price (only when `game.currency` is `MXN` **and** `currentPriceMinor` is present) plus every comparable official offer |
+| comparison basis | `mxnCurrentPriceMinor` only; FX dates are not normalized across rows, so the strip is a snapshot comparison, not a same-day quote |
+| tie | Steam wins; between stores, lexical order by `shopName` then `offerKey` (stable across refreshes) |
+| winner is Steam | label "Steam · precio directo", link to the existing Steam store URL, price in `.deal-price .text-primary` — never green, since the same number is already the big price above |
+| winner is an offer, strictly cheaper than the direct Steam price, or Steam has no comparable price | price in `.deal-price .text-success` |
+| winner offer is `fx_estimate` | price prefixed `≈` and the rate note (`Tasa <rate> · <dd/MM/yyyy> · <source>`) repeated underneath |
+| winner offer price is `0` | price reads "Gratis" |
+| winner offer `dealUrl` is not an absolute `https:` URL | the store name renders as plain text, with no link |
+| nothing comparable | muted "Sin precio comparable en MXN por ahora."; no row is highlighted |
+| always | kicker "Mejor precio comparable" plus the muted line "Compara solo precios en MXN: el precio directo de Steam y las tiendas oficiales de la tabla.", so the summary never claims to cover every store |
+
 ## 5. Typography
 
 - Family: system stack (defined in `globals.css`, `font-feature-settings: "cv11","ss01"`). No font
@@ -185,6 +242,29 @@ Rules currently implemented in `app/games/[steamAppId]/game-client.tsx`:
 `tabler-badge-info` (added for data/freshness), `tabler-badge-danger`, `tabler-badge-muted`;
 `tabler-badge-solid` for filled pills.
 
+### Offers section (game detail)
+
+- Sits in an `.app-card` **after** the existing Steam summary and Steam table, whose markup and layout
+  are unchanged.
+- Header: `uppercase tracking-widest` kicker, `text-xl` heading, the note "Solo tiendas oficiales"
+  (v1 renders the official group only), the attribution line **"Datos de precios: IsThereAnyDeal"**
+  (required by ITAD's terms, always visible) and the `Button variant="secondary"` "Actualizar ofertas".
+- One `.table-shell` (`overflow-x-auto` + `min-w-max`) for the single official group. Columns are
+  fixed: `Tienda | Precio base | Descuento | Precio | Moneda | Aprox. MXN | Observado`. The header block
+  stacks below `sm` and the tables scroll horizontally rather than squashing.
+- `Observado` uses `Intl.DateTimeFormat("es-MX", { dateStyle: "medium" })`. `fxRateDate` arrives as
+  `YYYY-MM-DD` and is reordered to `dd/MM/yyyy` by string split — never through `new Date()` — so the
+  day cannot shift by timezone.
+- FX rates render with `Intl.NumberFormat("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 4 })`.
+- Store cell stack: the shop link/name and the "Oficial"/"Más barato" badges on one `flex-wrap` line,
+  then one `NameBadges` row for `drmNames` (info tone) and one for `platformNames` (muted tone). Each row
+  shows at most two badges plus `+N`; the `+N` pill carries the hidden names and an `sr-only` legend
+  ("DRM:" / "Plataformas:") so the pills are never unlabelled words. Nothing renders for empty arrays.
+- The summaries' `Mejor precio comparable` strip sits inside the existing `app-card-accent`, below the
+  Steam badge cluster and above "Ver en Steam", separated with `border-t border-default pt-3`. It reuses
+  the same cross-store comparison as the table (`selectBestPrice` / `cheapestTies` in `game-client.tsx`),
+  `.deal-price` for the number and the standard external-link pattern for the winning store.
+
 ### DataGrid (`components/data-grid/data-grid.tsx`)
 
 Admin-only today (`/users`). Props are additive-only; column IDs are a public contract. Available:
@@ -213,6 +293,25 @@ stickyActionsColumn, enableGlobalFilter, globalFilterPlaceholder, globalFilterFn
   `https://store.steampowered.com/app/<appId>/` with `target="_blank" rel="noopener noreferrer"` and
   an `sr-only` "(se abre en una pestaña nueva)" note next to the `ExternalLink` icon. The link is
   inside the "Fuente" cell on purpose: no extra column is added.
+- **External deal link (offers):** the shop name is the link, using `dealUrl` **verbatim** (ITAD's
+  affiliate tag must never be stripped or rewritten), `target="_blank"`, `rel="noopener noreferrer"`,
+  `ExternalLink` icon `aria-hidden` and the same `sr-only` "(se abre en una pestaña nueva)" note. Only
+  an absolute `https:` URL is accepted by the normalizer; anything else (missing, relative, `http:`,
+  another scheme, or unparseable) becomes `null` and the shop name renders as plain text.
+- **Refresh (offers):** "Actualizar ofertas" calls `refreshSteamGame` (`app/steam/_lib/steam-api.ts`),
+  a `POST` to `/api/bff/steam/games/<appId>` through `csrfFetch`. A dedicated `refreshing` flag drives
+  only the button's `loading`/`aria-busy`, so the page never returns to the full-page "Cargando..."
+  state and the tables stay readable during the call. An `aria-live` `polite` status line shows
+  "Consultando tiendas..." while it runs.
+- **Refresh failure (offers):** inline `Alert variant="danger"` above the tables; the previously loaded
+  game and offers stay on screen. A failed refresh never blanks the detail page.
+- **Cheapest highlight (offers):** the highlight is text-only — a `tabler-badge-success` "Más barato"
+  plus `.text-success` on the `Precio` and `Aprox. MXN` cells. No background or border is added to the
+  `<tr>`, so `.table-row:hover` (a `@layer components` rule) keeps working; a utility background would
+  outrank it and kill the hover feedback.
+- **Best price strip:** static content, no interaction beyond the winning store's external link. When
+  nothing is comparable it degrades to a muted line; it never renders a zero, a dash inside a price
+  class, or a green claim without a comparable number behind it.
 - **Empty:** muted "Sin resultados" inside an `.app-card` (search results).
 - **Error:** `Alert variant="danger"` on the detail page; inline `.text-danger` `role="alert"` text in
   the search client.
@@ -226,8 +325,17 @@ stickyActionsColumn, enableGlobalFilter, globalFilterPlaceholder, globalFilterFn
 - Drawer: `role="dialog"`, `aria-modal`, labelled close control, focus trap, `Escape`, focus
   restoration, body scroll lock.
 - Detail table: `caption` with `sr-only` text; `th scope="col"`.
+- Offers section: one `sr-only` `caption` for the official group table ("Ofertas de <juego> en
+  <grupo>") plus `th scope="col"`; the group heading is a real `h3` tied to its table region with
+  `aria-labelledby`. The refresh control announces its own state (`aria-busy` + live region), and the
+  stale/refresh-date warnings are text badges rather than a color change alone.
 - Offer state is always carried by text ("Precio actual", "Datos incompletos", "Sin fecha de
   actualización") in addition to color.
+- "Más barato" is a visible badge, so the cheapest rows are not signalled by green text alone; its
+  `sr-only` tail ("entre las tiendas comparadas en MXN") scopes the claim for screen readers. DRM and
+  platform badges sit behind `sr-only` legends, and the names hidden by `+N` are read out in full.
+- The `Mejor precio comparable` strip names its comparison basis in visible text, so the summary is
+  never understood as covering every store or every offer.
 - Form controls in the shell are 2.5rem (40px) tall — above the 24px WCAG 2.2 minimum, below the
   44px touch guideline (see Accepted debt).
 
@@ -257,9 +365,40 @@ stickyActionsColumn, enableGlobalFilter, globalFilterPlaceholder, globalFilterFn
   legible, but they were not visually reviewed in this change.
 - **Shared tokens.** The dark token retune is global, so `/users` and `/steam` (which render inside
   `AdminShell`) also shift to graphite. Their layout and components were not modified.
-- **Not in scope:** multi-store comparison, price history charts, alerts/watchlists, currency
-  switching. None of these have API contracts yet; do not imply them in copy. The local low is a
-  single stored datum, not a history chart.
+- **Not in scope:** keyshops and grey market (ITAD does not cover them; that would need gg.deals or
+  another provider), price history charts, alerts/watchlists, currency switching, bundles, and
+  historical FX — only the day's rate is used. **Authorized stores are deferred in v1:** the contract
+  keeps `classification` (`official | authorized`) so the second group can come back without a model
+  change, but the UI renders official stores only. Copy must not claim "all stores", must not use the
+  word "keys", and must not imply grey-market coverage. The local low remains a single stored datum,
+  not a history chart.
+- **External data is untrusted.** `lib/contracts/steam.ts` is the trust boundary: offers with an
+  unknown/missing `pricingType` or a missing required field are dropped; non-`https` deal links and
+  non-ISO timestamps become `null` and render as plain text/"—". Nothing from the provider is rendered
+  unvalidated, and invalid values never throw in the render path.
+- **Offers are a snapshot, not history.** `game_offers` is upserted per (game, source, offer key) and the
+  UI only shows the last observed values. `offersStale` means the latest refresh failed and persisted
+  data is being shown — not that the price changed.
+- **Offers ordering.** Rows render in API order, filtered to `classification === "official"`. No
+  client-side sorting, shop filter or preference; add them only against a real requirement, since the
+  server owns ordering.
+- **Attribution is a ToS requirement.** "Datos de precios: IsThereAnyDeal" and the untouched `dealUrl`
+  are not decorative: removing either breaks ITAD's terms. Links are validated as absolute `https:`,
+  which is a safety check, not a rewrite — the URL string itself is passed through unchanged.
+- **Comparison basis.** Only `mxnCurrentPriceMinor` is compared; original currencies are never compared
+  across stores, and each MXN value carries the FX snapshot of its own row (dates are not aligned). Both
+  the `Más barato` badge and the `Mejor precio comparable` strip therefore describe the stored snapshot,
+  not a same-day quote — hence the explicit labels in each place.
+- **Highlight vs. strip can differ.** The badge marks the cheapest **official offer row**; the strip also
+  considers the direct Steam price. When Steam is cheaper, no row is highlighted and the strip says so.
+  Copy must keep the two claims distinguishable.
+- **DRM and platform names come from ITAD** (`drmNames` / `platformNames`) and may be empty or unknown
+  strings: empty arrays render nothing, unknown names render verbatim, and there is no expand/collapse UI
+  — the `+N` remainder is only exposed to assistive tech. Add a popover only against a real need.
+- **No unit tests.** `selectBestPrice` / `cheapestTies` are pure functions on purpose so they can be
+  covered the day a test runner exists; this repo has none and adding one is out of scope here.
 - **Verification.** No test project exists in this repo, so the check is `pnpm build` plus manual
-  browser QA (owed: home/search/detail at light and dark, mobile drawer keyboard walkthrough).
-  No Lighthouse or visual-regression run was executed.
+  browser QA (owed: home/search/detail at light and dark, mobile drawer keyboard walkthrough, and the
+  offers section with: tied cheapest rows, a `fx_estimate` offer, an `unconverted` offer, DRM/platform
+  badges with more than two names, the stale badge, an empty result and a failed refresh). No Lighthouse
+  or visual-regression run was executed.

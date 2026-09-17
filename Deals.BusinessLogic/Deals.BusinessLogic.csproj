@@ -2,6 +2,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Deals.Models\Deals.Models.csproj" />
+    <!-- System.Threading.RateLimiting ships in the ASP.NET Core shared framework, not in Microsoft.NETCore.App. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>

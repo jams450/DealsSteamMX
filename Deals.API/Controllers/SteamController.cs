@@ -37,11 +37,25 @@ public sealed class SteamController(ISteamGameService steamGameService) : Contro
     }
 
     [HttpGet("games/{appId:int}")]
-    public async Task<ActionResult<SteamGameResponse>> GetGame(int appId, CancellationToken cancellationToken)
+    public Task<ActionResult<SteamGameResponse>> GetGame(
+        int appId,
+        CancellationToken cancellationToken) =>
+        FetchGame(appId, forceRefresh: false, cancellationToken);
+
+    [HttpPost("games/{appId:int}/refresh")]
+    public Task<ActionResult<SteamGameResponse>> RefreshGame(
+        int appId,
+        CancellationToken cancellationToken) =>
+        FetchGame(appId, forceRefresh: true, cancellationToken);
+
+    private async Task<ActionResult<SteamGameResponse>> FetchGame(
+        int appId,
+        bool forceRefresh,
+        CancellationToken cancellationToken)
     {
         try
         {
-            var game = await steamGameService.GetByAppIdAsync(appId, cancellationToken);
+            var game = await steamGameService.GetByAppIdAsync(appId, forceRefresh, cancellationToken);
             return game == null ? NotFound() : Ok(ToResponse(game));
         }
         catch (HttpRequestException)
@@ -56,5 +70,15 @@ public sealed class SteamController(ISteamGameService steamGameService) : Contro
     private static SteamGameResponse ToResponse(SteamGameDetails game) =>
         new(game.AppId, game.Name, game.Type, game.ImageUrl, game.IsFree, game.Currency, game.InitialPriceMinor,
             game.CurrentPriceMinor, game.DiscountPercent, game.LowestPriceMinor, game.LowestPriceAt,
-            game.Region, game.ObservedAt);
+            game.Region, game.ObservedAt,
+            (game.Offers ?? []).Select(ToResponse).ToList(),
+            game.OffersRefreshedAt,
+            game.OffersStale);
+
+    private static SteamGameOfferResponse ToResponse(SteamGameOffer offer) =>
+        new(offer.Source, offer.OfferKey, offer.ShopId, offer.ShopName, offer.Classification,
+            offer.OriginalCurrency, offer.OriginalRegularPriceMinor, offer.OriginalCurrentPriceMinor,
+            offer.MxnRegularPriceMinor, offer.MxnCurrentPriceMinor, offer.FxRate, offer.FxRateDate,
+            offer.FxSource, offer.PricingType, offer.DiscountPercent, offer.DealUrl, offer.ObservedAt,
+            offer.DrmNames ?? [], offer.PlatformNames ?? []);
 }

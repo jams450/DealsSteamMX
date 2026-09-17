@@ -49,6 +49,13 @@ public class SteamGame : BaseModel
     [Column("lowest_price_at", TypeName = "timestamp with time zone")]
     public DateTime? LowestPriceAt { get; set; }
 
+    [Column("itad_game_id")]
+    [StringLength(36)]
+    public string? ItadGameId { get; set; }
+
+    [Column("offers_refreshed_at", TypeName = "timestamp with time zone")]
+    public DateTime? OffersRefreshedAt { get; set; }
+
     [Column("region")]
     [Required]
     [StringLength(2)]
@@ -58,4 +65,6 @@ public class SteamGame : BaseModel
     public DateTime ObservedAt { get; set; }
 
     public ICollection<SteamPriceObservation> PriceObservations { get; set; } = new List<SteamPriceObservation>();
+
+    public ICollection<GameOffer> Offers { get; set; } = new List<GameOffer>();
 }

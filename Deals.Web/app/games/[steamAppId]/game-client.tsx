@@ -4,16 +4,21 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ExternalLink, Gamepad2 } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/ui/cn";
-import type { SteamGame } from "@/lib/contracts/steam";
-import { getSteamGame } from "@/app/steam/_lib/steam-api";
+import type { SteamGame, SteamGameOffer } from "@/lib/contracts/steam";
+import { getSteamGame, refreshSteamGame } from "@/app/steam/_lib/steam-api";
 import { formatCurrency } from "@/lib/format/currency";
 
 interface GameClientProps {
   readonly appId: number;
 }
 
+const OFFICIAL_GROUP_HEADING = "Tiendas oficiales";
+const ITAD_ATTRIBUTION = "Datos de precios: IsThereAnyDeal";
+
 const observedFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
+const rateFormatter = new Intl.NumberFormat("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 
 function steamStoreUrl(appId: number) {
   return `https://store.steampowered.com/app/${appId}/`;
@@ -23,11 +28,270 @@ function formatMinor(amountMinor: number, currency: string) {
   return formatCurrency(amountMinor / 100, "es-MX", currency);
 }
 
+// El normalizador ya descarta fechas inválidas; el guard evita que Intl.format lance si algo se cuela.
+function formatObserved(value: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : observedFormatter.format(date);
+}
+
+// La fecha de tasa llega como YYYY-MM-DD; se arma a mano para no correrla por zona horaria.
+function formatIsoDate(value: string | null) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value ?? "");
+  return match ? `${match[3]}/${match[2]}/${match[1]}` : null;
+}
+
+function offerPriceMinor(offer: SteamGameOffer) {
+  const current = offer.originalCurrentPriceMinor;
+  if (current === null) return { display: "—", free: false };
+  if (current === 0) return { display: "Gratis", free: true };
+  return { display: formatMinor(current, offer.originalCurrency), free: false };
+}
+
+function offerMxnCell(offer: SteamGameOffer) {
+  const value = offer.mxnCurrentPriceMinor;
+  const approximate = offer.pricingType === "fx_estimate";
+  const display = value === null || value === undefined
+    ? "—"
+    : `${approximate ? "≈ " : ""}${formatMinor(value, "MXN")}`;
+
+  const rate = offer.fxRate === null || offer.fxRate === undefined ? null : rateFormatter.format(offer.fxRate);
+  const date = formatIsoDate(offer.fxRateDate);
+  const parts = [rate ? `Tasa ${rate}` : null, date, offer.fxSource].filter((part): part is string => Boolean(part));
+
+  return {
+    display,
+    note: approximate && parts.length > 0 ? parts.join(" · ") : null,
+    unconverted: offer.pricingType === "unconverted"
+  };
+}
+
+function offerKey(offer: SteamGameOffer) {
+  return `${offer.source}:${offer.offerKey}`;
+}
+
+// El normalizador ya exige https; se revalida aquí porque el valor llega a un `href`.
+function safeDealUrl(value: string | null) {
+  if (!value) return null;
+  try {
+    return new URL(value).protocol === "https:" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+// Única base comparable entre tiendas: el snapshot en MXN. La moneda original nunca se compara.
+const COMPARISON_CURRENCY = "MXN";
+
+interface ComparableOffer {
+  readonly offer: SteamGameOffer;
+  readonly mxnMinor: number;
+}
+
+function comparableOffers(offers: readonly SteamGameOffer[]): readonly ComparableOffer[] {
+  return offers.flatMap((offer) =>
+    offer.mxnCurrentPriceMinor !== null && offer.pricingType !== "unconverted"
+      ? [{ offer, mxnMinor: offer.mxnCurrentPriceMinor }]
+      : []
+  );
+}
+
+function cheapestTies(offers: readonly SteamGameOffer[]): readonly ComparableOffer[] {
+  const comparable = comparableOffers(offers);
+  if (comparable.length === 0) return [];
+  const cheapest = Math.min(...comparable.map((candidate) => candidate.mxnMinor));
+  return comparable.filter((candidate) => candidate.mxnMinor === cheapest);
+}
+
+function formatComparablePrice(mxnMinor: number) {
+  return mxnMinor === 0 ? "Gratis" : formatMinor(mxnMinor, COMPARISON_CURRENCY);
+}
+
+interface BestPrice {
+  readonly label: string;
+  readonly url: string | null;
+  readonly mxnMinor: number;
+  readonly approximate: boolean;
+  readonly better: boolean;
+  readonly note: string | null;
+}
+
+/**
+ * Mejor precio comparable entre el precio directo de Steam (solo si la moneda de la ficha es MXN)
+ * y las ofertas comparables. Empate: gana Steam; entre tiendas, orden léxico por tienda y offerKey.
+ */
+function selectBestPrice(game: SteamGame, offers: readonly SteamGameOffer[]): BestPrice | null {
+  const steamPrice = game.currency?.toUpperCase() === COMPARISON_CURRENCY ? game.currentPriceMinor : null;
+  const official = cheapestTies(offers)
+    .slice()
+    .sort(
+      (a, b) =>
+        a.offer.shopName.localeCompare(b.offer.shopName, "es-MX") ||
+        a.offer.offerKey.localeCompare(b.offer.offerKey, "es-MX")
+    )[0] ?? null;
+
+  if (steamPrice === null && official === null) return null;
+
+  if (steamPrice !== null && (official === null || steamPrice <= official.mxnMinor)) {
+    return {
+      label: "Steam · precio directo",
+      url: steamStoreUrl(game.appId),
+      mxnMinor: steamPrice,
+      approximate: false,
+      better: false,
+      note: null
+    };
+  }
+
+  if (official === null) return null;
+
+  return {
+    label: official.offer.shopName,
+    url: safeDealUrl(official.offer.dealUrl),
+    mxnMinor: official.mxnMinor,
+    approximate: official.offer.pricingType === "fx_estimate",
+    better: steamPrice === null || official.mxnMinor < steamPrice,
+    note: offerMxnCell(official.offer).note
+  };
+}
+
+interface NameBadgesProps {
+  readonly names: readonly string[];
+  readonly legend: string;
+  readonly tone: "info" | "muted";
+}
+
+// Máximo dos badges visibles por categoría; el resto queda en `+N` con el detalle en sr-only.
+function NameBadges({ names, legend, tone }: NameBadgesProps) {
+  if (names.length === 0) return null;
+
+  const visible = names.slice(0, 2);
+  const rest = names.slice(2);
+  const badgeTone = tone === "info" ? "tabler-badge-info" : "tabler-badge-muted";
+
+  return (
+    <span className="mt-1 flex flex-wrap items-center gap-1">
+      <span className="sr-only">{legend}: </span>
+      {visible.map((name, index) => (
+        <span key={`${name}-${index}`} className={cn("tabler-badge", badgeTone)}>{name}</span>
+      ))}
+      {rest.length > 0 ? (
+        <span className={cn("tabler-badge", badgeTone)}>
+          +{rest.length}
+          <span className="sr-only">: {rest.join(", ")}</span>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+interface OfferGroupProps {
+  readonly id: string;
+  readonly heading: string;
+  readonly gameName: string;
+  readonly offers: readonly SteamGameOffer[];
+  readonly cheapest: ReadonlySet<string>;
+}
+
+function OfferGroup({ id, heading, gameName, offers, cheapest }: OfferGroupProps) {
+  if (offers.length === 0) return null;
+
+  return (
+    <section className="space-y-2" aria-labelledby={id}>
+      <h3 id={id} className="text-sm font-semibold tracking-tight text-primary">{heading}</h3>
+      <div className="table-shell overflow-x-auto">
+        <table className="w-full min-w-max text-left text-sm">
+          <caption className="sr-only">Ofertas de {gameName} en {heading.toLowerCase()}</caption>
+          <thead className="table-head">
+            <tr>
+              <th scope="col" className="p-3">Tienda</th>
+              <th scope="col" className="p-3">Precio base</th>
+              <th scope="col" className="p-3">Descuento</th>
+              <th scope="col" className="p-3">Precio</th>
+              <th scope="col" className="p-3">Moneda</th>
+              <th scope="col" className="p-3">Aprox. MXN</th>
+              <th scope="col" className="p-3">Observado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {offers.map((offer) => {
+              const price = offerPriceMinor(offer);
+              const mxn = offerMxnCell(offer);
+              const base = offer.originalRegularPriceMinor;
+              const isCheapest = cheapest.has(offerKey(offer));
+              return (
+                <tr key={offerKey(offer)} className="table-row">
+                  <td className="table-cell p-3 font-medium text-primary">
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      {offer.dealUrl ? (
+                        <a
+                          href={offer.dealUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+                        >
+                          {offer.shopName}
+                          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span className="sr-only">(se abre en una pestaña nueva)</span>
+                        </a>
+                      ) : (
+                        offer.shopName
+                      )}
+                      {offer.classification === "official" ? (
+                        <span className="tabler-badge tabler-badge-info">Oficial</span>
+                      ) : null}
+                      {isCheapest ? (
+                        <span className="tabler-badge tabler-badge-success">
+                          Más barato
+                          <span className="sr-only"> entre las tiendas comparadas en MXN</span>
+                        </span>
+                      ) : null}
+                    </span>
+                    <NameBadges names={offer.drmNames} legend="DRM" tone="info" />
+                    <NameBadges names={offer.platformNames} legend="Plataformas" tone="muted" />
+                  </td>
+                  <td className={cn("table-cell deal-price p-3", offer.discountPercent ? "deal-price-strike" : "text-primary")}>
+                    {base === null || base === undefined ? "—" : formatMinor(base, offer.originalCurrency)}
+                  </td>
+                  <td className="table-cell p-3">
+                    {offer.discountPercent ? (
+                      <span className="tabler-badge tabler-badge-success">-{offer.discountPercent}%</span>
+                    ) : (
+                      <span className="text-muted">—</span>
+                    )}
+                  </td>
+                  <td className={cn("table-cell deal-price p-3", price.free || isCheapest ? "text-success" : price.display === "—" ? "text-muted" : "text-primary")}>
+                    {price.display}
+                  </td>
+                  <td className="table-cell p-3 font-semibold uppercase text-primary">{offer.originalCurrency}</td>
+                  <td className="table-cell p-3">
+                    {mxn.unconverted ? (
+                      <span className="tabler-badge tabler-badge-warning">Sin conversión</span>
+                    ) : (
+                      <span className={cn("deal-price", isCheapest ? "text-success" : "text-primary")}>{mxn.display}</span>
+                    )}
+                    {mxn.note ? <span className="block text-xs text-muted">{mxn.note}</span> : null}
+                  </td>
+                  <td className="table-cell p-3 text-muted">
+                    {formatObserved(offer.observedAt) ?? "—"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 export function GameClient({ appId }: GameClientProps) {
   const [game, setGame] = useState<SteamGame | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [coverFailed, setCoverFailed] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -44,6 +308,21 @@ export function GameClient({ appId }: GameClientProps) {
     void load();
     return () => { active = false; };
   }, [appId]);
+
+  // La actualización de ofertas no toca `loading`: la página no debe parpadear.
+  async function refreshOffers() {
+    if (refreshing) return;
+    setRefreshing(true);
+    setRefreshError(null);
+    try {
+      setGame(await refreshSteamGame(appId));
+    } catch (cause) {
+      // Un fallo de ITAD nunca borra el detalle ya cargado.
+      setRefreshError(cause instanceof Error ? cause.message : "No se pudieron actualizar las ofertas.");
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   if (loading) return <p className="app-card p-5 text-sm text-muted">Cargando...</p>;
 
@@ -75,10 +354,17 @@ export function GameClient({ appId }: GameClientProps) {
   const lowestMinor = game.lowestPriceMinor;
   const lowestDisplay = lowestMinor !== null && currency !== null ? formatMinor(lowestMinor, currency) : null;
   const atLowest = lowestDisplay !== null && !game.isFree && currentPrice !== null && lowestMinor !== null && currentPrice <= lowestMinor;
-  const lowestDate = game.lowestPriceAt ? observedFormatter.format(new Date(game.lowestPriceAt)) : null;
+  const lowestDate = formatObserved(game.lowestPriceAt);
+  const observedDisplay = formatObserved(game.observedAt);
+  const offersRefreshedDisplay = formatObserved(game.offersRefreshedAt);
 
   const coverUrl = game.imageUrl && !coverFailed ? game.imageUrl : null;
   const storeUrl = steamStoreUrl(game.appId);
+
+  // v1: solo tiendas oficiales. El modelo conserva `classification` para reabrir autorizadas después.
+  const offers = (game.offers ?? []).filter((offer) => offer.classification === "official");
+  const cheapest = new Set(cheapestTies(offers).map((candidate) => offerKey(candidate.offer)));
+  const bestPrice = selectBestPrice(game, offers);
 
   return (
     <div className="space-y-4">
@@ -133,13 +419,44 @@ export function GameClient({ appId }: GameClientProps) {
               <span className="tabler-badge tabler-badge-muted">Sin mínimo observado localmente</span>
             )}
             {incomplete ? <span className="tabler-badge tabler-badge-warning">Datos incompletos</span> : null}
-            {game.observedAt ? (
-              <span className="tabler-badge tabler-badge-info">
-                Actualizado {observedFormatter.format(new Date(game.observedAt))}
-              </span>
+            {observedDisplay ? (
+              <span className="tabler-badge tabler-badge-info">Actualizado {observedDisplay}</span>
             ) : (
               <span className="tabler-badge tabler-badge-warning">Sin fecha de actualización</span>
             )}
+          </div>
+          <div className="space-y-2 border-t border-default pt-3">
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted">Mejor precio comparable</p>
+            {bestPrice ? (
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <p className={cn("deal-price text-2xl", bestPrice.better ? "text-success" : "text-primary")}>
+                    {bestPrice.approximate ? "≈ " : ""}
+                    {formatComparablePrice(bestPrice.mxnMinor)}
+                  </p>
+                  {bestPrice.url ? (
+                    <a
+                      href={bestPrice.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+                    >
+                      {bestPrice.label}
+                      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span className="sr-only">(se abre en una pestaña nueva)</span>
+                    </a>
+                  ) : (
+                    <span className="text-sm font-semibold text-secondary">{bestPrice.label}</span>
+                  )}
+                </div>
+                {bestPrice.note ? <p className="text-xs text-muted">{bestPrice.note}</p> : null}
+              </div>
+            ) : (
+              <p className="text-sm text-muted">Sin precio comparable en MXN por ahora.</p>
+            )}
+            <p className="text-xs text-muted">
+              Compara solo precios en MXN: el precio directo de Steam y las tiendas oficiales de la tabla.
+            </p>
           </div>
           <a
             href={storeUrl}
@@ -202,11 +519,68 @@ export function GameClient({ appId }: GameClientProps) {
               </td>
               <td className="table-cell p-3 font-semibold uppercase text-primary">{game.region ?? "—"}</td>
               <td className="table-cell p-3 text-muted">
-                {game.observedAt ? observedFormatter.format(new Date(game.observedAt)) : "—"}
+                {observedDisplay ?? "—"}
               </td>
             </tr>
           </tbody>
         </table>
+      </section>
+
+      <section className="app-card space-y-4 p-5" aria-labelledby="offers-heading">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted">Ofertas por tienda</p>
+            <h2 id="offers-heading" className="text-xl font-semibold tracking-tight text-primary">
+              Ofertas en otras tiendas
+            </h2>
+            <p className="text-xs text-muted">Solo tiendas oficiales.</p>
+            <p className="text-sm font-semibold text-secondary">{ITAD_ATTRIBUTION}</p>
+          </div>
+          <div className="flex flex-col items-start gap-1 sm:items-end">
+            <Button
+              variant="secondary"
+              className="w-full sm:w-auto"
+              loading={refreshing}
+              loadingText="Actualizando..."
+              onClick={() => void refreshOffers()}
+            >
+              Actualizar ofertas
+            </Button>
+            <span className="text-xs text-muted" aria-live="polite">
+              {refreshing ? "Consultando tiendas..." : ""}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {offers.length > 0 ? (
+            <span className="tabler-badge tabler-badge-muted">
+              {offers.length === 1 ? "1 oferta" : `${offers.length} ofertas`}
+            </span>
+          ) : null}
+          {offersRefreshedDisplay ? (
+            <span className="tabler-badge tabler-badge-info">
+              Ofertas actualizadas {offersRefreshedDisplay}
+            </span>
+          ) : offers.length > 0 ? (
+            <span className="tabler-badge tabler-badge-warning">Sin fecha de actualización de ofertas</span>
+          ) : null}
+          {game.offersStale ? (
+            <span className="tabler-badge tabler-badge-warning">Datos posiblemente desactualizados</span>
+          ) : null}
+        </div>
+
+        {refreshError ? <Alert variant="danger">{refreshError}</Alert> : null}
+
+        {offers.length === 0 ? (
+          <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
+            Todavía no hay ofertas de tiendas oficiales para este juego. Usa «Actualizar ofertas» para consultarlas.
+          </p>
+        ) : (
+          <div className="space-y-5">
+            <OfferGroup id="offers-official" heading={OFFICIAL_GROUP_HEADING} gameName={game.name} offers={offers} cheapest={cheapest} />
+          </div>
+        )}
       </section>
     </div>
   );

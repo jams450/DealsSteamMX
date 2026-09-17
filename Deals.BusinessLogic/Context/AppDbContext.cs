@@ -19,6 +19,8 @@ public class AppDbContext : DbContext
     public DbSet<UserSession> UserSessions { get; set; } = null!;
     public DbSet<SteamGame> SteamGames { get; set; } = null!;
     public DbSet<SteamPriceObservation> SteamPriceObservations { get; set; } = null!;
+    public DbSet<GameOffer> GameOffers { get; set; } = null!;
+    public DbSet<FxRate> FxRates { get; set; } = null!;
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
@@ -80,6 +82,16 @@ public class AppDbContext : DbContext
                 .WithOne(e => e.SteamGame)
                 .HasForeignKey(e => e.SteamGameId)
                 .OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(e => e.Offers)
+                .WithOne(e => e.SteamGame)
+                .HasForeignKey(e => e.SteamGameId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<GameOffer>(entity =>
+        {
+            entity.HasIndex(e => new { e.SteamGameId, e.Source, e.OfferKey }).IsUnique();
+            entity.HasIndex(e => e.SteamGameId);
         });
 
         modelBuilder.Entity<SteamPriceObservation>(entity =>
@@ -93,6 +105,11 @@ public class AppDbContext : DbContext
                 e.DiscountPercent
             });
             entity.HasIndex(e => e.ObservedAt);
+        });
+
+        modelBuilder.Entity<FxRate>(entity =>
+        {
+            entity.HasKey(e => new { e.Base, e.Quote, e.RateDate });
         });
 
     }

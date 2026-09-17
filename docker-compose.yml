@@ -35,6 +35,17 @@ services:
       - Jwt__Issuer=${Jwt__Issuer}
       - Jwt__Audience=${Jwt__Audience}
       - Cors__AllowedOrigins=${Cors__AllowedOrigins}
+      - ITAD__ApiKey=${ITAD__ApiKey}
+      - ITAD__BaseUrl=${ITAD__BaseUrl}
+      - ITAD__Country=${ITAD__Country}
+      - ITAD__RefreshAfterDays=${ITAD__RefreshAfterDays}
+      - ITAD__TimeoutSeconds=${ITAD__TimeoutSeconds}
+      - ITAD__OfficialShopIds=${ITAD__OfficialShopIds}
+      - FX__BanxicoToken=${FX__BanxicoToken}
+      - FX__BaseUrl=${FX__BaseUrl}
+      - FX__BaseCurrency=${FX__BaseCurrency}
+      - FX__QuoteCurrency=${FX__QuoteCurrency}
+      - FX__TimeoutSeconds=${FX__TimeoutSeconds}
     networks:
       - dealext-network
       - shared-db-network
