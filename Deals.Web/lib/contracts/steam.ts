@@ -5,6 +5,8 @@ export type SteamSearchResult = {
   readonly name: string;
   readonly type: string | null;
   readonly imageUrl: string | null;
+  readonly hasDetails: boolean;
+  readonly refreshedAt: string | null;
 };
 
 export const STEAM_OFFER_CLASSIFICATIONS = ["official", "authorized", "keyshop"] as const;
@@ -38,6 +40,33 @@ export type SteamGameOffer = {
   readonly observedAt: string | null;
 };
 
+// Bundle externo (V1: ITAD). No es una oferta: tiene tiers, varios ítems y caduca. El ahorro NO se
+// calcula ni se representa en este contrato.
+export type SteamBundleTierItem = {
+  readonly title: string;
+  readonly type: string | null;
+};
+
+export type SteamBundleTier = {
+  readonly priceMinor: number | null;
+  readonly currency: string | null;
+  readonly addon: boolean;
+  readonly games: readonly SteamBundleTierItem[];
+};
+
+export type SteamGameBundle = {
+  readonly bundleKey: string | null;
+  readonly title: string;
+  readonly shopName: string | null;
+  readonly pageUrl: string | null;
+  readonly dealUrl: string | null;
+  readonly details: string | null;
+  readonly publishedAt: string | null;
+  readonly expiresAt: string | null;
+  readonly observedAt: string | null;
+  readonly tiers: readonly SteamBundleTier[];
+};
+
 export type SteamGame = SteamSearchResult & {
   readonly isFree: boolean;
   readonly currency: string | null;
@@ -53,6 +82,9 @@ export type SteamGame = SteamSearchResult & {
   readonly offersStale: boolean;
   readonly ggDealsRefreshedAt: string | null;
   readonly ggDealsStale: boolean;
+  readonly bundles: readonly SteamGameBundle[];
+  readonly bundlesRefreshedAt: string | null;
+  readonly bundlesStale: boolean;
 };
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -80,6 +112,13 @@ function toPercent(value: unknown): number | null {
 
 function toText(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+// Igual que `toText`, pero acotado: los textos de bundle (título, tienda, detalle) son de forma libre
+// y no deben inflar la respuesta ni el render.
+function toBoundedText(value: unknown, maxLength: number): string | null {
+  const text = toText(value);
+  return text === null ? null : text.slice(0, maxLength);
 }
 
 function toCurrencyCode(value: unknown): string | null {
@@ -167,7 +206,9 @@ function normalizeSearchResult(value: unknown): SteamSearchResult | null {
     appId,
     name,
     type: toText(value.type ?? value.Type),
-    imageUrl: toText(value.imageUrl ?? value.ImageUrl)
+    imageUrl: toText(value.imageUrl ?? value.ImageUrl),
+    hasDetails: (value.hasDetails ?? value.HasDetails) === true,
+    refreshedAt: toIsoDateTime(value.refreshedAt ?? value.RefreshedAt)
   };
 }
 
@@ -238,6 +279,96 @@ export function normalizeSteamOffers(input: unknown): readonly SteamGameOffer[] 
     : [];
 }
 
+// Un bundle con tier ilegible se conserva: el tier se descarta, no el bundle. Se acotan tiers e ítems
+// para que un payload abusivo no infle la respuesta.
+const MAX_BUNDLES = 25;
+const MAX_BUNDLE_TIERS = 20;
+const MAX_BUNDLE_TIER_GAMES = 50;
+const MAX_BUNDLE_TITLE_LENGTH = 200;
+const MAX_BUNDLE_SHOP_NAME_LENGTH = 120;
+const MAX_BUNDLE_DETAILS_LENGTH = 600;
+
+function normalizeBundleTierItem(value: unknown): SteamBundleTierItem | null {
+  const record = isRecord(value) ? value : null;
+  const title = toBoundedText(record === null ? value : read(record, "title"), MAX_BUNDLE_TITLE_LENGTH);
+  if (title === null) return null;
+
+  return {
+    title,
+    type: toBoundedText(record === null ? null : read(record, "type"), MAX_BUNDLE_TITLE_LENGTH)
+  };
+}
+
+function normalizeBundleTier(value: unknown): SteamBundleTier | null {
+  if (!isRecord(value)) return null;
+
+  const games: SteamBundleTierItem[] = [];
+  const rawGames = read(value, "games");
+  if (Array.isArray(rawGames)) {
+    for (const entry of rawGames) {
+      const item = normalizeBundleTierItem(entry);
+      if (item === null) continue;
+      games.push(item);
+      if (games.length === MAX_BUNDLE_TIER_GAMES) break;
+    }
+  }
+
+  return {
+    priceMinor: toPriceMinor(read(value, "priceMinor")),
+    currency: toCurrencyCode(read(value, "currency")),
+    addon: read(value, "addon") === true,
+    games
+  };
+}
+
+function normalizeBundle(value: unknown): SteamGameBundle | null {
+  if (!isRecord(value)) return null;
+
+  // El título es la única identidad mínima: sin él no hay nada que mostrar ni enlazar.
+  const title = toBoundedText(read(value, "title"), MAX_BUNDLE_TITLE_LENGTH);
+  if (title === null) return null;
+
+  const tiers: SteamBundleTier[] = [];
+  const rawTiers = read(value, "tiers");
+  if (Array.isArray(rawTiers)) {
+    for (const entry of rawTiers) {
+      const tier = normalizeBundleTier(entry);
+      if (tier === null) continue;
+      tiers.push(tier);
+      if (tiers.length === MAX_BUNDLE_TIERS) break;
+    }
+  }
+
+  return {
+    bundleKey: toBoundedText(
+      read(value, "bundleKey") ?? read(value, "providerBundleId") ?? read(value, "id"),
+      MAX_BUNDLE_TITLE_LENGTH
+    ),
+    title,
+    shopName: toBoundedText(read(value, "shopName"), MAX_BUNDLE_SHOP_NAME_LENGTH),
+    pageUrl: toHttpsUrl(read(value, "pageUrl")),
+    dealUrl: toHttpsUrl(read(value, "dealUrl")),
+    details: toBoundedText(read(value, "details"), MAX_BUNDLE_DETAILS_LENGTH),
+    publishedAt: toIsoDateTime(read(value, "publishedAt")),
+    expiresAt: toIsoDateTime(read(value, "expiresAt")),
+    observedAt: toIsoDateTime(read(value, "observedAt")),
+    tiers
+  };
+}
+
+export function normalizeSteamBundles(input: unknown): readonly SteamGameBundle[] {
+  if (!Array.isArray(input)) return [];
+
+  const bundles: SteamGameBundle[] = [];
+  for (const entry of input) {
+    const bundle = normalizeBundle(entry);
+    if (bundle === null) continue;
+    bundles.push(bundle);
+    if (bundles.length === MAX_BUNDLES) break;
+  }
+  return bundles;
+}
+
 export function normalizeSteamGame(input: unknown): SteamGame | null {
   const value = isRecord(input) && isRecord(input.game ?? input.Game) ? input.game ?? input.Game : input;
   const game = normalizeSearchResult(value);
@@ -258,6 +389,9 @@ export function normalizeSteamGame(input: unknown): SteamGame | null {
     offersRefreshedAt: toIsoDateTime(read(value, "offersRefreshedAt")),
     offersStale: read(value, "offersStale") === true,
     ggDealsRefreshedAt: toIsoDateTime(read(value, "ggDealsRefreshedAt")),
-    ggDealsStale: read(value, "ggDealsStale") === true
+    ggDealsStale: read(value, "ggDealsStale") === true,
+    bundles: normalizeSteamBundles(read(value, "bundles")),
+    bundlesRefreshedAt: toIsoDateTime(read(value, "bundlesRefreshedAt")),
+    bundlesStale: read(value, "bundlesStale") === true
   };
 }

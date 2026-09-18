@@ -50,6 +50,7 @@ CREATE TABLE steam_games (
     itad_game_id VARCHAR(36),
     offers_refreshed_at TIMESTAMPTZ,
     ggdeals_refreshed_at TIMESTAMPTZ,
+    bundles_refreshed_at TIMESTAMPTZ,
     region VARCHAR(2) NOT NULL,
     observed_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -113,6 +114,48 @@ CREATE TABLE game_offers (
 );
 
 CREATE INDEX idx_game_offers_game ON game_offers(steam_game_id);
+
+-- Canonical external bundle snapshot, keyed by (source, bundle_key) and shared by every game it was
+-- seen in. Not an offer: bundles never take part in the price comparison and are never written to
+-- game_offers. deal_url and page_url are the provider URLs verbatim (affiliate tag included), validated
+-- HTTPS only; tiers_json is the sanitized tier list (camelCase, no item ids, no raw payload).
+CREATE TABLE external_bundles (
+    external_bundle_id BIGSERIAL PRIMARY KEY,
+    source VARCHAR(16) NOT NULL,
+    bundle_key VARCHAR(128) NOT NULL,
+    title VARCHAR(512) NOT NULL,
+    shop_id VARCHAR(32),
+    shop_name VARCHAR(128),
+    page_url VARCHAR(1024),
+    deal_url VARCHAR(1024),
+    details VARCHAR(600),
+    published_at TIMESTAMPTZ,
+    tiers_json JSONB,
+    expires_at TIMESTAMPTZ,
+    observed_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100),
+    updated_by VARCHAR(100),
+    CONSTRAINT uq_external_bundles UNIQUE (source, bundle_key)
+);
+
+-- Which queried game a bundle was seen in. source is carried on the relation so a provider refresh
+-- purges only its own links; a game refresh never touches another game's relations.
+CREATE TABLE external_bundle_games (
+    external_bundle_game_id BIGSERIAL PRIMARY KEY,
+    external_bundle_id BIGINT NOT NULL REFERENCES external_bundles(external_bundle_id) ON DELETE CASCADE,
+    steam_game_id INT NOT NULL REFERENCES steam_games(steam_game_id) ON DELETE CASCADE,
+    source VARCHAR(16) NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100),
+    updated_by VARCHAR(100),
+    CONSTRAINT uq_external_bundle_games UNIQUE (external_bundle_id, steam_game_id)
+);
+
+CREATE INDEX idx_external_bundle_games_game ON external_bundle_games(steam_game_id, source);
 
 -- Daily FX rate snapshot; one row per (base, quote, rate_date). No audit fields: the row is the observation.
 CREATE TABLE fx_rates (

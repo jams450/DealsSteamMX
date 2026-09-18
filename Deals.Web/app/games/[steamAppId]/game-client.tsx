@@ -6,7 +6,7 @@ import { ExternalLink, Gamepad2 } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/ui/cn";
-import type { SteamGame, SteamGameOffer } from "@/lib/contracts/steam";
+import type { SteamBundleTier, SteamGame, SteamGameBundle, SteamGameOffer } from "@/lib/contracts/steam";
 import { getSteamGame, refreshSteamGame } from "@/app/steam/_lib/steam-api";
 import { formatCurrency } from "@/lib/format/currency";
 
@@ -79,6 +79,12 @@ function safeDealUrl(value: string | null) {
   } catch {
     return null;
   }
+}
+
+// Sin ahorro en V1: el tier solo declara su propio precio y moneda, sin comparación ni verde.
+function tierPrice(tier: SteamBundleTier) {
+  if (tier.priceMinor === null || tier.currency === null) return { display: "Precio no disponible", muted: true };
+  return { display: tier.priceMinor === 0 ? "Gratis" : formatMinor(tier.priceMinor, tier.currency), muted: false };
 }
 
 // Única base comparable entre tiendas: el snapshot en MXN. La moneda original nunca se compara.
@@ -471,6 +477,92 @@ function OfferGroup({ id, heading, gameName, offers, cheapest }: OfferGroupProps
   );
 }
 
+interface BundleCardProps {
+  readonly bundle: SteamGameBundle;
+  readonly gameName: string;
+}
+
+/**
+ * Bundle externo: bloque propio, nunca una fila de ofertas ni parte del «mejor precio». Muestra tiers
+ * con su precio y moneda, los ítems incluidos, la caducidad y el enlace del proveedor. **Sin cifra de
+ * ahorro**: V1 no cruza bundles con precios individuales ni con biblioteca poseída.
+ */
+function BundleCard({ bundle, gameName }: BundleCardProps) {
+  const expiresDisplay = formatObserved(bundle.expiresAt);
+  const publishedDisplay = formatObserved(bundle.publishedAt);
+  const observedDisplay = formatObserved(bundle.observedAt);
+  const href = safeDealUrl(bundle.dealUrl ?? bundle.pageUrl);
+
+  return (
+    <article className="space-y-3 rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4">
+      <p className="sr-only">Bundle de {gameName}</p>
+      <div className="space-y-1">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {href ? (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+            >
+              {bundle.title}
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+              <span className="sr-only">(se abre en una pestaña nueva)</span>
+            </a>
+          ) : (
+            <span className="text-sm font-semibold text-primary">{bundle.title}</span>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+          {bundle.shopName ? <span className="font-semibold text-secondary">{bundle.shopName}</span> : null}
+          {publishedDisplay ? <span>Publicado {publishedDisplay}</span> : null}
+          {expiresDisplay ? <span>Expira {expiresDisplay}</span> : null}
+          {observedDisplay ? <span>Observado {observedDisplay}</span> : null}
+        </div>
+      </div>
+
+      {bundle.details ? <p className="text-xs text-secondary">{bundle.details}</p> : null}
+
+      {bundle.tiers.length > 0 ? (
+        <ul className="space-y-3">
+          {bundle.tiers.map((tier, tierIndex) => {
+            const price = tierPrice(tier);
+            return (
+              <li key={tierIndex} className="border-t border-default pt-3 first:border-t-0 first:pt-0">
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <span className={cn("deal-price", price.muted ? "text-muted" : "text-primary")}>{price.display}</span>
+                  {tier.currency ? (
+                    <span className="text-xs font-semibold uppercase text-secondary">{tier.currency}</span>
+                  ) : null}
+                  {tier.addon ? <span className="tabler-badge tabler-badge-warning">Addon</span> : null}
+                  {tier.games.length === 0 ? (
+                    <span className="tabler-badge tabler-badge-muted">Contenido no detallado</span>
+                  ) : null}
+                </div>
+                {tier.games.length > 0 ? (
+                  <ul className="mt-2 flex flex-wrap gap-1">
+                    {tier.games.map((item, itemIndex) => {
+                      const typeLabel = item.type && item.type.toLowerCase() !== "game" ? item.type : null;
+                      return (
+                        <li key={`${item.title}-${itemIndex}`} className="tabler-badge tabler-badge-muted">
+                          {item.title}
+                          {typeLabel ? <span className="ml-1 text-muted">· {typeLabel}</span> : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p className="tabler-badge tabler-badge-muted">Sin tiers publicados por el proveedor</p>
+      )}
+    </article>
+  );
+}
+
 export function GameClient({ appId }: GameClientProps) {
   const [game, setGame] = useState<SteamGame | null>(null);
   const [loading, setLoading] = useState(true);
@@ -544,6 +636,7 @@ export function GameClient({ appId }: GameClientProps) {
   const observedDisplay = formatObserved(game.observedAt);
   const itadRefreshedDisplay = formatObserved(game.offersRefreshedAt);
   const ggDealsRefreshedDisplay = formatObserved(game.ggDealsRefreshedAt);
+  const bundlesRefreshedDisplay = formatObserved(game.bundlesRefreshedAt);
 
   const coverUrl = game.imageUrl && !coverFailed ? game.imageUrl : null;
   const storeUrl = steamStoreUrl(game.appId);
@@ -559,6 +652,8 @@ export function GameClient({ appId }: GameClientProps) {
   ];
   const totalOffers = itadOffers.length + ggDealsOffers.length;
   const stale = game.offersStale || game.ggDealsStale;
+  // Activos primero; dentro de cada grupo se respeta el orden del proveedor.
+  const sortedBundles = [...game.bundles];
   const historyCandidates = historicalLowCandidates(game, game.offers ?? []);
   const globalHistoricalLow = historyCandidates.length > 0
     ? historyCandidates.reduce((lowest, candidate) => candidate.mxnMinor < lowest.mxnMinor ? candidate : lowest)
@@ -849,6 +944,47 @@ export function GameClient({ appId }: GameClientProps) {
           </div>
         )}
       </section>
+
+      {sortedBundles.length > 0 ? (
+        <section className="app-card space-y-4 p-5" aria-labelledby="bundles-heading">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted">Bundles por proveedor</p>
+            <h2 id="bundles-heading" className="text-xl font-semibold tracking-tight text-primary">Bundles encontrados</h2>
+            <p className="text-xs text-muted">
+              Paquetes que incluyen este juego, según ITAD. Se muestran aparte de las ofertas: un bundle
+              tiene tiers y varios ítems, y caduca. No se calcula ni se muestra ahorro.
+            </p>
+            <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm font-semibold text-secondary">
+              <span>Datos de bundles:</span>
+              <AttributionLink href={ITAD_ATTRIBUTION_URL} label="IsThereAnyDeal" />
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="tabler-badge tabler-badge-muted">
+              {sortedBundles.length === 1 ? "1 bundle" : `${sortedBundles.length} bundles`}
+            </span>
+            {bundlesRefreshedDisplay ? (
+              <span className="tabler-badge tabler-badge-info">Bundles actualizado {bundlesRefreshedDisplay}</span>
+            ) : (
+              <span className="tabler-badge tabler-badge-warning">Sin fecha de actualización de bundles</span>
+            )}
+            {game.bundlesStale ? (
+              <span className="tabler-badge tabler-badge-warning">Bundles posiblemente desactualizados</span>
+            ) : null}
+          </div>
+
+          <div className="space-y-4">
+            {sortedBundles.map((bundle, bundleIndex) => (
+              <BundleCard
+                key={bundle.bundleKey ?? `${bundle.title}-${bundleIndex}`}
+                bundle={bundle}
+                gameName={game.name}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
     </div>
   );
 }

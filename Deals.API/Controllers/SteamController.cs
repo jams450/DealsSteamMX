@@ -3,12 +3,14 @@ using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Steam;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Deals.API.Controllers;
 
 [ApiController]
 [Route("api/steam")]
 [Authorize(Policy = "UserWithId")]
+[EnableRateLimiting("steam-read")]
 public sealed class SteamController(ISteamGameService steamGameService) : ControllerBase
 {
     [HttpGet("search")]
@@ -43,6 +45,7 @@ public sealed class SteamController(ISteamGameService steamGameService) : Contro
         FetchGame(appId, forceRefresh: false, cancellationToken);
 
     [HttpPost("games/{appId:int}/refresh")]
+    [EnableRateLimiting("steam-refresh")]
     public Task<ActionResult<SteamGameResponse>> RefreshGame(
         int appId,
         CancellationToken cancellationToken) =>
@@ -65,7 +68,7 @@ public sealed class SteamController(ISteamGameService steamGameService) : Contro
     }
 
     private static SteamSearchResponse ToResponse(SteamSearchResult result) =>
-        new(result.AppId, result.Name, result.Type, result.ImageUrl);
+        new(result.AppId, result.Name, result.Type, result.ImageUrl, result.HasDetails, result.RefreshedAt);
 
     private static SteamGameResponse ToResponse(SteamGameDetails game) =>
         new(game.AppId, game.Name, game.Type, game.ImageUrl, game.IsFree, game.Currency, game.InitialPriceMinor,
@@ -75,7 +78,22 @@ public sealed class SteamController(ISteamGameService steamGameService) : Contro
             game.OffersRefreshedAt,
             game.OffersStale,
             game.GgDealsRefreshedAt,
-            game.GgDealsStale);
+            game.GgDealsStale,
+            (game.Bundles ?? []).Select(ToResponse).ToList(),
+            game.BundlesRefreshedAt,
+            game.BundlesStale);
+
+    private static SteamGameBundleResponse ToResponse(SteamGameBundle bundle) =>
+        new(bundle.Source, bundle.BundleKey, bundle.Title, bundle.ShopId, bundle.ShopName,
+            bundle.PageUrl, bundle.DealUrl, bundle.Details, bundle.PublishedAt, bundle.ExpiresAt,
+            bundle.ObservedAt,
+            bundle.Tiers.Select(ToResponse).ToList());
+
+    private static SteamGameBundleTierResponse ToResponse(SteamGameBundleTier tier) =>
+        new(tier.PriceMinor, tier.Currency, tier.Addon, tier.Games.Select(ToResponse).ToList());
+
+    private static SteamGameBundleTierGameResponse ToResponse(SteamGameBundleTierGame game) =>
+        new(game.Title, game.Type);
 
     private static SteamGameOfferResponse ToResponse(SteamGameOffer offer) =>
         new(offer.Source, offer.OfferKey, offer.ShopId, offer.ShopName, offer.Classification,

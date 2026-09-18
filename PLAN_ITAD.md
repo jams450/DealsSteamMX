@@ -1,10 +1,10 @@
 # DealExt: plan de integración ITAD
 
-Estado: **fases 1–4 completadas** (implementadas sin commitear). Fase 5 pendiente.
+Estado: **comparador de precios implementado y pendiente de commit/despliegue/validación runtime**. Incluye el cliente y la persistencia de ITAD (fases 1–4): identidad, ofertas por tienda, FX USD→MXN, BFF y UI. El trabajo amplio sigue sin commitear. La fase 5 (alertas/Telegram) está pendiente y los bundles externos quedan diferidos → `PLAN_BUNDLES.md`.
 
 Este documento refleja el estado real del código, no el plan original. Lo implementado está verificado por lectura cruzada entre entidades, DDL, servicios y consumidores.
 
-Continúa en `PLAN_WISHLIST.md`. Leer también `AGENTS.md` y `PLAN_BASE_MVP.md`.
+Continúa en `PLAN_WISHLIST.md`. Los bundles externos se documentan aparte en `PLAN_BUNDLES.md`. Leer también `AGENTS.md` y `PLAN_BASE_MVP.md`.
 
 ## 1. Decisiones vigentes
 
@@ -144,6 +144,6 @@ Resumen:
 
 - Keyshops y grey market (ITAD no los cubre; requiere gg.deals u otro proveedor).
 - OAuth2 con ITAD y webhooks `notification-waitlist`.
-- Bundles externos (`prices/v3` no los expone).
+- Bundles externos: `prices/v3` no los expone, así que no son una carencia del comparador de precios. Es una fase propia y separada → `PLAN_BUNDLES.md`.
 - Conversión FX histórica.
 - Divisas distintas a USD→MXN.

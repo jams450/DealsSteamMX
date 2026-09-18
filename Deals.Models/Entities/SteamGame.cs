@@ -59,6 +59,13 @@ public class SteamGame : BaseModel
     [Column("ggdeals_refreshed_at", TypeName = "timestamp with time zone")]
     public DateTime? GgDealsRefreshedAt { get; set; }
 
+    /// <summary>
+    /// Last time the external bundles of this game were refreshed. Independent of the offer timestamps:
+    /// a bundle refresh failure must not mark the offers stale, nor the other way around.
+    /// </summary>
+    [Column("bundles_refreshed_at", TypeName = "timestamp with time zone")]
+    public DateTime? BundlesRefreshedAt { get; set; }
+
     [Column("region")]
     [Required]
     [StringLength(2)]
@@ -70,4 +77,6 @@ public class SteamGame : BaseModel
     public ICollection<SteamPriceObservation> PriceObservations { get; set; } = new List<SteamPriceObservation>();
 
     public ICollection<GameOffer> Offers { get; set; } = new List<GameOffer>();
+
+    public ICollection<ExternalBundleGame> BundleLinks { get; set; } = new List<ExternalBundleGame>();
 }

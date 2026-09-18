@@ -20,6 +20,8 @@ public class AppDbContext : DbContext
     public DbSet<SteamGame> SteamGames { get; set; } = null!;
     public DbSet<SteamPriceObservation> SteamPriceObservations { get; set; } = null!;
     public DbSet<GameOffer> GameOffers { get; set; } = null!;
+    public DbSet<ExternalBundle> ExternalBundles { get; set; } = null!;
+    public DbSet<ExternalBundleGame> ExternalBundleGames { get; set; } = null!;
     public DbSet<FxRate> FxRates { get; set; } = null!;
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
@@ -86,6 +88,25 @@ public class AppDbContext : DbContext
                 .WithOne(e => e.SteamGame)
                 .HasForeignKey(e => e.SteamGameId)
                 .OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(e => e.BundleLinks)
+                .WithOne(e => e.SteamGame)
+                .HasForeignKey(e => e.SteamGameId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ExternalBundle>(entity =>
+        {
+            entity.HasIndex(e => new { e.Source, e.BundleKey }).IsUnique();
+            entity.HasMany(e => e.Links)
+                .WithOne(e => e.Bundle)
+                .HasForeignKey(e => e.ExternalBundleId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ExternalBundleGame>(entity =>
+        {
+            entity.HasIndex(e => new { e.ExternalBundleId, e.SteamGameId }).IsUnique();
+            entity.HasIndex(e => new { e.SteamGameId, e.Source });
         });
 
         modelBuilder.Entity<GameOffer>(entity =>

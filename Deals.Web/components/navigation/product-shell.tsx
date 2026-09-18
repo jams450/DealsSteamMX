@@ -1,12 +1,11 @@
 "use client";
 
-import { Gamepad2, Menu, Search, X } from "lucide-react";
+import { Gamepad2, Menu, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/ui/cn";
 import { isRouteActive, productNavItems } from "./nav-config";
 
@@ -57,33 +56,6 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
       document.body.style.overflow = previousOverflow;
     };
   }, [mobileOpen]);
-
-  function SearchForm({ mobile = false }: { mobile?: boolean }) {
-    const inputId = mobile ? "shell-search-mobile" : "shell-search";
-    return (
-      <form
-        role="search"
-        action="/search"
-        method="get"
-        onSubmit={mobile ? () => setMobileOpen(false) : undefined}
-        className={cn("flex items-center gap-2", mobile && "mb-4")}
-      >
-        <div className="min-w-0 flex-1">
-          <Input
-            id={inputId}
-            name="q"
-            type="search"
-            aria-label="Buscar juegos"
-            placeholder="Buscar un juego..."
-            autoComplete="off"
-          />
-        </div>
-        <Button type="submit" variant="secondary" className="h-10 shrink-0 px-3" aria-label="Buscar juegos">
-          <Search className="h-4 w-4" aria-hidden="true" />
-        </Button>
-      </form>
-    );
-  }
 
   function Navigation({ mobile = false }: { mobile?: boolean }) {
     return (
@@ -144,9 +116,6 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
           <div className="hidden md:block">
             <Navigation />
           </div>
-          <div className="hidden min-w-0 flex-1 justify-end lg:flex">
-            <SearchForm />
-          </div>
           <div className="ml-auto flex items-center gap-2">
             {meta ? <div className="hidden sm:block">{meta}</div> : null}
             <ThemeToggle className="hidden sm:inline-flex" />
@@ -179,7 +148,6 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
                 <X className="h-5 w-5" aria-hidden="true" />
               </Button>
             </div>
-            <SearchForm mobile />
             <Navigation mobile />
             <ThemeToggle className="mt-6 w-full" />
           </aside>

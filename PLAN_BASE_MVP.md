@@ -2,6 +2,8 @@
 
 Estado: aprobado.
 
+Fase actual completada: el **comparador de precios** —Steam directo + ofertas oficiales/autorizadas de ITAD + agregado de keyshops de gg.deals + conversión FX a MXN— está implementado y pendiente de commit/despliegue/validación runtime. Los **bundles externos** no forman parte de esta fase: son una fase futura y separada, documentada en `PLAN_BUNDLES.md`. No deben tratarse como alcance incompleto del comparador.
+
 Este documento es la referencia para agentes y personas que trabajen en el repositorio. Leer también `AGENTS.md` antes de modificar código.
 
 ## 1. Producto
@@ -13,18 +15,18 @@ El MVP debe permitir:
 1. Identificar un juego mediante su Steam App ID.
 2. Consultar el precio oficial regional de Steam en MXN.
 3. Consultar ofertas de tiendas oficiales o autorizadas mediante ITAD.
-4. Consultar bundles externos mediante ITAD.
-5. Consultar el precio agregado más bajo de keyshops mediante la API de gg.deals.
-6. Convertir precios no-MXN a una estimación en MXN mediante un proveedor FX.
-7. Mostrar claramente el origen, moneda y tipo de cada precio.
+4. Consultar el precio agregado más bajo de keyshops mediante la API de gg.deals.
+5. Convertir precios no-MXN a una estimación en MXN mediante un proveedor FX.
+6. Mostrar claramente el origen, moneda y tipo de cada precio.
 
 La comparación debe diferenciar:
 
 - precio regional real;
 - precio de tienda oficial o autorizada;
 - estimación convertida a MXN;
-- precio agregado de keyshops;
-- bundle externo.
+- precio agregado de keyshops.
+
+Los bundles externos (Humble, Fanatical, etc.) quedan fuera del comparador actual → `PLAN_BUNDLES.md`.
 
 ## 2. Base actual
 
@@ -100,8 +102,9 @@ IsThereAnyDeal proporciona:
 - ofertas de tiendas oficiales o autorizadas;
 - precio regular y descuento cuando estén disponibles;
 - mínimos históricos cuando estén disponibles;
-- bundles externos de tiendas como Humble o Fanatical;
 - identificación externa del juego.
+
+Los bundles externos de tiendas como Humble o Fanatical no se consultan en el comparador actual: quedan para `PLAN_BUNDLES.md`.
 
 ITAD no se debe usar para fingir que una oferta es precio regional MXN si la API devolvió otra moneda.
 
@@ -197,6 +200,8 @@ Distinguir cuando corresponda:
 - identificador de juego en ITAD;
 - identificador de gg.deals.
 
+El bundle ID de Steam se conserva como metadato de identidad de paquete de Steam. Usar bundles para calcular ahorro comparativo es trabajo diferido → `PLAN_BUNDLES.md`.
+
 Si un proveedor no encuentra el App ID, devolver estado parcial para ese proveedor. No sustituir silenciosamente por otra edición.
 
 ## 8. Modelo normalizado
@@ -230,25 +235,7 @@ Reglas monetarias:
 - Una oferta sin fecha de observación no debe considerarse válida.
 - No comparar ofertas con distinta confianza sin mostrar la categoría y el método.
 
-Modelo conceptual de bundle externo:
-
-```text
-ExternalBundle
-- source: itad
-- externalId
-- title
-- storeName
-- originalAmountMinor
-- originalCurrency
-- mxnAmountMinor: nullable
-- pricingType
-- includedItems
-- productUrl
-- observedAtUtc
-- expiresAtUtc: nullable
-```
-
-En V1 se muestra el bundle. El ahorro solo se calcula si el proveedor entrega contenido y precios comparables de forma inequívoca.
+Modelo conceptual de bundle externo: ver `PLAN_BUNDLES.md`. En el comparador actual no existe modelo, tabla, caché ni campo de respuesta de bundles.
 
 ## 9. Flujo de consulta
 
@@ -279,7 +266,6 @@ La respuesta debe separar como mínimo:
 bestOfficial
 bestAuthorized
 bestKeyshop
-externalBundles
 sourceStatuses
 ```
 
@@ -294,7 +280,6 @@ Namespaces sugeridos:
 ```text
 dealext:steam:offers:{steamAppId}
 dealext:itad:offers:{steamAppId}
-dealext:itad:bundles:{steamAppId}
 dealext:ggdeals:keyshop:{steamAppId}
 dealext:fx:{base}:{quote}
 ```
@@ -332,8 +317,9 @@ Agregar tablas solo cuando el flujo las necesite. Candidatos:
 - `stores`;
 - `game_source_mappings`;
 - `price_quotes`;
-- `external_bundles`;
 - `fx_rates`.
+
+`external_bundles` pertenece a `PLAN_BUNDLES.md`, no a esta fase.
 
 No crear tablas de alertas, compras, recomendaciones o actividad de usuario en el MVP.
 
@@ -362,18 +348,21 @@ La página de juego debe mostrar por separado:
 - mejor tienda oficial;
 - mejor tienda autorizada;
 - mejor keyshop agregado;
-- bundles externos;
 - moneda original;
 - equivalente MXN;
 - tipo de precio;
 - fecha de actualización;
 - estado de cada fuente.
 
+Los bundles externos no se muestran en el comparador actual → `PLAN_BUNDLES.md`.
+
 Usar `csrfFetch`, `parseApiError`, `fetchApiWithAutoRefresh` y las utilidades de sesión existentes. No crear un segundo flujo de autenticación.
 
-Una nueva ruta privada debe añadirse a `privateRoutes` y al matcher de `Deals.Web/middleware.ts`.
+Una ruta nueva queda protegida por defecto: el matcher global de `Deals.Web/middleware.ts` protege todo salvo lo declarado público en `isPublicRoute` (`Deals.Web/lib/security/route-policy.ts`). No existe una lista `privateRoutes` que mantener.
 
 ## 13. Fases de implementación
+
+Estas son las fases del comparador de precios: la fase actual completada (implementada y pendiente de commit/despliegue/validación runtime). Los bundles externos no pertenecen a ninguna de ellas → `PLAN_BUNDLES.md`.
 
 ### Fase 0: Base
 
@@ -383,7 +372,7 @@ Una nueva ruta privada debe añadirse a `privateRoutes` y al matcher de `Deals.W
 
 ### Fase 1: Contratos
 
-- Crear modelos de oferta, dinero, fuente, clasificación, bundle y estado de proveedor.
+- Crear modelos de oferta, dinero, fuente, clasificación y estado de proveedor.
 - Definir DTOs de API y contratos TypeScript.
 - Definir la respuesta parcial por fuente.
 - No llamar todavía a APIs externas.
@@ -406,7 +395,6 @@ Una nueva ruta privada debe añadirse a `privateRoutes` y al matcher de `Deals.W
 - Resolver `steamAppId` a identificador ITAD.
 - Consultar ofertas actuales e históricos disponibles.
 - Clasificar tiendas mediante configuración local.
-- Consultar y mostrar bundles externos.
 
 ### Fase 5: gg.deals
 
@@ -452,12 +440,11 @@ Antes de considerar terminado el MVP:
 2. Consultar un juego válido por Steam App ID.
 3. Confirmar precio regional Steam en MXN.
 4. Confirmar una oferta ITAD o estado parcial correcto.
-5. Confirmar bundle externo cuando exista.
-6. Confirmar precio agregado de gg.deals cuando exista.
-7. Confirmar que USD convertido aparece como estimación.
-8. Confirmar que un fallo de una fuente no elimina las demás ofertas.
-9. Confirmar que no se ejecuta scraping.
-10. Confirmar que no hay claves de proveedor en el frontend.
+5. Confirmar precio agregado de gg.deals cuando exista.
+6. Confirmar que USD convertido aparece como estimación.
+7. Confirmar que un fallo de una fuente no elimina las demás ofertas.
+8. Confirmar que no se ejecuta scraping.
+9. Confirmar que no hay claves de proveedor en el frontend.
 
 ## 15. Reglas para agentes
 
@@ -475,4 +462,5 @@ Antes de considerar terminado el MVP:
 - No borrar Users/auth porque todavía no formen parte de la primera pantalla.
 - No mezclar cambios de infraestructura con cambios de dominio sin necesidad.
 - No afirmar que una integración funciona hasta ejecutar una prueba real o una verificación documentada.
+- No introducir bundles externos en el comparador: es una fase separada (`PLAN_BUNDLES.md`) y el comparador actual no debe regresar.
 - Si el código contradice una decisión de este documento, detenerse y corregir el plan o pedir una decisión explícita.

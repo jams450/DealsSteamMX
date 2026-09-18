@@ -27,6 +27,40 @@ public sealed record SteamGameOffer(
     int? HistoryLowAllMinor = null,
     string? HistoryLowCurrency = null);
 
+/// <summary>
+/// One item listed in a bundle tier, as the display contract expects it: title plus optional type. The
+/// provider game id is deliberately not persisted nor exposed.
+/// </summary>
+public sealed record SteamGameBundleTierGame(string Title, string? Type);
+
+/// <summary>
+/// One tier of a bundle: its own price and currency (null when the provider reports none), the addon flag
+/// and the items it lists. The price is displayed as published; no saving is ever computed from it.
+/// </summary>
+public sealed record SteamGameBundleTier(
+    int? PriceMinor,
+    string? Currency,
+    bool Addon,
+    IReadOnlyList<SteamGameBundleTierGame> Games);
+
+/// <summary>
+/// One external bundle the game appears in. Purely informational: it is not comparable to an offer and
+/// never takes part in the price comparison, but it does show the provider prices per tier as reported.
+/// </summary>
+public sealed record SteamGameBundle(
+    string Source,
+    string BundleKey,
+    string Title,
+    string? ShopId,
+    string? ShopName,
+    string? PageUrl,
+    string? DealUrl,
+    string? Details,
+    DateTime? PublishedAt,
+    DateTime? ExpiresAt,
+    DateTime ObservedAt,
+    IReadOnlyList<SteamGameBundleTier> Tiers);
+
 public sealed record SteamGameDetails(
     int AppId,
     string Name,
@@ -45,4 +79,7 @@ public sealed record SteamGameDetails(
     DateTime? OffersRefreshedAt = null,
     bool OffersStale = false,
     DateTime? GgDealsRefreshedAt = null,
-    bool GgDealsStale = false);
+    bool GgDealsStale = false,
+    IReadOnlyList<SteamGameBundle>? Bundles = null,
+    DateTime? BundlesRefreshedAt = null,
+    bool BundlesStale = false);

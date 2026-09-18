@@ -441,7 +441,10 @@ stickyActionsColumn, enableGlobalFilter, globalFilterPlaceholder, globalFilterFn
   known, and the gg.deals group must never read as store-by-store detail.
   Still out of scope: any provider other than ITAD and gg.deals, per-seller keyshop prices (a gg.deals
   Premium feature), grey-market sourcing details, price history charts, alerts/watchlists, currency
-  switching, bundles and historical FX — only the day's rate is used.
+  switching, bundles and historical FX — only the day's rate is used. **Bundles are out of scope for the
+  currently implemented comparator** (Steam + ITAD + gg.deals/FX) and are deferred to the repo-root
+  `PLAN_BUNDLES.md` as a separate future phase; nothing in this contract defines bundle UI, bundle
+  comparison, or bundle savings.
   **The `retail` bucket carries no classification badge:** it is an aggregate of official *and*
   authorized stores with no per-store identity, so the UI must not claim "Oficial" for it; the value
   arrives as `authorized` and the group note explains why no badge appears. The contract still keeps

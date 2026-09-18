@@ -13,6 +13,29 @@ import { searchSteam, suggestGames } from "@/app/steam/_lib/steam-api";
 const MIN_QUERY_LENGTH = 2;
 const SUGGESTION_DEBOUNCE_MS = 300;
 
+const refreshedFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
+
+// El normalizador ya descarta fechas inválidas; el guard evita que Intl.format lance si algo se cuela.
+function formatRefreshedAt(value: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : refreshedFormatter.format(date);
+}
+
+// Solo los resultados ya comparados llevan etiqueta; si falta la fecha, no se inventa nada.
+function ComparedMeta({ result }: { readonly result: SteamSearchResult }) {
+  if (!result.hasDetails) return null;
+
+  const refreshed = formatRefreshedAt(result.refreshedAt);
+
+  return (
+    <span className="mt-1 flex flex-wrap items-center gap-1.5">
+      <span className="tabler-badge tabler-badge-info">Ya comparado</span>
+      {refreshed ? <span className="text-xs text-muted">Actualizado {refreshed}</span> : null}
+    </span>
+  );
+}
+
 // 120x45 is the native `tiny_image` size; smaller on phones so the card still fits at 360px.
 function SteamThumb({ src, className }: { readonly src: string | null; readonly className?: string }) {
   const [failed, setFailed] = useState(false);
@@ -157,6 +180,7 @@ export function SearchClient() {
                     <span className="block text-xs text-muted">
                       AppID {item.appId}{item.type ? ` · ${item.type}` : ""}
                     </span>
+                    <ComparedMeta result={item} />
                   </span>
                 </Link>
               </li>
@@ -189,6 +213,7 @@ export function SearchClient() {
                     <span className="block text-xs text-muted">
                       AppID {result.appId}{result.type ? ` · ${result.type}` : ""}
                     </span>
+                    <ComparedMeta result={result} />
                   </span>
                   <span className="hidden shrink-0 self-center text-sm font-semibold text-accent sm:inline">
                     Ver precios

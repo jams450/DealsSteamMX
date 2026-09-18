@@ -258,9 +258,9 @@ Empezar por la wishlist de Steam: no necesita OAuth, ni cifrado de tokens, ni el
 - OAuth con ITAD y su waitlist.
 - Registro público de usuarios o multiusuario.
 - Refactor a una entidad `games` neutra: el anclaje actual a `steam_games` se mantiene.
-- Cálculo de bundles según juegos poseídos.
+- Cálculo de bundles según juegos poseídos: es la integración futura wishlist↔bundles, documentada en `PLAN_BUNDLES.md` (fuera de V1 de bundles).
 - Sincronización automática del export de Playnite (manual y semanal por decisión).
-- Keyshops y grey market.
+- Keyshops y grey market como proveedores propios de wishlist/alertas: no se añaden aquí. El comparador de precios actual **sí** incluye el agregado de keyshops de gg.deals en el detalle del juego, pero eso no se extiende a la wishlist ni al import.
 
 ## 12. Verificación
 

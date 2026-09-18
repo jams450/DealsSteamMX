@@ -35,8 +35,8 @@ app.UseApiOpenApiIfDevelopment();
 
 app.UseExceptionHandler();
 app.UseCors("Production");
-app.UseRateLimiter();
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseAuthorization();
 
 app.MapControllers();

@@ -1,10 +1,10 @@
 # DealExt: plan de integración gg.deals
 
-Estado: **implementado** (fases 1–4). Contrato externo verificado contra la documentación oficial y confirmado con una API key real (`region=us` devuelve USD). `dotnet build Deals.sln` y `pnpm build` en verde. Falta aplicar la migración y desplegar con la variable de entorno.
+Estado: **comparador implementado**, pendiente de commit/despliegue y de la validación runtime final (fases 1–4). Contrato externo verificado contra la documentación oficial y confirmado con una API key real (`region=us` devuelve USD). `dotnet build Deals.sln` y `pnpm build` en verde. Falta aplicar la migración y desplegar con la variable de entorno.
 
-Alcance: obtener el precio agregado de tiendas oficiales y de keyshops por Steam AppID mediante la API de gg.deals, convertirlo a MXN con el servicio FX existente y mostrarlo en el detalle del juego.
+Alcance: obtener el precio agregado de tiendas oficiales y de keyshops por Steam AppID mediante la API de gg.deals, convertirlo a MXN con el servicio FX existente y mostrarlo en el detalle del juego. Los bundles de gg.deals quedan fuera de esta fase → `PLAN_BUNDLES.md`.
 
-Continúa a `PLAN_ITAD.md`, `PLAN_WISHLIST.md` y `PLAN_TELEGRAM.md`. Leer también `AGENTS.md` y `PLAN_BASE_MVP.md`.
+Continúa a `PLAN_ITAD.md`, `PLAN_WISHLIST.md` y `PLAN_TELEGRAM.md`. Los bundles se documentan aparte en `PLAN_BUNDLES.md`. Leer también `AGENTS.md` y `PLAN_BASE_MVP.md`.
 
 ## 1. Decisiones tomadas
 
@@ -75,7 +75,7 @@ Detalles que condicionan el parser:
 - `POST /api/steam/games/{appId}/refresh` (`SteamController.cs:45`) y su reenvío por el BFF (`app/api/bff/steam/games/[appId]/route.ts:65`). El refresco es un **POST a una ruta**, no un query param.
 - En la UI, `offerMxnCell` (`game-client.tsx:51`) ya renderiza `≈`, la nota `Tasa · fecha · fuente` y el estado sin conversión para cualquier fila con forma de oferta.
 
-Nota: `PLAN_ITAD.md` describe ITAD y FX como "implementadas sin commitear"; ya están commiteadas. Ese header está desactualizado.
+Nota: el header de `PLAN_ITAD.md` ya no afirma que el trabajo esté commiteado; el comparador figura como implementado y pendiente de commit/despliegue/validación runtime, consistente con este documento.
 
 ## 4. Fase 1: cliente gg.deals
 
@@ -224,7 +224,7 @@ UI (`Deals.Web/app/games/[steamAppId]/game-client.tsx`):
 4. **`ItadHistoryLow` trae `yearToDate` y `threeMonths`** que se siguen parseando y descartando.
 5. **No hay aserciones versionadas.** El repo no tiene runner de pruebas; la verificación fue build más un guion transitorio en `/tmp`. La trampa del plural en `currentKeyshops` y el descarte silencioso en `toClassification` son los dos candidatos obvios a prueba permanente.
 6. **`PLAN_TELEGRAM.md` §5 fija la atribución como texto de ITAD.** Con un segundo proveedor debe resolverse por `source`.
-7. **`AGENTS.md` sigue describiendo `privateRoutes`** en `middleware.ts`, que no existe: el gate real es `lib/security/route-policy.ts#isPublicRoute`.
+7. **`AGENTS.md` describía `privateRoutes`** en `middleware.ts`, que no existe: el gate real es `lib/security/route-policy.ts#isPublicRoute` con el matcher global. Corregido en `AGENTS.md` y en `PLAN_BASE_MVP.md`.
 
 ## 9. Riesgos
 
@@ -246,7 +246,7 @@ UI (`Deals.Web/app/games/[steamAppId]/game-client.tsx`):
 ## 10. Fuera de alcance
 
 - Historial de precios navegable: la API no expone serie temporal.
-- Bundles vía `/bundles/by-steam-app-id` (fase futura).
+- Bundles vía `/bundles/by-steam-app-id`: no es una carencia de esta fase. Es la **fase 2 de `PLAN_BUNDLES.md`**, adicional y no sustituta del agregado de precios.
 - Webhooks y notificaciones push.
 - Identidad por vendedor de keyshop: es función del plan Premium.
 - Conversión a otras monedas además de USD→MXN.

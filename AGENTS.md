@@ -5,6 +5,9 @@ Operational map for this repo. Read this before changing code.
 ## What this is
 Reusable full-stack template. Backend: .NET 9 API (`Deals.API`, `Deals.BusinessLogic`, `Deals.Models`). Frontend: Next.js 15 App Router app that acts as a BFF (`Deals.Web`). Database: PostgreSQL via Npgsql EF Core. The expense domain was deleted on purpose; the admin **Users** feature is the reference vertical slice (backend, BFF, and UI).
 
+## Current phase
+The current phase is the **price comparator**: direct Steam price + ITAD official/authorized offers + gg.deals retail/keyshops aggregate + FX conversion to MXN (`PLAN_BASE_MVP.md`, `PLAN_ITAD.md`, `PLAN_GGDEALS.md`). It is implemented and pending commit/deploy/runtime validation; the checkout has wide uncommitted changes. External bundles have their own V1 **display-only** implementation on the same game detail (`PLAN_BUNDLES.md`): ITAD `games/overview/v2` discovery + `external_bundles`/`external_bundle_games`. Bundles never enter `game_offers`, `selectBestPrice` or any savings math. Savings calculation is still not implemented, and no live MX fixture has certified the parser yet — treat the ITAD bundle contract as pending runtime validation.
+
 ## Reality check
 - `Deals.sln` contains only the 3 backend projects. `Deals.Web` is a separate pnpm project, not in the solution.
 - No EF migrations workflow. `SQL/schema.sql` is the schema source of truth, `SQL/migrations/` holds dated manual migrations.
@@ -82,7 +85,7 @@ Concrete example: the Users feature. Follow the same shape.
    - BFF route: `Deals.Web/app/api/bff/<feature>/route.ts` (add `[id]/route.ts` as needed). Use `getServerSession()`, `fetchApiWithAutoRefresh`, `attachSessionCookie`, and `forbidden()` for admin-only.
    - Client API: `Deals.Web/app/<feature>/_lib/<feature>-api.ts` using `csrfFetch` + `parseApiError`.
    - Page: `Deals.Web/app/<feature>/page.tsx` (server component: `getServerSession` or `requireAdminSession`) plus client components beside it.
-9. Wire navigation: add the route to `Deals.Web/components/navigation/nav-config.ts`, and to `privateRoutes` and `config.matcher` in `Deals.Web/middleware.ts` (CSRF and session gating depend on the matcher).
+9. Wire navigation: add the route to `Deals.Web/components/navigation/nav-config.ts`. Route protection is opt-out: the global `config.matcher` in `Deals.Web/middleware.ts` already covers every app route, and `middleware.ts` calls `isPublicRoute` (`lib/security/route-policy.ts`) — a route is public only if it is listed there. There is no `privateRoutes` list to update.
 10. Verify: `dotnet build Deals.sln` and `pnpm build` in `Deals.Web`.
 
 ## Rename the template for a new project
@@ -125,7 +128,7 @@ docker network create shared-db-network
 - No test projects. Minimum verification is a build plus a live smoke of bootstrap-admin/login.
 - Keep the solution on .NET 9.
 - New registrations are created with `Active=true, Admin=false`. Set `admin=true` in the DB (or via a seeded admin) before `/users` is reachable.
-- A new private page is not gated until you add it to `privateRoutes` and `config.matcher` in `Deals.Web/middleware.ts`.
+- There is no `privateRoutes` list. A new page is protected by default: the global `config.matcher` in `Deals.Web/middleware.ts` covers every app route and `isPublicRoute` (`Deals.Web/lib/security/route-policy.ts`) is the only public allow-list. Add a page to that file only when it must be public.
 - The `ExceptionHandler` titles are Spanish; that is existing behavior, not a bug.
 - The CSRF cookie is JS-readable by design (double-submit). The session cookie stays httpOnly.
 - CORS only matters for direct browser-to-API calls. The normal path is server-side BFF proxying.

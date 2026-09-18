@@ -19,6 +19,13 @@ public sealed class GgDealsClient(HttpClient httpClient, GgDealsClientSettings s
     private const int MaxIdsPerRequest = 100;
 
     private const int MaxRetryWaitSeconds = 5;
+    private const int MaxUrlLength = 1024;
+
+    // Fixed, credential-free messages: an exception message must never carry the request URL (which
+    // holds the API key in its query string), the key itself, or any part of the payload.
+    private const string MalformedPayloadMessage = "GG.deals returned a malformed response.";
+    private const string UnsuccessfulPayloadMessage = "GG.deals did not report a successful response.";
+
     private static readonly TimeSpan FallbackRetryDelay = TimeSpan.FromSeconds(1);
     private static readonly IReadOnlyDictionary<int, GgDealsGamePrice> Empty =
         new Dictionary<int, GgDealsGamePrice>();
@@ -45,51 +52,69 @@ public sealed class GgDealsClient(HttpClient httpClient, GgDealsClientSettings s
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
-        if (document.RootElement.ValueKind != JsonValueKind.Object ||
-            !document.RootElement.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Object)
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("success", out var success) ||
+            success.ValueKind != JsonValueKind.True)
         {
-            return Empty;
+            throw new JsonException(UnsuccessfulPayloadMessage);
         }
 
-        var prices = new Dictionary<int, GgDealsGamePrice>();
-        foreach (var entry in data.EnumerateObject())
+        if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
         {
-            if (!int.TryParse(entry.Name, NumberStyles.Integer, CultureInfo.InvariantCulture, out var appId) ||
-                appId <= 0)
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        var prices = new Dictionary<int, GgDealsGamePrice>(ids.Count);
+        foreach (var appId in ids)
+        {
+            // Only the ids this call asked for are inspected; anything else the provider echoes back
+            // is ignored, so an unrelated malformed entry cannot fail an otherwise good response.
+            if (!data.TryGetProperty(appId.ToString(CultureInfo.InvariantCulture), out var entry))
             {
                 continue;
             }
 
-            // A JSON null (or anything that is not an object) means the game is not tracked by gg.deals.
-            if (entry.Value.ValueKind != JsonValueKind.Object)
+            // An explicit JSON null is the provider's authoritative "not tracked / no offers".
+            if (entry.ValueKind == JsonValueKind.Null)
             {
                 continue;
             }
 
-            var game = ToGamePrice(appId, entry.Value);
-            if (game != null)
+            // Any other non-object value is an unexpected shape: it must not be mistaken for
+            // "no offers", or the caller would purge the persisted snapshot.
+            if (entry.ValueKind != JsonValueKind.Object)
             {
-                prices[appId] = game;
+                throw new JsonException(MalformedPayloadMessage);
             }
+
+            prices[appId] = ToGamePrice(appId, entry);
         }
 
         return prices;
     }
 
-    private static GgDealsGamePrice? ToGamePrice(int appId, JsonElement game)
+    private static GgDealsGamePrice ToGamePrice(int appId, JsonElement game)
     {
-        var title = GetString(game, "title")?.Trim();
-        var url = GetString(game, "url")?.Trim();
-        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(url))
+        var title = ReadRequiredString(game, "title");
+        var url = ReadRequiredString(game, "url");
+        if (url.Length > MaxUrlLength ||
+            !Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
         {
-            return null;
+            throw new JsonException(MalformedPayloadMessage);
         }
 
-        var prices = GetElement(game, "prices");
-        var currency = prices is { ValueKind: JsonValueKind.Object } pricesObject
-            ? GetString(pricesObject, "currency")?.Trim()
-            : null;
+        if (!game.TryGetProperty("prices", out var prices) || prices.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        var currency = ReadRequiredString(prices, "currency").ToUpperInvariant();
+        if (currency.Length != 3 || !currency.All(char.IsAsciiLetter))
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
 
         // currentKeyshops and historicalKeyshops are PLURAL in the API. Do not "correct" them to the
         // singular form: the request still succeeds and those fields come back null in silence.
@@ -97,34 +122,88 @@ public sealed class GgDealsClient(HttpClient httpClient, GgDealsClientSettings s
             appId,
             title,
             url,
-            ToMinor(GetString(prices, "currentRetail")),
-            ToMinor(GetString(prices, "currentKeyshops")),
-            ToMinor(GetString(prices, "historicalRetail")),
-            ToMinor(GetString(prices, "historicalKeyshops")),
-            currency ?? string.Empty);
+            ReadPriceMinor(prices, "currentRetail"),
+            ReadPriceMinor(prices, "currentKeyshops"),
+            ReadPriceMinor(prices, "historicalRetail"),
+            ReadPriceMinor(prices, "historicalKeyshops"),
+            currency);
+    }
+
+    private static string ReadRequiredString(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out var value) || value.ValueKind != JsonValueKind.String)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        var text = value.GetString()?.Trim();
+        if (string.IsNullOrEmpty(text))
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        return text;
     }
 
     /// <summary>
-    /// Parses the provider's two-decimal string ("91.99") into minor units. Missing values, JSON null,
-    /// blank values, the literal "null" and unparseable values all become <see langword="null"/>; an
-    /// out-of-range amount is dropped the same way instead of overflowing.
+    /// Parses one optional price field into minor units. Absent properties and JSON null are the
+    /// documented "no price" and stay <see langword="null"/>. A present field that is not a valid,
+    /// finite, non-negative amount with room for the minor-unit conversion throws instead of turning
+    /// into a silent <see langword="null"/>, because a silently dropped price is indistinguishable
+    /// from an authoritative "no offers" and would purge the snapshot.
     /// </summary>
-    private static int? ToMinor(string? value)
+    private static int? ReadPriceMinor(JsonElement prices, string property)
     {
-        if (string.IsNullOrWhiteSpace(value) ||
-            string.Equals(value, "null", StringComparison.Ordinal))
+        if (!prices.TryGetProperty(property, out var value) || value.ValueKind == JsonValueKind.Null)
         {
             return null;
         }
 
-        if (!decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var amount))
+        decimal amount;
+        if (value.ValueKind == JsonValueKind.Number)
         {
-            return null;
+            if (!value.TryGetDecimal(out amount))
+            {
+                throw new JsonException(MalformedPayloadMessage);
+            }
+        }
+        else if (value.ValueKind == JsonValueKind.String)
+        {
+            // The provider sends JSON null for a missing price, but the literal "null" has also been
+            // observed. Kept as a defensive "no price": it can only make a price disappear, never
+            // fabricate one, and dropping it would fail an otherwise usable payload.
+            var text = value.GetString()?.Trim();
+            if (string.Equals(text, "null", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            if (string.IsNullOrEmpty(text) ||
+                !decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out amount))
+            {
+                throw new JsonException(MalformedPayloadMessage);
+            }
+        }
+        else
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        // System.Decimal cannot hold NaN or infinity, so a successfully parsed value is always finite
+        // and only the sign and the int range below need guarding.
+        if (amount < 0m)
+        {
+            throw new JsonException(MalformedPayloadMessage);
         }
 
         // Result stays decimal until the range check, so an outsized payload cannot overflow int.
         var minor = decimal.Round(amount * 100m, 0, MidpointRounding.AwayFromZero);
-        return minor < int.MinValue || minor > int.MaxValue ? null : (int)minor;
+        if (minor > int.MaxValue)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        return (int)minor;
     }
 
     private async Task<HttpResponseMessage> GetWithRetryAsync(
@@ -196,16 +275,4 @@ public sealed class GgDealsClient(HttpClient httpClient, GgDealsClientSettings s
 
         return FallbackRetryDelay;
     }
-
-    private static string? GetString(JsonElement? element, string property) =>
-        element is { ValueKind: JsonValueKind.Object } found &&
-        found.TryGetProperty(property, out var value) &&
-        value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
-
-    private static JsonElement? GetElement(JsonElement element, string property) =>
-        element.ValueKind == JsonValueKind.Object && element.TryGetProperty(property, out var value)
-            ? value
-            : null;
 }

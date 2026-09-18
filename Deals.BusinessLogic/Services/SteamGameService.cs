@@ -47,16 +47,98 @@ public sealed class SteamGameService(
     private const int MaxSuggestionLength = 100;
     private const int SuggestionLimit = 10;
 
+    // Bundle display bounds, mirroring the frontend contract: the persisted tier list is capped so a
+    // provider payload cannot inflate the row or the response. The client parses further than this only
+    // to attribute the bundle to the queried game.
+    private const int MaxBundleTiers = 20;
+    private const int MaxBundleTierGames = 50;
+
+    /// <summary>
+    /// Options for the sanitized tier payload stored in <c>external_bundles.tiers_json</c>. Web defaults
+    /// give camelCase names, so the persisted JSON uses the same field names as the API response.
+    /// </summary>
+    private static readonly JsonSerializerOptions BundleTierJsonOptions = new(JsonSerializerDefaults.Web);
+
+    // Steam snapshot cache window: a GET reuses the persisted row while its ObservedAt is younger than
+    // this, and only a stale/absent row or a POST /refresh reaches the Steam store.
+    private static readonly TimeSpan SteamRefreshAfter = TimeSpan.FromHours(1);
+
     // ponytail: one gate per app id, kept for the process lifetime and bounded by the distinct app ids
     // requested; serializes the same-app DB+HTTP transaction so concurrent requests cannot race the
     // unique (app, region) insert or the offer keys. No idle eviction needed at this scale.
     private static readonly ConcurrentDictionary<int, SemaphoreSlim> AppGates = new();
+
+    /// <summary>
+    /// Outcome of an outbound provider phase. <see cref="Failed"/> keeps the persisted snapshot and its
+    /// timestamps; only an authoritative answer may purge rows or advance the refresh window.
+    /// </summary>
+    private enum ProviderRefreshOutcome
+    {
+        Refreshed,
+        NoMatch,
+        Failed
+    }
+
+    /// <summary>
+    /// A finished ITAD phase (lookup + prices + the DB-only FX read), captured while no transaction is
+    /// open. <see cref="ApplyItadRefresh"/> is the separate, DB-only step that writes it.
+    /// </summary>
+    private sealed record ItadRefreshResult(
+        ProviderRefreshOutcome Outcome,
+        string? ItadGameId,
+        IReadOnlyList<ItadDeal> Deals,
+        ItadAmount? HistoryLowAll,
+        FxRate? Rate)
+    {
+        public static ItadRefreshResult NoMatch() =>
+            new(ProviderRefreshOutcome.NoMatch, null, [], null, null);
+
+        public static ItadRefreshResult Succeeded(string itadGameId, IReadOnlyList<ItadDeal> deals, ItadAmount? historyLowAll, FxRate? rate) =>
+            new(ProviderRefreshOutcome.Refreshed, itadGameId, deals, historyLowAll, rate);
+
+        public static ItadRefreshResult Failed(string? itadGameId) =>
+            new(ProviderRefreshOutcome.Failed, itadGameId, [], null, null);
+    }
+
+    /// <summary>
+    /// A finished gg.deals phase, captured while no transaction is open.
+    /// <see cref="ApplyGgDealsRefresh"/> is the separate, DB-only step that writes it.
+    /// </summary>
+    private sealed record GgDealsRefreshResult(ProviderRefreshOutcome Outcome, GgDealsGamePrice? Price, FxRate? Rate)
+    {
+        public static GgDealsRefreshResult NoMatch() =>
+            new(ProviderRefreshOutcome.NoMatch, null, null);
+
+        public static GgDealsRefreshResult Succeeded(GgDealsGamePrice price, FxRate? rate) =>
+            new(ProviderRefreshOutcome.Refreshed, price, rate);
+
+        public static GgDealsRefreshResult Failed() =>
+            new(ProviderRefreshOutcome.Failed, null, null);
+    }
+
+    /// <summary>
+    /// A finished ITAD bundle phase, captured while no transaction is open.
+    /// <see cref="ApplyBundlesRefreshAsync"/> is the separate, DB-only step that writes it. Bundles carry
+    /// their own outcome so a bundle failure never degrades the offers and vice versa.
+    /// </summary>
+    private sealed record ItadBundlesRefreshResult(ProviderRefreshOutcome Outcome, IReadOnlyList<ItadBundle> Bundles)
+    {
+        public static ItadBundlesRefreshResult NoMatch() =>
+            new(ProviderRefreshOutcome.NoMatch, []);
+
+        public static ItadBundlesRefreshResult Succeeded(IReadOnlyList<ItadBundle> bundles) =>
+            new(ProviderRefreshOutcome.Refreshed, bundles);
+
+        public static ItadBundlesRefreshResult Failed() =>
+            new(ProviderRefreshOutcome.Failed, []);
+    }
 
     public async Task<IReadOnlyList<SteamSearchResult>> SearchAsync(string query, CancellationToken cancellationToken)
     {
         var normalized = NormalizeQuery(query);
         var results = await steamClient.SearchAsync(normalized, cancellationToken);
         var observedAt = DateTime.UtcNow;
+        var mapped = new List<SteamSearchResult>(results.Count);
 
         foreach (var result in results)
         {
@@ -73,6 +155,8 @@ public sealed class SteamGameService(
                     Region = Region,
                     ObservedAt = observedAt
                 });
+                // A row written by search holds name/type/artwork only: no details, no provider refresh.
+                mapped.Add(result);
                 continue;
             }
 
@@ -86,9 +170,16 @@ public sealed class SteamGameService(
 
             game.ObservedAt = observedAt;
             await repository.SaveChangesAsync();
+
+            // Detail snapshot and provider timestamps come from the persisted row, not from the search hit.
+            mapped.Add(result with
+            {
+                HasDetails = HoldsSteamDetails(game),
+                RefreshedAt = LatestRefresh(game.OffersRefreshedAt, game.GgDealsRefreshedAt)
+            });
         }
 
-        return results;
+        return mapped;
     }
 
     public async Task<IReadOnlyList<SteamSearchResult>> GetSuggestionsAsync(string? query, CancellationToken cancellationToken)
@@ -112,12 +203,23 @@ public sealed class SteamGameService(
         // ToLower + Contains translates to lower()/strpos in Npgsql: case-insensitive and literal,
         // so user wildcards like % or _ are matched as text, not as LIKE patterns.
         var needle = normalized.ToLower();
-        return await repository.Get<SteamGame>()
+        // Materialized before mapping because HasDetails/LatestRefresh are shared with SearchAsync and
+        // cannot be translated to SQL; the query is bounded by SuggestionLimit, so the cost is trivial.
+        var games = await repository.Get<SteamGame>()
             .Where(g => g.Region == Region && g.Name.ToLower().Contains(needle))
             .OrderBy(g => g.Name)
             .Take(SuggestionLimit)
-            .Select(g => new SteamSearchResult(g.AppId, g.Name, g.Type, g.ImageUrl))
             .ToListAsync(cancellationToken);
+
+        return games
+            .Select(g => new SteamSearchResult(
+                g.AppId,
+                g.Name,
+                g.Type,
+                g.ImageUrl,
+                HoldsSteamDetails(g),
+                LatestRefresh(g.OffersRefreshedAt, g.GgDealsRefreshedAt)))
+            .ToList();
     }
 
     public async Task<SteamGameDetails?> GetByAppIdAsync(int appId, bool forceRefresh, CancellationToken cancellationToken)
@@ -144,186 +246,281 @@ public sealed class SteamGameService(
 
     private async Task<SteamGameDetails?> LoadDetailsAsync(int appId, bool forceRefresh, CancellationToken cancellationToken)
     {
-        // Steam is always the price source of truth and is never hidden by an ITAD failure.
-        var details = await steamClient.GetAppDetailsAsync(appId, cancellationToken);
-        if (details == null)
+        // ---- Read phase: persisted snapshot, no transaction and no provider traffic. ----
+        // PostgreSQL is the cache: a detail snapshot observed less than SteamRefreshAfter ago answers a
+        // GET without calling Steam. ObservedAt is also the "última actualización" date the UI shows.
+        var snapshot = await repository.Get<SteamGame>()
+            .Include(game => game.Offers)
+            .FirstOrDefaultAsync(game => game.AppId == appId && game.Region == Region, cancellationToken);
+
+        var now = DateTime.UtcNow;
+        var refreshDays = Math.Clamp(
+            offersSettings?.RefreshAfterDays ?? DefaultRefreshAfterDays,
+            MinRefreshAfterDays,
+            MaxRefreshAfterDays);
+        var refreshWindowStart = now.AddDays(-refreshDays);
+
+        var needsSteam = forceRefresh ||
+            snapshot is null ||
+            !HoldsSteamDetails(snapshot) ||
+            snapshot.ObservedAt == default ||
+            snapshot.ObservedAt < now - SteamRefreshAfter;
+
+        // ---- Outbound phase: every provider call happens here, with no transaction open. ----
+        var details = needsSteam ? await steamClient.GetAppDetailsAsync(appId, cancellationToken) : null;
+        if (needsSteam && details is null)
         {
+            // Steam is the price source of truth and is never hidden by an ITAD failure.
             return null;
         }
 
-        string? persistedImageUrl = null;
-        int? persistedLowestPriceMinor = null;
-        DateTime? persistedLowestPriceAt = null;
-        IReadOnlyList<SteamGameOffer> persistedOffers = [];
-        DateTime? offersRefreshedAt = null;
-        var offersStale = false;
-        DateTime? ggDealsRefreshedAt = null;
-        var ggDealsStale = false;
+        // A fresh Steam answer stamps its own ObservedAt; a cached snapshot keeps the stored one, because
+        // advancing it would keep the cache fresh forever.
+        var observedAt = details?.ObservedAt ?? now;
 
-        await repository.ExecuteInTransactionAsync(async () =>
+        // Steam's type/free decide whether ITAD has anything comparable. A cached snapshot carries the
+        // values of its last Steam fetch, so the decision does not change when Steam is served from DB.
+        var isComparable = string.Equals(details?.Type ?? snapshot?.Type, GameType, StringComparison.OrdinalIgnoreCase) &&
+            !(details?.IsFree ?? snapshot?.IsFree ?? false);
+
+        // Only the persisted timestamp drives the window. A missing ITAD id or an empty offer set is not
+        // an unconditional trigger, otherwise a game ITAD never matches would hit ITAD forever.
+        var needsOffers = forceRefresh ||
+            snapshot is null ||
+            snapshot.OffersRefreshedAt is null ||
+            snapshot.OffersRefreshedAt.Value < refreshWindowStart;
+
+        // A non-comparable game is an authoritative ITAD no-match answered without any HTTP request.
+        var itadRefresh = needsOffers
+            ? (isComparable
+                ? await FetchItadRefreshAsync(appId, cancellationToken)
+                : ItadRefreshResult.NoMatch())
+            : null;
+
+        // gg.deals runs on the same refresh window (there is no separate setting) but on its own result:
+        // both providers share one rate-limit bucket, so a failure in one must never cancel the other.
+        var needsGgDeals = forceRefresh ||
+            snapshot is null ||
+            snapshot.GgDealsRefreshedAt is null ||
+            snapshot.GgDealsRefreshedAt.Value < refreshWindowStart;
+
+        var ggDealsRefresh = needsGgDeals
+            ? await FetchGgDealsRefreshAsync(appId, cancellationToken)
+            : null;
+
+        // Bundles ride their own window and timestamp: an ITAD bundle failure must leave offersStale and
+        // the offer timestamp untouched, and a failed offer refresh must still let bundles refresh.
+        var needsBundles = forceRefresh ||
+            snapshot is null ||
+            snapshot.BundlesRefreshedAt is null ||
+            snapshot.BundlesRefreshedAt.Value < refreshWindowStart;
+
+        ItadBundlesRefreshResult? bundlesRefresh = null;
+        if (needsBundles)
         {
-            var observedAt = details.ObservedAt;
-            var refreshDays = Math.Clamp(
-                offersSettings?.RefreshAfterDays ?? DefaultRefreshAfterDays,
-                MinRefreshAfterDays,
-                MaxRefreshAfterDays);
-            var refreshWindowStart = DateTime.UtcNow.AddDays(-refreshDays);
+            // A fresh lookup (or its authoritative no-match) decides the identity; otherwise the persisted
+            // id is reused, so a due bundle refresh never pays for a second lookup.
+            string? itadIdForBundles;
+            if (itadRefresh is null || itadRefresh.Outcome == ProviderRefreshOutcome.Failed)
+            {
+                itadIdForBundles = itadRefresh?.ItadGameId ?? snapshot?.ItadGameId;
+            }
+            else
+            {
+                itadIdForBundles = itadRefresh.ItadGameId;
+            }
 
+            bundlesRefresh = itadIdForBundles is not null
+                ? await FetchItadBundlesAsync(itadIdForBundles, cancellationToken)
+                : itadRefresh?.Outcome == ProviderRefreshOutcome.Failed
+                    ? ItadBundlesRefreshResult.Failed()
+                    : ItadBundlesRefreshResult.NoMatch();
+        }
+
+        string region;
+        SteamGameDetails baseDetails;
+        if (details is not null)
+        {
+            region = details.Region;
+            baseDetails = details;
+        }
+        else
+        {
+            // Cached path: the snapshot exists, a missing one would have forced the Steam fetch above.
+            var cached = snapshot!;
+            region = cached.Region;
+            baseDetails = ToPersistedDetails(cached);
+        }
+
+        // ---- Persistence phase: one short transaction, DB-only. ----
+        // The lambda below performs no provider call: every HTTP request already happened above.
+        return await repository.ExecuteInTransactionAsync<SteamGameDetails?>(async () =>
+        {
+            // Reload tracked: writes must never be based on the detached snapshot read before the HTTP.
             var game = await repository.GetTrack<SteamGame>()
-                .Include(g => g.Offers)
-                .FirstOrDefaultAsync(g => g.AppId == details.AppId && g.Region == details.Region, cancellationToken);
-            // Lowest price is only comparable inside the same currency; a currency switch restarts the local low.
-            var currencyChanged = game != null &&
-                !string.Equals(game.Currency, details.Currency, StringComparison.OrdinalIgnoreCase);
-            var priceChanged = game == null || game.Currency != details.Currency ||
-                game.InitialPriceMinor != details.InitialPriceMinor ||
-                game.CurrentPriceMinor != details.CurrentPriceMinor ||
-                game.DiscountPercent != details.DiscountPercent;
+                .Include(existing => existing.Offers)
+                .Include(existing => existing.BundleLinks)
+                    .ThenInclude(link => link.Bundle)
+                .FirstOrDefaultAsync(
+                    existing => existing.AppId == appId && existing.Region == region,
+                    cancellationToken);
 
-            if (game == null)
+            var removedOffers = new List<GameOffer>();
+
+            if (details is not null)
             {
-                game = new SteamGame { AppId = details.AppId, Region = details.Region };
-                await repository.Save(game);
-            }
+                // Judged before a brand-new row exists, so an unseen game never has a comparable low.
+                // Lowest price is only comparable inside the same currency; a switch restarts the local low.
+                var currencyChanged = game is not null &&
+                    !string.Equals(game.Currency, details.Currency, StringComparison.OrdinalIgnoreCase);
+                var priceChanged = game is null || game.Currency != details.Currency ||
+                    game.InitialPriceMinor != details.InitialPriceMinor ||
+                    game.CurrentPriceMinor != details.CurrentPriceMinor ||
+                    game.DiscountPercent != details.DiscountPercent;
 
-            game.Name = details.Name;
-            game.Type = details.Type;
-            game.IsFree = details.IsFree;
-            game.Currency = details.Currency;
-            game.InitialPriceMinor = details.InitialPriceMinor;
-            game.CurrentPriceMinor = details.CurrentPriceMinor;
-            game.DiscountPercent = details.DiscountPercent;
-            game.ObservedAt = observedAt;
-
-            // Detail artwork (header_image) is richer than search tiny_image; prefer it when Steam returns one.
-            if (!string.IsNullOrWhiteSpace(details.ImageUrl))
-            {
-                game.ImageUrl = details.ImageUrl;
-            }
-
-            if (details.CurrentPriceMinor.HasValue && !string.IsNullOrWhiteSpace(details.Currency))
-            {
-                var hasComparableLow = game.LowestPriceMinor.HasValue && !currencyChanged;
-                if (!hasComparableLow || details.CurrentPriceMinor.Value < game.LowestPriceMinor!.Value)
+                if (game is null)
                 {
-                    game.LowestPriceMinor = details.CurrentPriceMinor.Value;
-                    game.LowestPriceAt = observedAt;
+                    game = new SteamGame
+                    {
+                        AppId = details.AppId,
+                        Region = details.Region,
+                        Name = details.Name
+                    };
+                    await repository.Save(game);
+                }
+
+                game.Name = details.Name;
+                game.Type = details.Type;
+                game.IsFree = details.IsFree;
+                game.Currency = details.Currency;
+                game.InitialPriceMinor = details.InitialPriceMinor;
+                game.CurrentPriceMinor = details.CurrentPriceMinor;
+                game.DiscountPercent = details.DiscountPercent;
+                game.ObservedAt = observedAt;
+
+                // Detail artwork (header_image) is richer than search tiny_image; prefer it when Steam returns one.
+                if (!string.IsNullOrWhiteSpace(details.ImageUrl))
+                {
+                    game.ImageUrl = details.ImageUrl;
+                }
+
+                if (details.CurrentPriceMinor.HasValue && !string.IsNullOrWhiteSpace(details.Currency))
+                {
+                    var hasComparableLow = game.LowestPriceMinor.HasValue && !currencyChanged;
+                    if (!hasComparableLow || details.CurrentPriceMinor.Value < game.LowestPriceMinor!.Value)
+                    {
+                        game.LowestPriceMinor = details.CurrentPriceMinor.Value;
+                        game.LowestPriceAt = observedAt;
+                    }
+                }
+
+                if (priceChanged)
+                {
+                    await repository.Save(new SteamPriceObservation
+                    {
+                        SteamGameId = game.SteamGameId,
+                        Currency = details.Currency,
+                        InitialPriceMinor = details.InitialPriceMinor,
+                        CurrentPriceMinor = details.CurrentPriceMinor,
+                        DiscountPercent = details.DiscountPercent,
+                        ObservedAt = observedAt
+                    });
                 }
             }
-
-            if (priceChanged)
+            else if (game is null)
             {
-                await repository.Save(new SteamPriceObservation
-                {
-                    SteamGameId = game.SteamGameId,
-                    Currency = details.Currency,
-                    InitialPriceMinor = details.InitialPriceMinor,
-                    CurrentPriceMinor = details.CurrentPriceMinor,
-                    DiscountPercent = details.DiscountPercent,
-                    ObservedAt = observedAt
-                });
+                // The cached row vanished between the snapshot read and this reload: nothing left to serve.
+                return null;
             }
 
             // Staleness is judged on the snapshot already persisted, before any refresh attempt: no
             // stored offers means there is nothing stale to report.
-            offersStale = game.Offers.Count > 0 &&
+            var offersStale = game.Offers.Count > 0 &&
                 (game.OffersRefreshedAt is null || game.OffersRefreshedAt.Value < refreshWindowStart);
 
-            // Only the persisted timestamp drives the window. A missing ITAD id or an empty offer set is
-            // not an unconditional trigger, otherwise a game ITAD never matches would hit ITAD forever.
-            var needsOffers = forceRefresh
-                || game.OffersRefreshedAt is null
-                || game.OffersRefreshedAt.Value < refreshWindowStart;
-
-            var removedOffers = new List<GameOffer>();
-
-            if (needsOffers)
+            if (itadRefresh is not null)
             {
-                var isComparable = string.Equals(details.Type, GameType, StringComparison.OrdinalIgnoreCase) &&
-                    !details.IsFree;
-                if (!isComparable)
+                removedOffers.AddRange(ApplyItadRefresh(game, itadRefresh, observedAt));
+                if (itadRefresh.Outcome != ProviderRefreshOutcome.Failed)
                 {
-                    // Nothing comparable to ask ITAD for; drop any snapshot left from when it was
-                    // comparable and record the decision so it is not retried every request.
-                    removedOffers.AddRange(RemoveOffersBySource(game, ItadSource));
+                    // An authoritative answer (deals, no-match, or non-comparable) advances the window;
+                    // a degraded one leaves the persisted timestamp so the next request retries.
                     game.OffersRefreshedAt = observedAt;
                     offersStale = false;
                 }
-                else
-                {
-                    try
-                    {
-                        removedOffers.AddRange(await RefreshOffersAsync(game, observedAt, cancellationToken));
-                        game.OffersRefreshedAt = observedAt;
-                        offersStale = false;
-                    }
-                    catch (Exception exception) when (IsDegradableProviderFailure(exception, cancellationToken))
-                    {
-                        // Provider down, unparseable, or timed out: keep the persisted snapshot and let
-                        // offersStale stand. The timestamp is not advanced, so the next request retries.
-                        // A caller-request cancellation fails the filter and aborts the transaction.
-                    }
-                }
             }
 
-            // gg.deals runs on the same refresh window (there is no separate setting) but on its own
-            // gate and its own try/catch: both providers share one rate-limit bucket, so a failure or an
-            // exhausted budget in one must never cancel the other's refresh.
-            ggDealsStale = game.Offers.Any(offer => string.Equals(offer.Source, GgDealsSource, StringComparison.OrdinalIgnoreCase)) &&
+            var ggDealsStale = game.Offers.Any(offer => string.Equals(offer.Source, GgDealsSource, StringComparison.OrdinalIgnoreCase)) &&
                 (game.GgDealsRefreshedAt is null || game.GgDealsRefreshedAt.Value < refreshWindowStart);
 
-            var needsGgDeals = forceRefresh
-                || game.GgDealsRefreshedAt is null
-                || game.GgDealsRefreshedAt.Value < refreshWindowStart;
-
-            if (needsGgDeals)
+            if (ggDealsRefresh is not null)
             {
-                try
+                removedOffers.AddRange(ApplyGgDealsRefresh(game, ggDealsRefresh, observedAt));
+                if (ggDealsRefresh.Outcome != ProviderRefreshOutcome.Failed)
                 {
-                    removedOffers.AddRange(await RefreshGgDealsOffersAsync(game, observedAt, cancellationToken));
                     game.GgDealsRefreshedAt = observedAt;
                     ggDealsStale = false;
                 }
-                catch (Exception exception) when (IsDegradableProviderFailure(exception, cancellationToken))
+            }
+
+            var bundlesStale = game.BundleLinks.Any(link =>
+                    string.Equals(link.Source, ItadSource, StringComparison.OrdinalIgnoreCase)) &&
+                (game.BundlesRefreshedAt is null || game.BundlesRefreshedAt.Value < refreshWindowStart);
+
+            var removedLinks = new List<ExternalBundleGame>();
+            if (bundlesRefresh is not null)
+            {
+                removedLinks.AddRange(await ApplyBundlesRefreshAsync(game, bundlesRefresh, observedAt, cancellationToken));
+                if (bundlesRefresh.Outcome != ProviderRefreshOutcome.Failed)
                 {
-                    // Provider down, unparseable, timed out, or out of the shared budget: keep the
-                    // persisted snapshot and leave GgDealsRefreshedAt untouched so the next request
-                    // retries, with GgDealsStale still reporting the last successful refresh.
+                    // An authoritative answer (bundles, no-match, or no ITAD identity) advances the window;
+                    // a degraded one leaves the timestamp so the next request retries.
+                    game.BundlesRefreshedAt = observedAt;
+                    bundlesStale = false;
                 }
             }
 
             await repository.SaveChangesAsync();
 
-            persistedImageUrl = game.ImageUrl;
-            persistedLowestPriceMinor = game.LowestPriceMinor;
-            persistedLowestPriceAt = game.LowestPriceAt;
-            persistedOffers = game.Offers
-                .Where(offer => !removedOffers.Contains(offer))
-                .OrderBy(offer => offer.ShopName, StringComparer.OrdinalIgnoreCase)
-                .Select(ToOfferModel)
-                .ToList();
-            offersRefreshedAt = game.OffersRefreshedAt;
-            ggDealsRefreshedAt = game.GgDealsRefreshedAt;
-            return true;
-        });
+            if (bundlesRefresh is not null && bundlesRefresh.Outcome != ProviderRefreshOutcome.Failed)
+            {
+                // Orphan bundles only become visible once the link removals above are flushed, hence the
+                // second save inside the same transaction. Offers are never touched by this purge.
+                await PurgeOrphanItadBundlesAsync(cancellationToken);
+            }
 
-        return details with
-        {
-            ImageUrl = persistedImageUrl,
-            LowestPriceMinor = persistedLowestPriceMinor,
-            LowestPriceAt = persistedLowestPriceAt,
-            Offers = persistedOffers,
-            OffersRefreshedAt = offersRefreshedAt,
-            OffersStale = offersStale,
-            GgDealsRefreshedAt = ggDealsRefreshedAt,
-            GgDealsStale = ggDealsStale
-        };
+             return baseDetails with
+             {
+                 ImageUrl = game.ImageUrl,
+                LowestPriceMinor = game.LowestPriceMinor,
+                LowestPriceAt = game.LowestPriceAt,
+                Offers = game.Offers
+                    .Where(offer => !removedOffers.Contains(offer))
+                    .OrderBy(offer => offer.ShopName, StringComparer.OrdinalIgnoreCase)
+                    .Select(ToOfferModel)
+                    .ToList(),
+                OffersRefreshedAt = game.OffersRefreshedAt,
+                OffersStale = offersStale,
+                GgDealsRefreshedAt = game.GgDealsRefreshedAt,
+                GgDealsStale = ggDealsStale,
+                Bundles = game.BundleLinks
+                    .Where(link => !removedLinks.Contains(link) &&
+                        link.Bundle is not null &&
+                        (link.Bundle.ExpiresAt is null || link.Bundle.ExpiresAt.Value > now))
+                    .OrderBy(link => link.Bundle!.ExpiresAt ?? DateTime.MaxValue)
+                    .ThenBy(link => link.Bundle!.Title, StringComparer.OrdinalIgnoreCase)
+                    .Select(ToBundleModel)
+                    .ToList(),
+                BundlesRefreshedAt = game.BundlesRefreshedAt,
+                BundlesStale = bundlesStale
+            };
+        });
     }
 
     /// <summary>
     /// True for provider failures that must degrade to the persisted snapshot instead of failing the
     /// request: transport errors, unparseable payloads, and timeouts. A cancellation requested by the
-    /// caller is never degraded, so the request aborts and the transaction rolls back.
+    /// caller is never degraded, so the request aborts instead of returning a partial result.
     /// </summary>
     private static bool IsDegradableProviderFailure(Exception exception, CancellationToken cancellationToken) =>
         !cancellationToken.IsCancellationRequested &&
@@ -398,42 +595,106 @@ public sealed class SteamGameService(
     }
 
     /// <summary>
-    /// ITAD lookup + prices for a single game. Every HTTP call happens before any state is mutated,
-    /// so a provider failure from here leaves the persisted offers untouched. Returns the offers whose
-    /// deletion this call scheduled (a successful no-match is authoritative and clears the snapshot).
+    /// Outbound ITAD phase: lookup + prices + the DB-only FX read. No transaction is open and nothing is
+    /// written here, so provider latency never extends a transaction. Applying the result is
+    /// <see cref="ApplyItadRefresh"/>, a separate DB-only step.
     /// </summary>
-    private async Task<IReadOnlyList<GameOffer>> RefreshOffersAsync(SteamGame game, DateTime observedAt, CancellationToken cancellationToken)
+    private async Task<ItadRefreshResult> FetchItadRefreshAsync(int appId, CancellationToken cancellationToken)
     {
-        var itadId = await itadClient.LookupSteamAppIdAsync(game.AppId, cancellationToken);
-        if (itadId is null)
+        string? itadId = null;
+        try
         {
-            // Delisted / unknown / not a comparable item: ITAD returned an authoritative no-match, so the
-            // previous snapshot is dropped rather than reported as fresh.
-            return RemoveOffersBySource(game, ItadSource);
+            itadId = await itadClient.LookupSteamAppIdAsync(appId, cancellationToken);
+            if (itadId is null)
+            {
+                // Delisted / unknown / not a comparable item: ITAD returned an authoritative no-match.
+                return ItadRefreshResult.NoMatch();
+            }
+
+            var prices = await itadClient.GetPricesAsync([itadId], cancellationToken);
+            var match = prices.FirstOrDefault(pricesEntry =>
+                string.Equals(pricesEntry.ItadId, itadId, StringComparison.OrdinalIgnoreCase));
+            var deals = match?.Deals ?? [];
+            var historyLowAll = match?.HistoryLowes?.All;
+
+            // Read-only lookup of the persisted daily rate; this path performs no provider fetch.
+            var rate = await fxRateService.GetLatestRateAsync(FxBaseCurrency, FxQuoteCurrency, cancellationToken);
+
+            return ItadRefreshResult.Succeeded(itadId, deals, historyLowAll, rate);
+        }
+        catch (Exception exception) when (IsDegradableProviderFailure(exception, cancellationToken))
+        {
+            // Provider down, unparseable, or timed out: keep the persisted snapshot and let the caller
+            // leave offersStale standing. The lookup may have succeeded before the price call failed, so
+            // its id is still carried for persistence. A caller-request cancellation fails the filter.
+            return ItadRefreshResult.Failed(itadId);
+        }
+    }
+
+    /// <summary>
+    /// Outbound bundle phase. No transaction is open and nothing is written here; applying the result is
+    /// <see cref="ApplyBundlesRefreshAsync"/>. The overview response is a flat <c>bundles[]</c> list, so a
+    /// bundle is attributed to this game only when one of its tier items is the queried id; an empty list
+    /// is the provider's authoritative "this game is in no active bundle".
+    /// </summary>
+    private async Task<ItadBundlesRefreshResult> FetchItadBundlesAsync(string itadId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var bundles = await itadClient.GetBundlesAsync([itadId], cancellationToken);
+            var contained = bundles
+                .Where(bundle => bundle.AttributionComplete && bundle.MatchedItadIds.Contains(itadId, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+
+            return ItadBundlesRefreshResult.Succeeded(contained);
+        }
+        catch (Exception exception) when (IsDegradableProviderFailure(exception, cancellationToken))
+        {
+            // Provider down, unparseable, timed out, or out of the shared budget: keep the persisted bundle
+            // snapshot and leave BundlesRefreshedAt untouched so the next request retries.
+            return ItadBundlesRefreshResult.Failed();
+        }
+    }
+
+    /// <summary>
+    /// Attributes using the full parser membership result, never the capped render tiers. An incomplete
+    /// scan is deliberately not attributable: caller preserves its previous snapshot.
+    /// </summary>
+    /// <summary>
+    /// DB-only phase: writes an outbound ITAD result onto the tracked entity. No provider call happens
+    /// here. Returns the offers whose deletion this call scheduled (an authoritative no-match clears the
+    /// ITAD snapshot); a degraded result schedules nothing.
+    /// </summary>
+    private IReadOnlyList<GameOffer> ApplyItadRefresh(SteamGame game, ItadRefreshResult refresh, DateTime observedAt)
+    {
+        // The lookup id is worth keeping even when the price call that followed it failed.
+        if (refresh.ItadGameId is not null)
+        {
+            game.ItadGameId = refresh.ItadGameId;
         }
 
-        game.ItadGameId = itadId;
+        if (refresh.Outcome == ProviderRefreshOutcome.Failed)
+        {
+            return [];
+        }
 
-        var prices = await itadClient.GetPricesAsync([itadId], cancellationToken);
-        var match = prices.FirstOrDefault(pricesEntry =>
-            string.Equals(pricesEntry.ItadId, itadId, StringComparison.OrdinalIgnoreCase));
-        var deals = match?.Deals ?? [];
-        var historyLowAll = match?.HistoryLowes?.All;
-
-        // Read-only lookup of the persisted daily rate; this path performs no provider fetch.
-        var rate = await fxRateService.GetLatestRateAsync(FxBaseCurrency, FxQuoteCurrency, cancellationToken);
+        if (refresh.Outcome == ProviderRefreshOutcome.NoMatch)
+        {
+            // The previous snapshot is dropped rather than reported as fresh.
+            return RemoveOffersBySource(game, ItadSource);
+        }
 
         var offers = repository.GetTrack<GameOffer>();
         var returnedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var deal in deals)
+        foreach (var deal in refresh.Deals)
         {
             if (!returnedKeys.Add(deal.ShopId))
             {
                 continue;
             }
 
-            ApplyDeal(GetOrCreateOffer(game, offers, ItadSource, deal.ShopId), deal, historyLowAll, rate, observedAt);
+            ApplyDeal(GetOrCreateOffer(game, offers, ItadSource, deal.ShopId), deal, refresh.HistoryLowAll, refresh.Rate, observedAt);
         }
 
         // A successful response (even empty) is authoritative: drop ITAD offers no longer returned.
@@ -441,27 +702,263 @@ public sealed class SteamGameService(
     }
 
     /// <summary>
-    /// gg.deals lookup for a single game. The provider reports one current price per bucket (retail and
-    /// keyshops) instead of a list of shops, so each bucket becomes one persisted row under a fixed
-    /// offer key. Returns the offers whose deletion this call scheduled: an authoritative "not tracked by
-    /// gg.deals" answer clears the previous snapshot, exactly like an ITAD no-match.
+    /// DB-only phase: writes an outbound ITAD bundle result onto the tracked entity. No provider call
+    /// happens here. The canonical bundle is keyed by (source, bundle_key) and shared between games,
+    /// while the relation is per game. Returns the relations whose deletion this call scheduled, so the
+    /// response can exclude them even before the change tracker reports the delete.
     /// </summary>
-    private async Task<IReadOnlyList<GameOffer>> RefreshGgDealsOffersAsync(SteamGame game, DateTime observedAt, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<ExternalBundleGame>> ApplyBundlesRefreshAsync(
+        SteamGame game,
+        ItadBundlesRefreshResult refresh,
+        DateTime observedAt,
+        CancellationToken cancellationToken)
     {
-        var prices = await ggDealsClient.GetPricesAsync([game.AppId], cancellationToken);
+        var links = game.BundleLinks
+            .Where(link => string.Equals(link.Source, ItadSource, StringComparison.OrdinalIgnoreCase))
+            .ToList();
 
-        // No entry for this app id means gg.deals does not track the game; a payload without a currency
-        // cannot be stored because the column is not nullable. Both are authoritative answers, not
-        // failures: clearing the snapshot lets the caller advance GgDealsRefreshedAt. Otherwise a game
-        // gg.deals never matches would be asked for on every single request, forever.
-        if (!prices.TryGetValue(game.AppId, out var price) || string.IsNullOrWhiteSpace(price.Currency))
+        if (refresh.Outcome == ProviderRefreshOutcome.NoMatch)
+        {
+            // No ITAD identity or no active bundles: the previous snapshot is dropped rather than kept as
+            // if it were fresh. Only this game's ITAD relations are touched.
+            RemoveBundleLinks(links);
+            return links;
+        }
+
+        var linkByKey = new Dictionary<string, ExternalBundleGame>(StringComparer.OrdinalIgnoreCase);
+        foreach (var link in links)
+        {
+            if (link.Bundle is { } related)
+            {
+                linkByKey.TryAdd(related.BundleKey, link);
+            }
+        }
+
+        var canonical = new Dictionary<string, ExternalBundle>(StringComparer.OrdinalIgnoreCase);
+        var returnedKeys = refresh.Bundles
+            .Select(bundle => bundle.BundleKey)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (returnedKeys.Count > 0)
+        {
+            // Bundles already persisted for this source, whether or not they are related to this game.
+            var persisted = await repository.GetTrack<ExternalBundle>()
+                .Where(bundle => bundle.Source == ItadSource && returnedKeys.Contains(bundle.BundleKey))
+                .ToListAsync(cancellationToken);
+            foreach (var bundle in persisted)
+            {
+                canonical[bundle.BundleKey] = bundle;
+            }
+        }
+
+        var returned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in refresh.Bundles)
+        {
+            if (!returned.Add(item.BundleKey))
+            {
+                continue;
+            }
+
+            if (!canonical.TryGetValue(item.BundleKey, out var bundle))
+            {
+                // Atomic claim closes the cross-game race in multi-instance deployments. ON CONFLICT
+                // does not swallow a loser: reload below obtains the canonical tracked row.
+                await repository.ExecuteSqlRawAsync(
+                    "INSERT INTO external_bundles (source, bundle_key, title, observed_at) VALUES ({0}, {1}, {2}, {3}) ON CONFLICT (source, bundle_key) DO NOTHING",
+                    ItadSource, item.BundleKey, item.Title, observedAt);
+                bundle = await repository.GetTrack<ExternalBundle>()
+                    .SingleAsync(existing => existing.Source == ItadSource && existing.BundleKey == item.BundleKey, cancellationToken);
+                canonical[item.BundleKey] = bundle;
+            }
+
+            ApplyBundle(bundle, item, observedAt);
+
+            if (linkByKey.TryGetValue(item.BundleKey, out var link))
+            {
+                link.ObservedAt = observedAt;
+                continue;
+            }
+
+            // Atomic upsert closes the cross-instance race on the relation unique key. Never call Add:
+            // the row may have been inserted by another instance between our snapshot read and now.
+            await repository.ExecuteSqlRawAsync(
+                "INSERT INTO external_bundle_games (external_bundle_id, steam_game_id, source, observed_at) VALUES ({0}, {1}, {2}, {3}) ON CONFLICT (external_bundle_id, steam_game_id) DO UPDATE SET source = EXCLUDED.source, observed_at = EXCLUDED.observed_at",
+                bundle.ExternalBundleId, game.SteamGameId, ItadSource, observedAt);
+
+            // Reload the canonical row into this DbContext. Querying the tracked set after the atomic
+            // upsert avoids duplicate tracking and EF fixup attaches Bundle and the link to game.BundleLinks.
+            var insertedLink = await repository.GetTrack<ExternalBundleGame>()
+                .Include(existing => existing.Bundle)
+                .SingleAsync(existing =>
+                    existing.ExternalBundleId == bundle.ExternalBundleId &&
+                    existing.SteamGameId == game.SteamGameId,
+                    cancellationToken);
+            linkByKey[item.BundleKey] = insertedLink;
+            if (!game.BundleLinks.Contains(insertedLink))
+            {
+                game.BundleLinks.Add(insertedLink);
+            }
+        }
+
+        // A successful response is authoritative: drop this game's ITAD relations no longer returned.
+        var obsolete = links
+            .Where(link => link.Bundle is null || !returned.Contains(link.Bundle.BundleKey))
+            .ToList();
+        RemoveBundleLinks(obsolete);
+        return obsolete;
+    }
+
+    private static void ApplyBundle(ExternalBundle bundle, ItadBundle source, DateTime observedAt)
+    {
+        // Snapshot fields are replaced, never merged, so a provider change is reflected instead of leaving
+        // a stale title or link behind. Both URLs are stored exactly as the provider sent them and the tier
+        // list is sanitized into its display shape; no raw payload is kept.
+        bundle.Title = source.Title;
+        bundle.ShopId = source.ShopId;
+        bundle.ShopName = source.ShopName;
+        bundle.PageUrl = source.PageUrl;
+        bundle.DealUrl = source.Url;
+        bundle.Details = source.Details;
+        bundle.PublishedAt = source.PublishedAt;
+        bundle.ExpiresAt = source.ExpiresAt;
+        bundle.ObservedAt = observedAt;
+        bundle.TiersJson = SerializeTiers(MapTiers(source.Tiers));
+    }
+
+    /// <summary>
+    /// Maps provider tiers to the persisted/display shape: item ids are dropped and both lists are capped
+    /// to the display contract, so what is stored is exactly what the client can render.
+    /// </summary>
+    private static IReadOnlyList<SteamGameBundleTier> MapTiers(IReadOnlyList<ItadBundleTier> tiers)
+    {
+        var mapped = new List<SteamGameBundleTier>(Math.Min(tiers.Count, MaxBundleTiers));
+        foreach (var tier in tiers.Take(MaxBundleTiers))
+        {
+            var games = new List<SteamGameBundleTierGame>(Math.Min(tier.Games.Count, MaxBundleTierGames));
+            foreach (var game in tier.Games.Take(MaxBundleTierGames))
+            {
+                games.Add(new SteamGameBundleTierGame(game.Title, game.Type));
+            }
+
+            mapped.Add(new SteamGameBundleTier(tier.PriceMinor, tier.Currency, tier.Addon, games));
+        }
+
+        return mapped;
+    }
+
+    private static string? SerializeTiers(IReadOnlyList<SteamGameBundleTier> tiers) =>
+        tiers.Count == 0 ? null : JsonSerializer.Serialize(tiers, BundleTierJsonOptions);
+
+    /// <summary>
+    /// Reads the persisted tier payload. It was written by <see cref="SerializeTiers"/>, so anything that
+    /// does not parse (hand-edited row, foreign writer) degrades to "no tiers" instead of failing a read.
+    /// </summary>
+    private static IReadOnlyList<SteamGameBundleTier> DeserializeTiers(string? tiersJson)
+    {
+        if (string.IsNullOrWhiteSpace(tiersJson))
+        {
+            return [];
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<SteamGameBundleTier>>(tiersJson, BundleTierJsonOptions) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private void RemoveBundleLinks(IReadOnlyList<ExternalBundleGame> links)
+    {
+        if (links.Count == 0)
+        {
+            return;
+        }
+
+        var tracked = repository.GetTrack<ExternalBundleGame>();
+        foreach (var link in links)
+        {
+            tracked.Remove(link);
+        }
+    }
+
+    /// <summary>
+    /// Deletes ITAD bundles left with no relation after the refresh. Scoped to <c>source = itad</c> and to
+    /// bundles with no links at all: offers, other games' bundles and other sources are never touched.
+    /// </summary>
+    private async Task PurgeOrphanItadBundlesAsync(CancellationToken cancellationToken)
+    {
+        var orphans = await repository.GetTrack<ExternalBundle>()
+            .Where(bundle => bundle.Source == ItadSource && !bundle.Links.Any())
+            .ToListAsync(cancellationToken);
+        if (orphans.Count == 0)
+        {
+            return;
+        }
+
+        var tracked = repository.GetTrack<ExternalBundle>();
+        foreach (var orphan in orphans)
+        {
+            tracked.Remove(orphan);
+        }
+
+        await repository.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Outbound gg.deals phase. No transaction is open and nothing is written here; applying the result
+    /// is <see cref="ApplyGgDealsRefresh"/>, a separate DB-only step.
+    /// </summary>
+    private async Task<GgDealsRefreshResult> FetchGgDealsRefreshAsync(int appId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var prices = await ggDealsClient.GetPricesAsync([appId], cancellationToken);
+
+            // No entry for this app id means gg.deals does not track the game; a payload without a
+            // currency cannot be stored because the column is not nullable. Both are authoritative
+            // answers, not failures. Otherwise a game gg.deals never matches would be asked for on every
+            // single request, forever.
+            if (!prices.TryGetValue(appId, out var price) || string.IsNullOrWhiteSpace(price.Currency))
+            {
+                return GgDealsRefreshResult.NoMatch();
+            }
+
+            // Read-only lookup of the persisted daily rate; this path performs no provider fetch.
+            var rate = await fxRateService.GetLatestRateAsync(FxBaseCurrency, FxQuoteCurrency, cancellationToken);
+
+            return GgDealsRefreshResult.Succeeded(price, rate);
+        }
+        catch (Exception exception) when (IsDegradableProviderFailure(exception, cancellationToken))
+        {
+            // Provider down, unparseable, timed out, or out of the shared budget: keep the persisted
+            // snapshot and leave GgDealsRefreshedAt untouched so the next request retries.
+            return GgDealsRefreshResult.Failed();
+        }
+    }
+
+    /// <summary>
+    /// DB-only phase: writes an outbound gg.deals result onto the tracked entity. The provider reports
+    /// one current price per bucket (retail and keyshops) instead of a list of shops, so each bucket
+    /// becomes one persisted row under a fixed offer key. Returns the offers whose deletion this call
+    /// scheduled: an authoritative "not tracked by gg.deals" answer clears the previous snapshot.
+    /// </summary>
+    private IReadOnlyList<GameOffer> ApplyGgDealsRefresh(SteamGame game, GgDealsRefreshResult refresh, DateTime observedAt)
+    {
+        if (refresh.Outcome == ProviderRefreshOutcome.Failed)
+        {
+            return [];
+        }
+
+        if (refresh.Outcome == ProviderRefreshOutcome.NoMatch)
         {
             return RemoveOffersBySource(game, GgDealsSource);
         }
 
-        // Read-only lookup of the persisted daily rate; this path performs no provider fetch.
-        var rate = await fxRateService.GetLatestRateAsync(FxBaseCurrency, FxQuoteCurrency, cancellationToken);
-
+        var price = refresh.Price!;
         var offers = repository.GetTrack<GameOffer>();
         var returnedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -475,7 +972,7 @@ public sealed class SteamGameService(
             }
 
             returnedKeys.Add(offerKey);
-            ApplyGgDealsBucket(GetOrCreateOffer(game, offers, GgDealsSource, offerKey), price, keyshop, rate, observedAt);
+            ApplyGgDealsBucket(GetOrCreateOffer(game, offers, GgDealsSource, offerKey), price, keyshop, refresh.Rate, observedAt);
         }
 
         return RemoveObsoleteOffers(game, GgDealsSource, returnedKeys);
@@ -651,6 +1148,70 @@ public sealed class SteamGameService(
             offer.PlatformNames ?? [],
             offer.HistoryLowAllMinor,
             offer.HistoryLowCurrency);
+
+    private static SteamGameBundle ToBundleModel(ExternalBundleGame link)
+    {
+        var bundle = link.Bundle!;
+        return new(
+            link.Source,
+            bundle.BundleKey,
+            bundle.Title,
+            bundle.ShopId,
+            bundle.ShopName,
+            bundle.PageUrl,
+            bundle.DealUrl,
+            bundle.Details,
+            bundle.PublishedAt,
+            bundle.ExpiresAt,
+            bundle.ObservedAt,
+            DeserializeTiers(bundle.TiersJson));
+    }
+
+    /// <summary>
+    /// True when the persisted row actually holds a Steam detail snapshot. <see cref="SearchAsync"/> also
+    /// writes steam_games rows (name/type/artwork only), so age alone is not enough: serving one of those
+    /// from the cache would return a detail page without a price. Such a row always re-fetches Steam.
+    /// </summary>
+    private static bool HoldsSteamDetails(SteamGame game) =>
+        game.IsFree ||
+        game.Currency is not null ||
+        game.CurrentPriceMinor is not null ||
+        game.InitialPriceMinor is not null ||
+        game.OffersRefreshedAt is not null;
+
+    /// <summary>
+    /// Newest provider refresh timestamp, used by the search/suggestion results. Null only when neither
+    /// ITAD nor gg.deals has ever answered for the row.
+    /// </summary>
+    private static DateTime? LatestRefresh(DateTime? offersRefreshedAt, DateTime? ggDealsRefreshedAt)
+    {
+        if (offersRefreshedAt is null)
+        {
+            return ggDealsRefreshedAt;
+        }
+
+        return ggDealsRefreshedAt is null || offersRefreshedAt > ggDealsRefreshedAt
+            ? offersRefreshedAt
+            : ggDealsRefreshedAt;
+    }
+
+    /// <summary>
+    /// Maps the cached row to the response base for a GET served from PostgreSQL. Offer prices, image,
+    /// lowest price and provider timestamps are supplied by the caller's <c>with</c> expression from the
+    /// tracked entity; only the Steam scalar snapshot is taken from here.
+    /// </summary>
+    private static SteamGameDetails ToPersistedDetails(SteamGame game) =>
+        new(
+            game.AppId,
+            game.Name,
+            game.Type,
+            game.IsFree,
+            game.Currency,
+            game.InitialPriceMinor,
+            game.CurrentPriceMinor,
+            game.DiscountPercent,
+            game.Region,
+            game.ObservedAt);
 
     private static string NormalizeQuery(string query)
     {
