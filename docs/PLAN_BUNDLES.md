@@ -16,7 +16,7 @@ Referencias: `AGENTS.md`, `PLAN_BASE_MVP.md`, `PLAN_ITAD.md`, `PLAN_GGDEALS.md`,
 2. **Fase separada del comparador.** La comparación de ofertas actual no se toca. Un bundle no entra en `bestOfficial` / `bestAuthorized` / `bestKeyshop` ni en el "mejor precio comparable". Si el trabajo de bundles obliga a cambiar el comparador, se detiene y se revisa el plan.
 3. **Sin scraping, HTML ni Playwright.** Solo API. Igual que el resto del repositorio (`PLAN_BASE_MVP.md` §15).
 4. **Sin secretos en el frontend.** La key de ITAD vive en el backend (header, nunca en query ni en código cliente). El BFF sigue siendo el único camino.
-5. **Sin ahorro basado en biblioteca poseída en V1.** "Lo que ahorrarías porque ya tienes parte del bundle" depende de `user_library`, que es el plan de `PLAN_WISHLIST.md`. En V1 no se cruza ni se insinúa.
+5. **Sin ahorro basado en biblioteca poseída en V1.** "Lo que ahorrarías porque ya tienes parte del bundle" depende de `user_library`, cuyo plan es `PLAN_LIBRARY.md`. En V1 no se cruza ni se insinúa.
 6. **El bundle no es una oferta.** Es un paquete con varios tiers, varios ítems y una fecha de expiración. Se muestra como bloque propio, no como fila de la tabla de ofertas.
 
 ## B) Contrato ITAD verificado

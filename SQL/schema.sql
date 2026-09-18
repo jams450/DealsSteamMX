@@ -12,6 +12,7 @@ CREATE TABLE users (
     steam_id64 VARCHAR(20),
     wishlist_synced_at TIMESTAMPTZ,
     wishlist_state VARCHAR(16),
+    min_viable_discount_percent SMALLINT NOT NULL DEFAULT 50,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_by VARCHAR(100),

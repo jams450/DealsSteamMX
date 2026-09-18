@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import type { ColumnDef, FilterFn, SortingFn } from "@tanstack/react-table";
 import { Gamepad2, RefreshCw } from "lucide-react";
 import { DataGrid } from "@/components/data-grid/data-grid";
@@ -10,7 +10,8 @@ import { Button } from "@/components/ui/button";
 import { refreshSteamGame } from "@/app/steam/_lib/steam-api";
 import { formatCurrency } from "@/lib/format/currency";
 import { cn } from "@/lib/ui/cn";
-import { getWishlist, syncWishlist } from "./_lib/wishlist-api";
+import { getWishlist, syncWishlist, updateWishlistPreferences } from "./_lib/wishlist-api";
+import { dealScore, discountPercent } from "./_lib/wishlist-metrics";
 import type { WishlistItem, WishlistResponse, WishlistState, WishlistSyncResponse } from "./_lib/wishlist-contract";
 
 const dateFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
@@ -18,6 +19,14 @@ const dateFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
 // Los mínimos de tiendas ya vienen convertidos por el backend: su moneda es siempre MXN y no se
 // presenta como aproximación porque no lo es.
 const MXN = "MXN";
+
+// Preferencias puramente visuales: viven en localStorage. El umbral de descuento no está aquí porque
+// ese es del backend (se guarda con `updateWishlistPreferences`).
+const WISHLIST_PAGE_SIZES = [10, 25, 50, 100];
+const PAGE_SIZE_STORAGE_KEY = "wishlist.pageSize.v1";
+const COLUMN_VISIBILITY_STORAGE_KEY = "wishlist.columns.v1";
+// La prioridad de Steam no se usa, así que nace oculta; sigue disponible en el menú «Columnas».
+const INITIAL_COLUMN_VISIBILITY = { priority: false };
 
 // El normalizador ya descarta fechas inválidas; el guard evita que Intl.format lance si algo se cuela.
 function formatDateTime(value: string | null) {
@@ -34,11 +43,8 @@ function formatMinor(amountMinor: number | null, currency: string | null) {
   return formatCurrency(amountMinor / 100, "es-MX", currency);
 }
 
-// La prioridad de Steam es un rango 0-based (0 = el primero de la lista); se muestra tal cual llega.
-function formatPriority(value: number | null) {
-  return value === null ? "—" : String(value);
-}
-
+// La prioridad de Steam sigue en la tabla (por si algún día se usa) pero nace oculta: está disponible
+// en el menú «Columnas» y no aparece en la línea meta de las tiles móviles.
 // `refreshSteamGame` solo propaga el mensaje del BFF: el status (429 del limitador o 503 por defecto
 // del middleware) se pierde en el helper. El aviso de espera se muestra siempre y el copy de límite
 // solo cuando el propio mensaje ya lo delata.
@@ -131,6 +137,158 @@ function PriceFact({ label, amountMinor, currency }: PriceFactProps) {
   );
 }
 
+// Misma forma que `PriceFact` para los valores que no son importes (porcentajes y scores).
+function MetricFact({ label, children }: { readonly label: string; readonly children: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-xs text-muted">{label}</p>
+      {children}
+    </div>
+  );
+}
+
+// El descuento se calcula contra el precio base de Steam: positivo cuando el mejor precio es más bajo
+// (se pinta "-42.5%") y negativo cuando es más caro (se pinta "+3.0%"). Es un porcentaje, no un importe.
+function formatDiscountPercent(value: number | null) {
+  if (value === null) return "—";
+  const sign = value > 0 ? "-" : value < 0 ? "+" : "";
+  return `${sign}${Math.abs(value).toFixed(1)}%`;
+}
+
+function DiscountValue({ value }: { readonly value: number | null }) {
+  return value === null ? (
+    <span className="text-muted">—</span>
+  ) : (
+    <span className="text-primary">{formatDiscountPercent(value)}</span>
+  );
+}
+
+// Banda discreta del score: solo cambia el tono del badge, el número siempre está escrito.
+function scoreBadgeTone(score: number) {
+  if (score >= 7) return "tabler-badge-success";
+  if (score >= 4) return "tabler-badge-info";
+  return "tabler-badge-muted";
+}
+
+function ScoreValue({ score }: { readonly score: number | null }) {
+  return score === null ? (
+    <span className="text-muted">—</span>
+  ) : (
+    <span className={cn("tabler-badge", scoreBadgeTone(score))}>{score.toFixed(1)}</span>
+  );
+}
+
+// Un score por banda: el descuento se mide contra el precio base de Steam y el bonus por cercanía al
+// mínimo histórico entra aunque el descuento no llegue al umbral.
+function itemScore(item: WishlistItem, bestMinor: number | null, minViableDiscountPercent: number): number | null {
+  return dealScore({
+    basePriceMinor: item.basePriceMinor,
+    baseCurrency: item.baseCurrency,
+    bestMinor,
+    historyLowMinor: item.historyLowMinor,
+    historyLowCurrency: item.historyLowCurrency,
+    minViableDiscountPercent
+  });
+}
+
+// Las tiles móviles muestran los mismos cuatro valores que la tabla de escritorio.
+function MobileMetrics({ item, minViableDiscountPercent }: { readonly item: WishlistItem; readonly minViableDiscountPercent: number }) {
+  return (
+    <>
+      <MetricFact label="% dto. oficial">
+        <DiscountValue value={discountPercent(item.basePriceMinor, item.baseCurrency, item.bestOfficialMinor)} />
+      </MetricFact>
+      <MetricFact label="% dto. keys">
+        <DiscountValue value={discountPercent(item.basePriceMinor, item.baseCurrency, item.bestKeyshopMinor)} />
+      </MetricFact>
+      <MetricFact label="Deal oficial">
+        <ScoreValue score={itemScore(item, item.bestOfficialMinor, minViableDiscountPercent)} />
+      </MetricFact>
+      <MetricFact label="Deal keys">
+        <ScoreValue score={itemScore(item, item.bestKeyshopMinor, minViableDiscountPercent)} />
+      </MetricFact>
+    </>
+  );
+}
+
+interface ThresholdControlProps {
+  readonly value: number;
+  readonly onCommit: (next: number) => Promise<void>;
+}
+
+// El umbral vive en el backend: se edita aquí y se confirma al salir del campo o con Enter. Si el PUT
+// falla, el campo vuelve al valor vigente y el error queda en línea, sin tocar el resto de la página.
+function ThresholdControl({ value, onCommit }: ThresholdControlProps) {
+  const inputId = useId();
+  const [draft, setDraft] = useState(String(value));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  async function commit() {
+    const parsed = Number(draft);
+    if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 95) {
+      setError("Escribe un número entero entre 0 y 95.");
+      return;
+    }
+    if (parsed === value) {
+      setError(null);
+      setDraft(String(value));
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    try {
+      await onCommit(parsed);
+    } catch (cause) {
+      setDraft(String(value));
+      setError(cause instanceof Error && cause.message ? cause.message : "No se pudo guardar el descuento mínimo viable.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <label htmlFor={inputId} className="text-xs font-medium text-secondary">
+        Descuento mínimo viable %
+      </label>
+      <input
+        id={inputId}
+        type="number"
+        inputMode="numeric"
+        min={0}
+        max={95}
+        step={1}
+        value={draft}
+        disabled={saving}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => void commit()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void commit();
+          }
+        }}
+        className="input-semantic h-8 w-20 text-xs"
+      />
+      <span className="text-xs text-muted">Ajusta los dos scores de deal. Se guarda con Enter o al salir del campo.</span>
+      <span className="sr-only" aria-live="polite">
+        {saving ? "Guardando el descuento mínimo viable..." : ""}
+      </span>
+      {error ? (
+        <p role="alert" className="text-xs text-danger">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 // Cada estado explica qué pasa y qué hacer. La wishlist privada es la trampa real de la API de Steam:
 // devuelve lo mismo que una wishlist sin juegos, así que nunca se muestra como "0 juegos".
 function StateNotice({ state }: { readonly state: WishlistState }) {
@@ -186,7 +344,6 @@ function WishlistRowMeta({ item }: { readonly item: WishlistItem }) {
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-      <span>Prioridad {formatPriority(item.priority)}</span>
       <span>Alta {added ?? "—"}</span>
       <span>Actualizado {refreshed ?? "—"}</span>
       <ItadBadge itadGameId={item.itadGameId} />
@@ -262,10 +419,19 @@ interface WishlistItemsProps {
   readonly items: readonly WishlistItem[];
   readonly refreshingAppId: number | null;
   readonly rowErrors: Readonly<Record<number, string>>;
+  readonly minViableDiscountPercent: number;
+  readonly onThresholdCommit: (next: number) => Promise<void>;
   readonly onRefresh: (item: WishlistItem) => void;
 }
 
-function WishlistItems({ items, refreshingAppId, rowErrors, onRefresh }: WishlistItemsProps) {
+function WishlistItems({
+  items,
+  refreshingAppId,
+  rowErrors,
+  minViableDiscountPercent,
+  onThresholdCommit,
+  onRefresh
+}: WishlistItemsProps) {
   const [filter, setFilter] = useState("");
   const query = filter.trim().toLocaleLowerCase("es-MX");
   const filteredItems = useMemo(
@@ -287,7 +453,8 @@ function WishlistItems({ items, refreshingAppId, rowErrors, onRefresh }: Wishlis
   const numericSort: SortingFn<WishlistItem> = (rowA, rowB, columnId) =>
     Number(rowA.getValue(columnId)) - Number(rowB.getValue(columnId));
 
-  const columns = useMemo<ColumnDef<WishlistItem>[]>(() => [
+  const columns = useMemo<ColumnDef<WishlistItem>[]>(() => {
+    return [
     { id: "cover", header: "Portada", enableSorting: false, cell: ({ row }) => <WishlistThumb src={row.original.imageUrl} /> },
     {
       accessorKey: "name", header: "Juego", sortingFn: (rowA, rowB, id) => String(rowA.getValue(id)).localeCompare(String(rowB.getValue(id)), "es-MX"),
@@ -297,11 +464,44 @@ function WishlistItems({ items, refreshingAppId, rowErrors, onRefresh }: Wishlis
     { id: "addedAt", accessorFn: (item) => item.addedAt ? new Date(item.addedAt).getTime() : undefined, header: "Alta", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => formatDateTime(row.original.addedAt) ?? "—" },
     { id: "refreshedAt", accessorFn: (item) => item.refreshedAt ? new Date(item.refreshedAt).getTime() : undefined, header: "Actualizado", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => formatDateTime(row.original.refreshedAt) ?? "—" },
     { id: "basePriceMinor", accessorFn: (item) => item.basePriceMinor ?? undefined, header: "Precio base", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.basePriceMinor} currency={row.original.baseCurrency} /> },
+    {
+      id: "discountOfficial",
+      accessorFn: (item) => discountPercent(item.basePriceMinor, item.baseCurrency, item.bestOfficialMinor) ?? undefined,
+      header: "% dto. oficial",
+      sortingFn: numericSort,
+      sortUndefined: "last",
+      cell: ({ row }) => <DiscountValue value={row.getValue<number | undefined>("discountOfficial") ?? null} />
+    },
+    {
+      id: "discountKeyshop",
+      accessorFn: (item) => discountPercent(item.basePriceMinor, item.baseCurrency, item.bestKeyshopMinor) ?? undefined,
+      header: "% dto. keys",
+      sortingFn: numericSort,
+      sortUndefined: "last",
+      cell: ({ row }) => <DiscountValue value={row.getValue<number | undefined>("discountKeyshop") ?? null} />
+    },
+    {
+      id: "dealOfficial",
+      accessorFn: (item) => itemScore(item, item.bestOfficialMinor, minViableDiscountPercent) ?? undefined,
+      header: "Deal oficial",
+      sortingFn: numericSort,
+      sortUndefined: "last",
+      cell: ({ row }) => <ScoreValue score={row.getValue<number | undefined>("dealOfficial") ?? null} />
+    },
+    {
+      id: "dealKeyshop",
+      accessorFn: (item) => itemScore(item, item.bestKeyshopMinor, minViableDiscountPercent) ?? undefined,
+      header: "Deal keys",
+      sortingFn: numericSort,
+      sortUndefined: "last",
+      cell: ({ row }) => <ScoreValue score={row.getValue<number | undefined>("dealKeyshop") ?? null} />
+    },
     { id: "historyLowMinor", accessorFn: (item) => item.historyLowMinor ?? undefined, header: "Mínimo histórico", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.historyLowMinor} currency={row.original.historyLowCurrency} /> },
     { id: "bestOfficialMinor", accessorFn: (item) => item.bestOfficialMinor ?? undefined, header: "Mín. oficial", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.bestOfficialMinor} currency={MXN} /> },
     { id: "bestKeyshopMinor", accessorFn: (item) => item.bestKeyshopMinor ?? undefined, header: "Mín. keys", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.bestKeyshopMinor} currency={MXN} /> },
     { id: "actions", header: "Acciones", enableSorting: false, cell: ({ row }) => <RowRefreshButton item={row.original} refreshing={refreshingAppId === row.original.appId} blocked={refreshingAppId !== null && refreshingAppId !== row.original.appId} onRefresh={onRefresh} /> }
-  ], [onRefresh, refreshingAppId, rowErrors]);
+    ];
+  }, [minViableDiscountPercent, onRefresh, refreshingAppId, rowErrors]);
 
   return (
     <section className="app-card space-y-4 p-5" aria-labelledby="wishlist-items-heading">
@@ -310,6 +510,7 @@ function WishlistItems({ items, refreshingAppId, rowErrors, onRefresh }: Wishlis
         <h2 id="wishlist-items-heading" className="text-xl font-semibold tracking-tight text-primary">En tu wishlist</h2>
         <p className="tabler-badge tabler-badge-muted">{filteredItems.length} de {items.length} juegos</p>
         <p className="text-xs text-muted">«Mín. oficial» y «Mín. keys» ya están en MXN. El precio base y el mínimo histórico se muestran en la moneda del proveedor, sin convertir.</p>
+        <p className="text-xs text-muted">«% dto.» se calcula contra el precio de lista de Steam (precio base) y «Deal» es un score híbrido de 0 a 10: 7 puntos por la escala del descuento frente al mínimo viable y 3 por la cercanía al mínimo histórico.</p>
       </div>
       <div className="md:hidden">
         <label className="sr-only" htmlFor="wishlist-filter-mobile">Buscar por nombre o AppID</label>
@@ -319,7 +520,7 @@ function WishlistItems({ items, refreshingAppId, rowErrors, onRefresh }: Wishlis
         {filteredItems.map((item) => (
           <li key={item.appId} className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-3">
             <div className="flex items-start gap-2"><WishlistThumb src={item.imageUrl} /><div className="min-w-0"><Link href={`/games/${item.appId}`} className="text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{item.name}</Link><p className="text-xs text-muted">AppID {item.appId}</p><ItadBadge itadGameId={item.itadGameId} /></div></div>
-            <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2"><PriceFact label="Precio base" amountMinor={item.basePriceMinor} currency={item.baseCurrency} /><PriceFact label="Mínimo histórico" amountMinor={item.historyLowMinor} currency={item.historyLowCurrency} /><PriceFact label="Mín. oficial" amountMinor={item.bestOfficialMinor} currency={MXN} /><PriceFact label="Mín. keys" amountMinor={item.bestKeyshopMinor} currency={MXN} /></div>
+            <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2"><PriceFact label="Precio base" amountMinor={item.basePriceMinor} currency={item.baseCurrency} /><PriceFact label="Mínimo histórico" amountMinor={item.historyLowMinor} currency={item.historyLowCurrency} /><PriceFact label="Mín. oficial" amountMinor={item.bestOfficialMinor} currency={MXN} /><PriceFact label="Mín. keys" amountMinor={item.bestKeyshopMinor} currency={MXN} /><MobileMetrics item={item} minViableDiscountPercent={minViableDiscountPercent} /></div>
             <div className="mt-3"><WishlistRowMeta item={item} /></div>
             <div className="mt-3"><RowRefreshButton item={item} refreshing={refreshingAppId === item.appId} blocked={refreshingAppId !== null && refreshingAppId !== item.appId} onRefresh={onRefresh} /></div>
             {rowErrors[item.appId] ? <p role="alert" className="mt-2 text-xs text-danger">{rowErrors[item.appId]}</p> : null}
@@ -333,10 +534,17 @@ function WishlistItems({ items, refreshingAppId, rowErrors, onRefresh }: Wishlis
         density="compact"
         stickyHeader
         stickyActionsColumn
-        manualPagination
+        pageSizeOptions={WISHLIST_PAGE_SIZES}
+        allowAllPageSize
+        pageSizeStorageKey={PAGE_SIZE_STORAGE_KEY}
         enableGlobalFilter
         globalFilterPlaceholder="Buscar por nombre o AppID"
         globalFilterFn={wishlistFilter}
+        enableColumnVisibility
+        columnVisibilityStorageKey={COLUMN_VISIBILITY_STORAGE_KEY}
+        initialColumnVisibility={INITIAL_COLUMN_VISIBILITY}
+        enableColumnFilters
+        toolbar={<ThresholdControl value={minViableDiscountPercent} onCommit={onThresholdCommit} />}
         emptyMessage={items.length === 0 ? "La wishlist está vacía." : "Ningún juego coincide con la búsqueda."}
       />
     </section>
@@ -412,6 +620,13 @@ export function WishlistClient() {
     } finally {
       setRefreshingAppId(null);
     }
+  }
+
+  // El umbral es del backend: se guarda con el PUT y el estado local solo se actualiza con el valor
+  // confirmado. Si falla, el error lo muestra el control y el valor vigente no cambia.
+  async function updateThreshold(next: number) {
+    const saved = await updateWishlistPreferences(next);
+    setWishlist((current) => (current ? { ...current, minViableDiscountPercent: saved } : current));
   }
 
   if (loading) return <p className="app-card p-5 text-sm text-muted">Cargando...</p>;
@@ -499,6 +714,8 @@ export function WishlistClient() {
           items={items}
           refreshingAppId={refreshingAppId}
           rowErrors={rowErrors}
+          minViableDiscountPercent={wishlist.minViableDiscountPercent}
+          onThresholdCommit={updateThreshold}
           onRefresh={(item) => void refreshItem(item)}
         />
       ) : null}

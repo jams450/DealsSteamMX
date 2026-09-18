@@ -53,7 +53,42 @@ public class WishlistController : ControllerBase
         var state = WishlistStates.Compose(user.SteamId64, user.WishlistSyncedAt, user.WishlistState);
         var items = await LoadItemsAsync(userId, cancellationToken);
 
-        return Ok(new WishlistResponse(state, user.WishlistSyncedAt, items));
+        return Ok(new WishlistResponse(state, user.WishlistSyncedAt, items, user.MinViableDiscountPercent));
+    }
+
+    [HttpPut("preferences")]
+    public async Task<IActionResult> UpdatePreferences(
+        [FromBody] WishlistPreferencesRequest request,
+        CancellationToken cancellationToken)
+    {
+        var percent = request?.MinViableDiscountPercent
+            ?? throw new ArgumentException("MinViableDiscountPercent is required", nameof(request));
+        if (percent < 0 || percent > 95)
+        {
+            throw new ArgumentException("MinViableDiscountPercent must be between 0 and 95", nameof(request));
+        }
+
+        var userId = GetUserId();
+        var found = await _repository.ExecuteInTransactionAsync(async () =>
+        {
+            var user = await _repository.GetTrack<User>()
+                .FirstOrDefaultAsync(candidate => candidate.UserId == userId, cancellationToken);
+            if (user is null)
+            {
+                return false;
+            }
+
+            user.MinViableDiscountPercent = percent;
+            await _repository.SaveChangesAsync();
+            return true;
+        });
+
+        if (!found)
+        {
+            return NotFound();
+        }
+
+        return Ok(new WishlistPreferencesResponse(percent));
     }
 
     [HttpPost("sync")]

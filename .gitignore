@@ -87,6 +87,10 @@ app_dev.dump
 skills-lock.json
 .agents/skills/frontend-design/LICENSE.txt
 .agents/skills/frontend-design/SKILL.md
+
+# Personal Playnite library export: titles and store ownership, not a shared fixture.
+docs/dealext-library.json
+
 Deals.API/appsettings.json
 Templates/1777396645352.pdf
 .opencode/

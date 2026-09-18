@@ -27,7 +27,18 @@ export type WishlistResponse = {
   readonly state: WishlistState;
   readonly syncedAt: string | null;
   readonly items: readonly WishlistItem[];
+  // Umbral del score de la wishlist. El backend lo manda; si todavía no lo manda (o llega inválido) se
+  // usa el default y la página sigue funcionando.
+  readonly minViableDiscountPercent: number;
 };
+
+export type WishlistPreferences = {
+  readonly minViableDiscountPercent: number;
+};
+
+export const MIN_VIABLE_DISCOUNT_PERCENT_MIN = 0;
+export const MIN_VIABLE_DISCOUNT_PERCENT_MAX = 95;
+export const MIN_VIABLE_DISCOUNT_PERCENT_DEFAULT = 50;
 
 export type WishlistSyncResponse = {
   readonly state: WishlistState;
@@ -61,6 +72,15 @@ function toPositiveInteger(value: unknown): number | null {
 function toNonNegativeInteger(value: unknown): number | null {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+// Umbral del score: entero acotado 0..95. Se valida aparte del default para poder distinguir
+// "ausente" (la respuesta del GET lo tolera) de "inválido" (la respuesta del PUT no).
+function toDiscountThreshold(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= MIN_VIABLE_DISCOUNT_PERCENT_MIN && parsed <= MIN_VIABLE_DISCOUNT_PERCENT_MAX
+    ? parsed
+    : null;
 }
 
 // Importes en la unidad mínima de su moneda (mismo criterio que `lib/contracts/steam.ts`): entero
@@ -176,7 +196,23 @@ export function normalizeWishlistResponse(input: unknown): WishlistResponse | nu
     }
   }
 
-  return { state, syncedAt: toIsoDateTime(read(input, "syncedAt")), items };
+  return {
+    state,
+    syncedAt: toIsoDateTime(read(input, "syncedAt")),
+    // El umbral es resiliente a propósito: mientras el backend no lo mande, la página queda en 50.
+    minViableDiscountPercent:
+      toDiscountThreshold(read(input, "minViableDiscountPercent")) ?? MIN_VIABLE_DISCOUNT_PERCENT_DEFAULT,
+    items
+  };
+}
+
+// Respuesta del PUT de preferencias: aquí no se inventa nada. Si el campo no llega como entero 0..95,
+// la respuesta entera se rechaza en vez de devolver un umbral que el usuario no eligió.
+export function normalizeWishlistPreferencesResponse(input: unknown): WishlistPreferences | null {
+  if (!isRecord(input)) return null;
+
+  const threshold = toDiscountThreshold(read(input, "minViableDiscountPercent"));
+  return threshold === null ? null : { minViableDiscountPercent: threshold };
 }
 
 export function normalizeWishlistSyncResponse(input: unknown): WishlistSyncResponse | null {

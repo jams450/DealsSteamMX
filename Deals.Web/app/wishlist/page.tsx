@@ -7,6 +7,7 @@ export default async function WishlistPage() {
 
   return (
     <ProductShell
+      wide
       title="Wishlist de Steam"
       subtitle="Los juegos que sigues en Steam, con su prioridad y la fecha de la última actualización de precios."
     >

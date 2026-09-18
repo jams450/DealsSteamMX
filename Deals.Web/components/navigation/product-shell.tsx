@@ -10,9 +10,16 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/ui/cn";
 import { isRouteActive, productNavItems } from "./nav-config";
 
-type ProductShellProps = { title: string; subtitle?: string; meta?: ReactNode; children: ReactNode };
+type ProductShellProps = {
+  title: string;
+  subtitle?: string;
+  meta?: ReactNode;
+  /** Sin tope de ancho: para páginas con tablas de muchas columnas. */
+  wide?: boolean;
+  children: ReactNode;
+};
 
-export function ProductShell({ title, subtitle, meta, children }: ProductShellProps) {
+export function ProductShell({ title, subtitle, meta, wide = false, children }: ProductShellProps) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -91,7 +98,7 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
 
   return (
     <main className="app-page">
-      <div className="mx-auto max-w-7xl space-y-4 p-2 md:p-4">
+      <div className={cn("mx-auto space-y-4 p-2 md:p-4", wide ? "w-full max-w-none" : "max-w-7xl")}>
         <header className="app-topbar flex min-h-16 items-center gap-3 px-3 py-2 md:px-4">
           <Button
             ref={triggerRef}

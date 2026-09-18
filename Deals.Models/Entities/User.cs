@@ -56,6 +56,12 @@ namespace Deals.Models.Entities
         [StringLength(16)]
         public string? WishlistState { get; set; }
 
+        /// <summary>
+        /// Minimum discount (0..95) a wishlist deal must show to count as viable for this user.
+        /// </summary>
+        [Column("min_viable_discount_percent")]
+        public int MinViableDiscountPercent { get; set; } = 50;
+
         public virtual ICollection<UserSession> Sessions { get; set; } = new List<UserSession>();
     }
 }

@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace Deals.API.Models.Wishlist;
 
 /// <summary>
@@ -25,7 +27,17 @@ public sealed record WishlistItemResponse(
 public sealed record WishlistResponse(
     string State,
     DateTime? SyncedAt,
-    IReadOnlyList<WishlistItemResponse> Items);
+    IReadOnlyList<WishlistItemResponse> Items,
+    int MinViableDiscountPercent);
+
+/// <summary>
+/// Per-user wishlist scoring preference. Percent is 0..95; null means the body omitted it.
+/// </summary>
+public sealed record WishlistPreferencesRequest(
+    [property: Range(0, 95)] int? MinViableDiscountPercent);
+
+public sealed record WishlistPreferencesResponse(
+    int MinViableDiscountPercent);
 
 /// <summary>
 /// Result of a manual list sync. Refreshed/Failed are always 0: the price refresh is the background

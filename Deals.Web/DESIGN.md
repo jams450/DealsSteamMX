@@ -33,7 +33,7 @@ when it was last observed.
 | `/` | `app/page.tsx` | Product | Home: search as the central CTA, how-it-works, price source note |
 | `/search` | `app/search/page.tsx`, `app/search/search-client.tsx` | Product | Text search; `?q=` pre-runs the query; local suggestions while typing (≥2 chars) |
 | `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: cover, Steam price block, local-low row, Steam source table, multi-store offers grouped by provider (ITAD / gg.deals) |
-| `/wishlist` | `app/wishlist/{page,wishlist-client}.tsx`, `app/wishlist/_lib/*` | Product | Steam wishlist: four explicit states, "Sincronizar ahora" with its report, a price-reference table (base, historical low, MXN official/keyshop minimums) with a per-row refresh |
+| `/wishlist` | `app/wishlist/{page,wishlist-client}.tsx`, `app/wishlist/_lib/*` | Product | Steam wishlist: four explicit states, "Sincronizar ahora" with its report, a price-reference table (base, historical low, MXN official/keyshop minimums) with a per-row refresh, per-band discount % and a hybrid 0-10 deal score driven by a backend viable-minimum threshold |
 | `/login` | `app/login/page.tsx` | Public | Only public page, plus `/api/auth/{login,refresh,session}` |
 | `/users` | `app/users/*` | Admin | Reference admin slice (`AdminShell` + `DataGrid`), admin role only; consumes the same tokens, cards, badges and `Button` variants as the product surface |
 | `/steam` | `app/steam/*` | Product (legacy) | Earlier Steam page rendered inside `AdminShell`; not part of `ProductShell` |
@@ -72,9 +72,11 @@ when it was last observed.
   empty payload for both. Each item also carries a price snapshot (`basePriceMinor`/`baseCurrency`,
   `historyLowMinor`/`historyLowCurrency`, `bestOfficialMinor`, `bestKeyshopMinor`) shown as a reference
   beside the wishlist data, plus a per-row refresh that reuses the game detail's refresh endpoint. No price
-  from this page enters the comparator, `selectBestPrice` or any savings math. The list uses the shared
-  `DataGrid` in client mode for sorting and global filtering; mobile tiles consume the same name/AppID
-  filter state.
+  from this page enters the comparator, `selectBestPrice` or any savings math. The response's
+  `minViableDiscountPercent` (0..95, default 50) is a per-user preference saved with
+  `PUT /api/wishlist/preferences` (BFF `PUT /api/bff/wishlist/preferences`) and only feeds the two deal
+  scores. The list uses the shared `DataGrid` in client mode for sorting, global filtering, per-column
+  filtering and pagination; mobile tiles consume the same name/AppID filter state.
 
 ## 2. Principles
 
@@ -367,13 +369,16 @@ ITAD store against a gg.deals row.
   <fecha>" (`tabler-badge-info`) or "Sin fecha de sincronización" (`tabler-badge-warning`). Tone is never
   the only signal: every badge carries its words.
 - Items: a `ul` of bordered tiles below `md` and a `.table-shell` table from `md` up
-  (`Portada | Juego | Precio base | Mínimo histórico | Mín. oficial | Mín. keys | Prioridad | Alta |
-  Actualizado | Acciones`), so the row works at 360px and the desktop table is never squashed. The game
+  (`Portada | Juego | Precio base | % dto. oficial | % dto. keys | Deal oficial | Deal keys |
+  Mínimo histórico | Mín. oficial | Mín. keys | Prioridad | Alta | Actualizado | Acciones`), so the row
+  works at 360px and the desktop table is never squashed. `Prioridad` stays in the column menu but is
+  hidden by default (the user does not use Steam's rank) and it is not part of the mobile meta line. The game
   name is an internal `Link` to `/games/<appId>`; the cover is the local `WishlistThumb` (90×34 below `sm`,
   120×45 above, decorative `alt=""`, `Gamepad2` placeholder when the URL is missing or fails). The ITAD
   identity is a badge ("Identificado en ITAD" info / "Sin identificar en ITAD" muted) in the row, never a
   bare id. On the tiles the four price columns become a two-column `Precio base / Mínimo histórico /
-  Mín. oficial / Mín. keys` grid above the meta line.
+  Mín. oficial / Mín. keys` grid above the meta line, and the four new metrics (`% dto. oficial`,
+  `% dto. keys`, `Deal oficial`, `Deal keys`) join the same grid so mobile matches desktop.
 - **Money is shown in the currency it arrives in, never converted.** `Precio base` and
   `Mínimo histórico` use `Intl.NumberFormat("es-MX", { style: "currency", currency })` (via
   `lib/format/currency.ts`, the same helper the game detail uses), so a non-MXN code prints with its own
@@ -386,16 +391,33 @@ ITAD store against a gg.deals row.
   per-row action, all 10 columns above include it, and it is a real `Button` (`variant="secondary"`,
   `type="button"`) with an `aria-label` naming the game and its AppID.
 - Dates use `Intl.DateTimeFormat("es-MX", { dateStyle: "medium" })` through a guarded formatter, so an
-  invalid value renders "—" instead of throwing. Priority renders the raw 0-based rank the API sends, or
-  "—" when null — the client never renumbers it.
+  invalid value renders "—" instead of throwing.
+- **Discount and deal score:** `% dto. oficial` / `% dto. keys` are `discountPercent(basePriceMinor,
+  baseCurrency, best<Official|Keyshop>Minor)` from `app/wishlist/_lib/wishlist-metrics.ts` (pure module,
+  no imports): `null` unless the base price is MXN (the store minimums always are), rounded to one
+  decimal, printed as "-42.5%" and as "+3.0%" when the store price is above the base. `Deal oficial` /
+  `Deal keys` are the hybrid 0-10 `dealScore` (7 points for the discount scale against the viable minimum,
+  3 for proximity to the historic low), printed through the `tabler-badge-*` tone band
+  (`muted < 4`, `info < 7`, `success >= 7`); the number is always visible, tone is never the only signal.
+  The formula and its exported weights (`DISCOUNT_WEIGHT`, `LOW_WEIGHT`, `SCORE_MAX`, `SCORE_CEILING`)
+  live in that module and are covered by `wishlist-metrics.test.ts` (`node --test`).
+- **Viable minimum:** the toolbar's `Descuento mínimo viable %` numeric input (0-95, labelled) edits the
+  backend preference: it commits on `blur` or `Enter` through `updateWishlistPreferences` →
+  `PUT /api/bff/wishlist/preferences`, the local state only takes the value the server confirms, and a
+  failure reverts the field to the current value and shows an inline `role="alert"` line. It changes both
+  deal scores immediately. Only visible columns, page size and density/sorting are local; this threshold
+  is not.
 - **Filter and sorting:** desktop delegates to the shared `DataGrid` in client mode, with its own global
-  search input (`Buscar por nombre o AppID`) and `getFilteredRowModel`/`getSortedRowModel`. The custom
-  filter matches the game name or AppID text. Mobile uses a compact native input tied to the same filter
-  state before mapping its tiles, so filtering never disappears at 360px. There is no server-side filter,
-  pagination or reordering.
+  search input (`Buscar por nombre o AppID`), a per-column filter row and `getFilteredRowModel`/
+  `getSortedRowModel`. The custom global filter matches the game name or AppID text; the column filters use
+  the module default `includesString`. The page sizes are 10/25/50/100 plus `Todos`, and the chosen size and
+  the visible columns persist in `localStorage` (`wishlist.pageSize.v1`, `wishlist.columns.v1`). Mobile uses
+  a compact native input tied to the same global filter state before mapping its tiles, so filtering never
+  disappears at 360px. There is no server-side filter, pagination or reordering.
 - **Sortable columns:** `Juego` (alphabetical), `Prioridad`, `Alta`, `Actualizado`, `Precio base`,
-  `Mínimo histórico`, `Mín. oficial` and `Mín. keys`. `Portada` and `Acciones` are not sortable. Numeric
-  and date values sort by their raw number/timestamp, not their formatted label.
+  `% dto. oficial`, `% dto. keys`, `Deal oficial`, `Deal keys`, `Mínimo histórico`, `Mín. oficial` and
+  `Mín. keys`. `Portada` and `Acciones` are not sortable. Numeric and date values sort by their raw
+  number/timestamp, not their formatted label.
 - **Null sorting:** the column comparator explicitly places `null` values last in both ascending and
   descending directions. A missing price is never coerced to zero, so it cannot appear as the cheapest row.
 - The list never renders raw JSON, upstream error bodies, provider ids beyond `appId`, or filesystem paths.
@@ -417,6 +439,13 @@ ITAD store against a gg.deals row.
 | `basePriceMinor` + `baseCurrency` present | `Precio base` in that currency, unconverted and unprefixed; a non-MXN code looks different from MX$ by construction |
 | `historyLowMinor` + `historyLowCurrency` present | `Mínimo histórico` in the provider currency, same formatter |
 | `bestOfficialMinor` / `bestKeyshopMinor` present | `Mín. oficial` / `Mín. keys` as MXN (`MX$…`), no `≈` and no note: the API sends them already converted |
+| base price not MXN, or best price missing | `% dto.` and `Deal` read "—" in muted tone: a percentage is never computed across currencies |
+| score present | `tabler-badge` tone band (`muted < 4`, `info < 7`, `success >= 7`) with the number `0.0`-`10.0` always written |
+| `minViableDiscountPercent` absent or invalid in `GET /api/wishlist` | normalized to `50`; the page never rejects the whole wishlist for it |
+| `PUT /api/wishlist/preferences` in flight | the input is disabled and an `sr-only` live region says it is saving; the scores keep the previous threshold |
+| `PUT /api/wishlist/preferences` fails | the field returns to the current value and an inline `role="alert"` line shows the message; both scores stay as they were |
+| body not an integer 0-95 | the BFF answers 400 `BAD_REQUEST` without calling the API |
+| `minViableDiscountPercent` missing in the PUT response | the BFF answers 502 (no default is invented for a saved preference) |
 | amount present, currency missing (or the reverse) | the cell reads "—"; the pair is never half-rendered and no currency is assumed |
 | amount `0` | prints as a zero amount of its currency, never as "Gratis": these are reference prices, not a current offer |
 | item without `appId` or `name` | dropped by the normalizer, never rendered |
@@ -433,11 +462,24 @@ ITAD store against a gg.deals row.
 
 ### DataGrid (`components/data-grid/data-grid.tsx`)
 
-Admin-only today (`/users`). Props are additive-only; column IDs are a public contract. Available:
-`columns, rows, mode, density, allowDensityToggle, densityStorageKey, loading, emptyMessage,
+Used by `/users` (admin) and `/wishlist` (product). Props are additive-only and the new capabilities are
+opt-in: with none of them set the grid behaves exactly as before. Column IDs are a public contract.
+Available: `columns, rows, mode, density, allowDensityToggle, densityStorageKey, loading, emptyMessage,
 errorMessage, manualSorting, sorting, onSortingChange, manualPagination, pagination,
-onPaginationChange, rowCount, initialSorting, pageSizeOptions, toolbar, stickyHeader,
-stickyActionsColumn, enableGlobalFilter, globalFilterPlaceholder, globalFilterFn`.
+onPaginationChange, rowCount, initialSorting, pageSizeOptions, allowAllPageSize, pageSizeStorageKey,
+toolbar, stickyHeader, stickyActionsColumn, enableGlobalFilter, globalFilterPlaceholder, globalFilterFn,
+enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, enableColumnFilters`.
+
+- `allowAllPageSize` appends a `Todos` option that maps to `Number.MAX_SAFE_INTEGER` internally while the
+  `<select>` still shows the label; the pager keeps rendering while the all-rows size is active.
+- `enableColumnVisibility` adds the labelled `Columnas` trigger (`aria-haspopup`/`aria-expanded`) with a
+  checkbox per hideable column, excluding `actions` and any column with `enableHiding: false`; it closes on
+  `Escape` (returning focus to the trigger) and on outside click, and persists to
+  `columnVisibilityStorageKey` when given. `initialColumnVisibility` applies only when nothing is stored.
+- `enableColumnFilters` enables `getFilteredRowModel` (which also serves the global filter) and renders a
+  second, non-sticky header row with a labelled `Filtrar` input per filterable column, skipping
+  `cover`/`actions`; the default filter fn is `includesString`. The filter row is not sticky on purpose: the
+  sticky header (`z-20`, with background) covers it on scroll instead of stacking on top of it.
 
 ## 8. Interaction states
 
