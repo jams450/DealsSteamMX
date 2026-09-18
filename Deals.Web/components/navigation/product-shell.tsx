@@ -1,9 +1,10 @@
 "use client";
 
-import { Gamepad2, Menu, X } from "lucide-react";
+import { Menu, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Logo } from "@/components/brand/logo";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/ui/cn";
@@ -106,12 +107,9 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
           </Button>
           <Link
             href="/"
-            className="flex shrink-0 items-center gap-2 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+            className="flex shrink-0 items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
           >
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-accent bg-[var(--color-accent-soft)] text-accent">
-              <Gamepad2 className="h-4 w-4" aria-hidden="true" />
-            </span>
-            <span className="text-sm font-semibold tracking-tight text-primary">DealExt</span>
+            <Logo />
           </Link>
           <div className="hidden md:block">
             <Navigation />
@@ -123,7 +121,7 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
               className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--color-accent)] text-xs font-bold text-[var(--color-accent-contrast)]"
               aria-label="Usuario autenticado"
             >
-              DE
+              DS
             </span>
           </div>
         </header>
@@ -143,7 +141,7 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
           />
           <aside ref={drawerRef} id="product-navigation-drawer" className="app-sidebar relative h-full w-[min(21rem,88vw)] overflow-y-auto p-3 shadow-[var(--shadow-md)]">
             <div className="mb-4 flex items-center justify-between border-b border-strong px-2 pb-4">
-              <p className="text-sm font-semibold tracking-tight text-primary">DealExt</p>
+              <Logo markClassName="h-7 w-7" />
               <Button ref={closeRef} type="button" variant="ghost" className="h-10 w-10 p-0" onClick={() => setMobileOpen(false)} aria-label="Cerrar menú">
                 <X className="h-5 w-5" aria-hidden="true" />
               </Button>

@@ -13,7 +13,8 @@ Tailwind v4 is configured in CSS (`@import "tailwindcss"` in `app/globals.css`);
 
 - Token layer: `app/globals.css` (`:root`, `.dark`, `[data-theme="blue|light-blue"]`).
 - Primitives: `components/ui/{button,input,card,alert,select}.tsx`, `components/data-grid/data-grid.tsx`,
-  `components/theme/theme-toggle.tsx`, `lib/ui/cn.ts`, `lib/bff/http.ts` (typed errors).
+  `components/theme/theme-toggle.tsx`, `components/brand/logo.tsx`, `lib/ui/cn.ts`,
+  `lib/bff/http.ts` (typed errors).
 - Shells: `components/navigation/product-shell.tsx` (product surface) and
   `components/navigation/admin-shell.tsx` (admin surface, despite the file name — it is imported by
   `/users` and `/steam`). Both now draw on the same tokens, `.app-card`/`.app-topbar`, radii and shadows.
@@ -247,6 +248,29 @@ ITAD store against a gg.deals row.
 - Mobile drawer: full-height `app-sidebar` panel, scrim, `role="dialog" aria-modal="true"`, focus
   trap, `Escape` to close, focus returned to the trigger, body scroll lock, and `overflow-y-auto`
   so the search + navigation + theme toggle always fit.
+
+### Brand lockup (`components/brand/logo.tsx`)
+
+- Single source of the identity: `LogoMark` (mark only) and `Logo` (mark + wordmark). No other component
+  inlines the mark, and no brand SVG lives outside this file and `app/icon.svg`.
+- **Mark:** an accent chip whose negative space is a funnel — a wide upper chevron (many stores)
+  narrowing into a narrow lower one (one lowest price). One `path` with `fillRule="evenodd"` and
+  `fill="currentColor"`, so the cut-outs are real transparency (no `mask`/`clip` ids, safe to mount
+  several times per page), the tone comes from the surrounding text color, and the chip reads against
+  whatever surface sits behind it in either theme. Geometry is authored in a 32x32 box with a
+  ~2.3px minimum feature at 16px. Decorative: `aria-hidden="true"`, `focusable="false"`; size is
+  supplied per surface through `markClassName` (32px header, 36px admin sidebar and login, 28px and
+  32px drawers).
+- **Wordmark:** the three words are stacked — `Deals` (`text-sm font-bold tracking-tight text-primary`)
+  over `Steam MX` (`text-xs font-semibold uppercase tracking-[0.14em] text-muted`). Two lines are
+  *narrower* than one, which is what keeps the header from crowding at 360px; the string is never
+  truncated or abbreviated. The visible stack is `aria-hidden` and an `sr-only` span carries the exact
+  product string, so the brand link's accessible name is always `Deals Steam MX`, announced once.
+- `app/icon.svg` repeats the mark path with an explicit `#3b82f6` fill, because a standalone SVG file
+  cannot read the page's CSS variables. Keep both path strings byte-identical when the mark changes.
+- Metadata belongs to `app/layout.tsx`: `metadata` (`title`, `description`, `icons`, `openGraph`,
+  `twitter`) plus the `viewport.themeColor` pair that mirrors `--tabler-page-bg` in dark and light.
+  There is no `title.template` and no per-page metadata export — the shells own the visible page titles.
 
 ### Cards and surfaces
 
@@ -526,6 +550,10 @@ stickyActionsColumn, enableGlobalFilter, globalFilterPlaceholder, globalFilterFn
 
 ## 11. Accepted debt and limits
 
+- **Brand assets.** Only `app/icon.svg` exists: there is no raster `favicon.ico`, no `apple-icon` and no
+  `opengraph-image`, so link previews render text only and older browsers fall back to a default icon.
+  The 16px legibility of the mark was asserted from its geometry, not from a human eye on a rendered
+  bitmap. Add a raster `apple-icon` only when a touch/home-screen use actually exists.
 - **Header search duplication.** On `lg` and up the `/search` page shows the header search and the
   page's own input. Acceptable while search stays the primary action; collapse to one if the header
   search ever becomes the canonical control.

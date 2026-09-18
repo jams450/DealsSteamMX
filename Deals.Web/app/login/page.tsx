@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Logo } from "@/components/brand/logo";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -52,9 +53,9 @@ export default function LoginPage() {
 
       <Card className="relative z-10 w-full max-w-md space-y-6 border-[var(--tabler-border-strong)]/70 bg-[var(--tabler-surface-1)]/95 p-5 shadow-[var(--tabler-shadow-md)] backdrop-blur">
         <header className="space-y-2 text-center">
-          <p className="tabler-badge mx-auto rounded-full px-3 py-1 text-xs">
-            DealExt
-          </p>
+          <div className="flex justify-center">
+            <Logo markClassName="h-9 w-9" />
+          </div>
           <h1 className="text-2xl font-semibold tracking-tight text-[var(--tabler-text)]">Inicia sesión</h1>
           <p className="text-sm text-[var(--tabler-text-soft)]">Ingresa con tus credenciales para continuar.</p>
         </header>
