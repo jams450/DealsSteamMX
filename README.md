@@ -1,6 +1,6 @@
-# DealExt
+# Deals Steam MX
 
-DealExt starts as a reusable full-stack foundation: .NET 9 backend API + Next.js 15 frontend BFF + PostgreSQL. It includes JWT auth, refresh sessions, CSRF protection, and an admin Users reference slice. Deal discovery and price-provider integrations are not implemented yet.
+Deals Steam MX starts as a reusable full-stack foundation: .NET 9 backend API + Next.js 15 frontend BFF + PostgreSQL. It includes JWT auth, refresh sessions, CSRF protection, and an admin Users reference slice. Deal discovery and price-provider integrations are not implemented yet.
 
 ## Prerequisites
 

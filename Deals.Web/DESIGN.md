@@ -1,6 +1,6 @@
-# DealExt Web — Design Contract
+# Deals Steam MX Web — Design Contract
 
-Single source of truth for tokens and primitives used by the DealExt product UI. Every color,
+Single source of truth for tokens and primitives used by the Deals Steam MX product UI. Every color,
 spacing value, radius and state in a component must trace back to a token defined here or in
 `app/globals.css`. When a new value is needed, add the token (here + `globals.css`) **before**
 using it. Do not hardcode hex/`rgb()` or arbitrary pixel offsets in components.
@@ -24,7 +24,7 @@ Tailwind v4 is configured in CSS (`@import "tailwindcss"` in `app/globals.css`);
 
 ## 1. Product scope and routes
 
-DealExt is a game-deal finder: search a game, open its detail page, read the price, the discount and
+Deals Steam MX is a game-deal finder: search a game, open its detail page, read the price, the discount and
 when it was last observed.
 
 | Route | Files | Surface | Notes |
@@ -130,7 +130,7 @@ across themes, so components never need theme-specific classes.
 | Warning | Incomplete price or state | `--color-warning` | `.tabler-badge-warning` |
 | Info | Data / freshness metadata | `--color-info` | `.tabler-badge-info` |
 | Danger | Error / price not available | `--color-danger` | `.tabler-badge-danger`, `.text-danger`, `Alert variant="danger"` |
-| Accent | DealExt brand and actions | `--color-accent` | `.text-accent`, `.btn-primary-semantic`, `.border-accent` |
+| Accent | Deals Steam MX brand and actions | `--color-accent` | `.text-accent`, `.btn-primary-semantic`, `.border-accent` |
 
 Text-color classes exist only where the product UI uses them (accent, success, danger); warning and
 info states are always expressed as badges. Add the matching `.text-*` token the first time a
@@ -217,7 +217,7 @@ ITAD store against a gg.deals row.
 ## 5. Typography
 
 - Family: system stack (defined in `globals.css`, `font-feature-settings: "cv11","ss01"`). No font
-  package is installed and no new dependency is allowed, so the DealExt voice comes from tracking,
+  package is installed and no new dependency is allowed, so the Deals Steam MX voice comes from tracking,
   size and uppercase kickers rather than a display family.
 - Scale in use: `text-xs` (kickers, meta), `text-sm` (body/table), `text-base` (card titles),
   `text-xl`/`text-2xl` (page title, via `ProductShell`), `text-2xl`/`text-3xl` (home headline and
@@ -237,7 +237,7 @@ ITAD store against a gg.deals row.
 
 ### ProductShell (`components/navigation/product-shell.tsx`)
 
-- Owns the product surface: sticky translucent header (`.app-topbar`), brand mark + `DealExt`
+- Owns the product surface: sticky translucent header (`.app-topbar`), brand mark + `Deals Steam MX`
   wordmark, desktop navigation, header search, page title/subtitle, and the mobile drawer.
 - Props are unchanged: `title`, `subtitle`, `meta`, `children`.
 - Header search is a native `role="search"` form posting `GET /search?q=`. It is hidden below `lg`;

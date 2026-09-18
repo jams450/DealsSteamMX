@@ -15,7 +15,7 @@ export default async function HomePage() {
   if (!session) redirect("/login");
 
   return (
-    <ProductShell title="DealExt" subtitle="Encuentra el precio de tu próximo juego">
+    <ProductShell title="Deals Steam MX" subtitle="Encuentra el precio de tu próximo juego">
       <div className="space-y-4">
         <section className="app-card-accent space-y-4 p-6 md:p-8" aria-label="Comparador de ofertas">
           <p className="text-xs font-semibold uppercase tracking-widest text-accent">Comparador de precios</p>
@@ -36,7 +36,7 @@ export default async function HomePage() {
 
         <section className="grid gap-3 md:grid-cols-3" aria-labelledby="home-steps-title">
           <h2 id="home-steps-title" className="sr-only">
-            Cómo funciona DealExt
+            Cómo funciona Deals Steam MX
           </h2>
           {steps.map((item) => (
             <article key={item.step} className="app-card space-y-2 p-5">

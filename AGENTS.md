@@ -89,7 +89,7 @@ Concrete example: the Users feature. Follow the same shape.
 10. Verify: `dotnet build Deals.sln` and `pnpm build` in `Deals.Web`.
 
 ## Rename the template for a new project
-Technical project names are `Deals.*`; visible product branding is `DealExt`. Do not add price-provider routes or integrations until their contracts are defined.
+Technical project names are `Deals.*`; visible product branding is `Deals Steam MX`. Do not add price-provider routes or integrations until their contracts are defined.
 
 ## Config
 Backend (env vars or `appsettings.json`):

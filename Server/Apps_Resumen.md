@@ -1,4 +1,4 @@
-# DealExt: índice de planes
+# Deals Steam MX: índice de planes
 
 Planes del proyecto. Cada uno es autónomo y se lanza desde el directorio del repo.
 
