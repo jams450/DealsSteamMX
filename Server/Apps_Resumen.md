@@ -13,6 +13,7 @@ Planes del proyecto. Cada uno es autónomo y se lanza desde el directorio del re
 | [PLAN_LIBRARY.md](../docs/PLAN_LIBRARY.md) | Propuesto | Biblioteca de juegos comprados: import de Playnite, binding con precios, tag de Game Pass y reseñas por plataforma |
 | [PLAN_TELEGRAM.md](../docs/PLAN_TELEGRAM.md) | Propuesto | Notificaciones genéricas por Telegram (dispatcher de eventos) |
 | [PLAYNITE_EXPORT.md](../docs/PLAYNITE_EXPORT.md) | Ejecutado | Export real de Playnite 10; contrato de import verificado con 2586 juegos |
+| [PLAN_IMPLEMENTACION_BIBLIOTECA.md](../docs/PLAN_IMPLEMENTACION_BIBLIOTECA.md) | Propuesto | Secuencia ejecutable: import, catálogo, binding, badges, reseñas y alertas |
 
 ## Resumen de proveedores
 

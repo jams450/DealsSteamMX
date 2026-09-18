@@ -12,7 +12,7 @@ Tailwind v4 is configured in CSS (`@import "tailwindcss"` in `app/globals.css`);
 ## 0. Source analysis (extracted, not invented)
 
 - Token layer: `app/globals.css` (`:root`, `.dark`, `[data-theme="blue|light-blue"]`).
-- Primitives: `components/ui/{button,input,card,alert,select}.tsx`, `components/data-grid/data-grid.tsx`,
+- Primitives: `components/ui/{button,input,card,alert,select,price-value}.tsx`, `components/data-grid/data-grid.tsx`,
   `components/theme/theme-toggle.tsx`, `components/brand/logo.tsx`, `lib/ui/cn.ts`,
   `lib/bff/http.ts` (typed errors).
 - Shells: `components/navigation/product-shell.tsx` (product surface) and
@@ -32,8 +32,9 @@ when it was last observed.
 |---|---|---|---|
 | `/` | `app/page.tsx` | Product | Home: search as the central CTA, how-it-works, price source note |
 | `/search` | `app/search/page.tsx`, `app/search/search-client.tsx` | Product | Text search; `?q=` pre-runs the query; local suggestions while typing (≥2 chars) |
-| `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: cover, Steam price block, local-low row, Steam source table, multi-store offers grouped by provider (ITAD / gg.deals) |
+| `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: cover, Steam price block, ownership line (`ownership`), local-low row, Steam source table, multi-store offers grouped by provider (ITAD / gg.deals) |
 | `/wishlist` | `app/wishlist/{page,wishlist-client}.tsx`, `app/wishlist/_lib/*` | Product | Steam wishlist: four explicit states, "Sincronizar ahora" with its report, a price-reference table (base, historical low, MXN official/keyshop minimums) with a per-row refresh, per-band discount % and a hybrid 0-10 deal score driven by a backend viable-minimum threshold |
+| `/library` | `app/library/{page,library-client}.tsx`, `app/library/_lib/*` | Admin | Playnite library import (manual JSON upload of ≤10 MiB) plus the owned/subscription list grouped by store, with the Game Pass tag and the explicit "Sin precios vinculados" state |
 | `/login` | `app/login/page.tsx` | Public | Only public page, plus `/api/auth/{login,refresh,session}` |
 | `/users` | `app/users/*` | Admin | Reference admin slice (`AdminShell` + `DataGrid`), admin role only; consumes the same tokens, cards, badges and `Button` variants as the product surface |
 | `/steam` | `app/steam/*` | Product (legacy) | Earlier Steam page rendered inside `AdminShell`; not part of `ProductShell` |
@@ -41,7 +42,7 @@ when it was last observed.
 - **Gate:** `middleware.ts` + `isPublicRoute` (`lib/security/route-policy.ts`) redirect any app route
   without a usable session to `/login?reason=session_expired`. There is currently no public product
   surface; "product" means the consumer-facing area (`/`, `/search`, `/games/*`), not anonymous access.
-- **Scope of this contract:** `/`, `/search`, `/games/[steamAppId]`, `/wishlist` and `ProductShell`. `/users`
+- **Scope of this contract:** `/`, `/search`, `/games/[steamAppId]`, `/wishlist`, `/library` and `ProductShell`. `/users`
   also consumes it (tokens, `.app-card`, `.app-topbar`, `.table-*`, semantic badges and `Button` variants)
   while keeping `AdminShell` and its admin-only gating. `/steam` still renders inside `AdminShell` with its
   previous layout: it inherits the shared tokens but was not migrated.
@@ -77,6 +78,19 @@ when it was last observed.
   `PUT /api/wishlist/preferences` (BFF `PUT /api/bff/wishlist/preferences`) and only feeds the two deal
   scores. The list uses the shared `DataGrid` in client mode for sorting, global filtering, per-column
   filtering and pagination; mobile tiles consume the same name/AppID filter state.
+- **Library reality:** `/library` is fed by the API's `GET /api/library` (BFF `GET /api/bff/library`) and
+  `POST /api/library/import` (BFF `POST /api/bff/library/import`), both `AdminWithId` on the API. The list is
+  the `user_library` snapshot imported by hand from a Playnite JSON export: the read answers `{ items: [...] }`
+  and the import answers `imported`, `updated`, `unresolved`, `unsupportedSource` and `byStore`. It is not a
+  per-store integration and it never reads the user's machine. Each item also carries the backend-computed
+  price binding: `priceState` (`exact | title_candidate | none | subscription`), `bindingSource`
+  (`steam | itad | title | null`), `steamAppId`, `bestOfficialMinor`/`bestKeyshopMinor` (already MXN minor
+  units), `historyLowMinor`/`basePriceMinor` (provider currency) and `baseCurrency`. There is **no FX in the
+  browser**: MXN is rendered as-is and the provider currency is shown as its code via `Intl`, never converted.
+  A subscription row (`state === "subscription"`) carries the filled Game Pass tag with no price and no
+  ownership language, and `priceState === "title_candidate"` always shows the fixed label
+  "Precio vinculado por título". No price from this page enters the comparator, `selectBestPrice` or any
+  savings math. `storeGameId`, `bindingSource` and `steamAppId` are identity data and are never rendered.
 
 ## 2. Principles
 
@@ -358,6 +372,28 @@ ITAD store against a gg.deals row.
   the zone keeps its kicker and places `Ver en Steam` at the bottom. The Steam CTA always remains at the
   bottom of this historical zone.
 
+### Posesión en el detalle (`game-client.tsx`)
+
+- One badge line under the `AppID` line of the summary header, before the price block. It is rendered from
+  the `ownership` object the detail payload already carries (`components/`-free: three badges, no fetch, no
+  new route, no loading state). When all three fields are empty — and when `ownership` is absent in an old
+  response — the line does not exist at all: no empty container, no placeholder, no extra space.
+- The store display names come from `lib/contracts/stores.ts`, the same map the `/library` filter and report
+  consume. Store keys are canonical (`steam | epic | gog | xbox | amazon | ubisoft | humble | battlenet`,
+  with the known grafía aliases accepted and mapped); anything else, and `steam` itself, is dropped by the
+  normalizer because this page **is** Steam and that badge would be a duplicate of the page being viewed.
+- The normalizer (`normalizeOwnership` in `lib/contracts/steam.ts`) deduplicates, caps at 16 stores, and only
+  accepts a literal `true` for `hasGamePass`. An absent, malformed or non-object `ownership` is "nothing to
+  show" and can never gate the page.
+
+| Condition | Treatment |
+|---|---|
+| `ownedStores` non-empty | one `tabler-badge-info` per store: "Ya lo tienes en <tienda>" using the store display names. Confirmation of identity, so it states the store and nothing else |
+| `hasGamePass === true` | only the standalone `tabler-badge-solid tabler-badge-primary` "Game Pass" tag — the same treatment as `/library`'s rows. It never merges into the "Ya lo tienes" wording, and when a Steam-owned copy also exists in Game Pass both badges render separately |
+| `possibleMatchStores` non-empty | `tabler-badge-warning` "Posible coincidencia en <tiendas>" — the same warning tone as the biblioteca's "Precio vinculado por título", so a tentative state never reads as a confirmation |
+| everything empty or the property absent | nothing renders: the line does not exist, spacing is unchanged |
+| always | no price claim, no discount and no savings math from ownership; ownership never feeds the comparator or `selectBestPrice` |
+
 ### Wishlist (`/wishlist`)
 
 - Rendered inside `ProductShell` (`title="Wishlist de Steam"`). The page is a server component that
@@ -414,6 +450,7 @@ ITAD store against a gg.deals row.
   the visible columns persist in `localStorage` (`wishlist.pageSize.v1`, `wishlist.columns.v1`). Mobile uses
   a compact native input tied to the same global filter state before mapping its tiles, so filtering never
   disappears at 360px. There is no server-side filter, pagination or reordering.
+
 - **Sortable columns:** `Juego` (alphabetical), `Prioridad`, `Alta`, `Actualizado`, `Precio base`,
   `% dto. oficial`, `% dto. keys`, `Deal oficial`, `Deal keys`, `Mínimo histórico`, `Mín. oficial` and
   `Mín. keys`. `Portada` and `Acciones` are not sortable. Numeric and date values sort by their raw
@@ -459,6 +496,94 @@ ITAD store against a gg.deals row.
 | `state` missing or unknown | the whole response is rejected at the BFF (502 upstream error), never mapped to a guess |
 | a sync report count missing or invalid | the report is rejected at the BFF; no count is defaulted to 0 |
 | always | one `sr-only` `<caption>` on the table, `th scope="col"`, decorative covers with `alt=""` and the item name as adjacent text |
+
+### Biblioteca (`/library`)
+
+- Rendered inside `ProductShell` (`wide`, `title="Biblioteca de juegos"`). The server page calls
+  `requireAdminSession()`, so the route is admin-only like `/users`; the global matcher already protects it.
+- Two zones: an `app-card-accent` import card (kicker "Importación", the file input plus "Importar", and the
+  report) and one `app-card` items card (counts, store filter, list). Both BFF routes are `AdminWithId`.
+- **Import:** `<input type="file" accept=".json,application/json">` capped at 10 MiB
+  (`LIBRARY_IMPORT_MAX_BYTES`) and checked in the browser first (valid JSON, non-empty array at the root)
+  before the `POST`. The BFF re-checks the declared length and the real byte length, re-validates the root
+  shape, and forwards the array untouched. The file is never stored and never re-read.
+- **Filter and list:** one native labelled `<select>` (`Todas las tiendas (N)`, then each store with its
+  count), and 100 rows at a time behind "Mostrar N más". Each row shows the title, the store, the state tag,
+  "Instalado" when the backend says so, `Alta <fecha>` (or "Sin fecha de alta"), and the price block.
+- **Prices (`priceState`):** the row's right column renders `Alta` first and the price block under it, so the
+  row keeps its two-line shape at 100 rows per view. `exact` and `title_candidate` render up to four values —
+  `Oficial` and `Keys` are already MXN minor units (the backend converted them), `Base` and `Mín. histórico`
+  come in `baseCurrency` and are **never** converted in the browser. The money primitive is the shared
+  `components/ui/price-value.tsx` (`PriceValue`/`PriceFact`, moved out of `wishlist-client.tsx` unchanged and
+  still used by `/wishlist`), so a missing amount reads "—" and no 0 is invented. A field whose amount or
+  currency is null is omitted; if all four are missing the row shows one muted "Sin precio" and stays.
+  `bindingSource` and `steamAppId` are normalized but never painted.
+- **Report:** the four counters as badges plus one muted badge per store. «Sin resolver» and «Fuente no
+  soportada» only leave the muted tone when greater than zero, and the note states that a reimport neither
+  duplicates nor deletes rows.
+
+**Price/binding states.** The backend computes the binding; the UI only mirrors the four `priceState` values.
+
+| `priceState` | Treatment |
+|---|---|
+| `subscription` | No price, no discount, no ownership language. The accent Game Pass tag is the only price-adjacent signal, and the normalizer forces this state (nulling every amount) when `state === "subscription"`, so a subscription can never paint a price |
+| `exact` | The four MXN/provider values, no extra label: the absent "por título" warning is what marks it as confirmed identity |
+| `title_candidate` | The same values **plus** the `tabler-badge-warning` label "Precio vinculado por título". The wording is fixed: it must never read as a confirmed identity |
+| `none` (also unknown or absent) | Muted "Sin precios vinculados". A value outside the four is normalized to `none`, never to `exact` |
+
+| Condition | Treatment |
+|---|---|
+| `state === "subscription"` | `tabler-badge-solid tabler-badge-primary` "Game Pass", the loudest tag of the row. No price line, no ownership copy, and the row keeps no "Sin precios vinculados" note |
+| `state === "owned"` | `tabler-badge-muted` "En tu biblioteca" |
+| `state === "wished"` | `tabler-badge-info` "Wishlist": the same table holds wishlist rows and they are never shown as owned |
+| any other/missing `state` | the item is dropped by the normalizer, never mapped to `owned` |
+| every row | no **price-derived** ownership badge of any kind ("Ya lo tienes" and similar belong to a later phase), no discount percentage and no savings math. The pre-existing `state` tags (`En tu biblioteca`, `Wishlist`, `Game Pass`) are the only ownership-adjacent labels and they stay as they were |
+| a price field null or invalid | that field is omitted (never a 0, never a convert); at least one valid field keeps the row's price block, and all four missing degrade to "Sin precio" without dropping the row |
+| `baseCurrency` invalid | `Base` and `Mín. histórico` are omitted: a malformed code never reaches `Intl.NumberFormat` |
+| `isInstalled === true` | `tabler-badge-info` "Instalado" with its own icon; any other value renders nothing |
+| `addedAt` present | "Alta <fecha>" via `Intl.DateTimeFormat("es-MX", { dateStyle: "medium", timeZone: "UTC" })` |
+| `addedAt` missing/invalid | "Sin fecha de alta"; the row stays |
+| `store` | normalized to lowercase (the filter and the counts group by it) and shown through a label map; an unknown store prints its own text |
+| store filter with no rows | "No hay juegos de <tienda> en la biblioteca." |
+| 0 items | "Tu biblioteca está vacía. Sube el JSON del export de Playnite para llenarla."; the filter is not rendered |
+| first load in flight | bordered "Cargando..." block at the resolved size |
+| fetch failure | `Alert variant="danger"` plus "Reintentar"; the import card stays usable |
+| file rejected before upload | `Alert variant="danger"` with the reason (over 10 MiB, not JSON, root is not an array, empty array); the input is cleared |
+| import succeeded | the report renders and the list is re-fetched in place, with no navigation |
+| import succeeded but the reload failed | the report stays and an `Alert variant="danger"` asks for a page reload |
+| a report counter missing or invalid | the BFF answers 502; no counter is defaulted to 0 |
+| `byStore` unusable | the breakdown is omitted; the four counters and the import result still render |
+| always | never rendered: raw JSON, the uploaded file, `storeGameId`, BFF routes or credentials |
+
+### Reseñas por plataforma
+
+- Una reseña por `(juego, plataforma)`: `platform` usa el vocabulario de `lib/contracts/stores.ts`, la misma
+  llave de `user_library.store`, así que la reseña y la fila de biblioteca se cruzan sin traducción. El
+  contrato vive en `lib/contracts/reviews.ts`; los meses viajan como `YYYY-MM` (mapean directo a
+  `<input type="month">`), la nota es un entero 0–100 y `scoreLabel` llega calculada por el backend.
+- **`scoreLabel` es solo de presentación y la calcula el servidor.** La UI no replica los umbrales de
+  `ReviewScoreBands.Label`, no los conoce y no muestra una previsualización de la etiqueta mientras se
+  escribe: la etiqueta aparece recién con la respuesta de la API después de guardar. Regla arquitectónica
+  explícita.
+- **Un solo editor, en `/library`.** Cada fila de biblioteca es un par `(juego, plataforma)`, que es
+  exactamente una reseña. La fila muestra la reseña inline (nota + etiqueta, GOTY, rango de meses y texto)
+  y permite crear, editar y borrar con los mismos `Button`, badges, `Alert` e `input-semantic` del resto de
+  la biblioteca; el formulario usa `<input type="month">` para ambos meses, un número 0–100, una casilla
+  GOTY y un `textarea`. Al guardar o borrar, la reseña se actualiza en el sitio en todas las filas que
+  compartan `(gameId, platform)`; no hay navegación ni recarga de la lista.
+- **GOTY es independiente de Game Pass.** El tag `GOTY` (tono success) es un logro de la reseña y nunca se
+  mezcla con el tag de suscripción; un juego en Game Pass puede o no ser GOTY.
+- **Una fila sin `gameId` no se puede reseñar.** No se oculta ni se ofrece una acción rota: la fila muestra
+  el motivo honesto (el catálogo todavía no le da identidad canónica). Lo mismo si su `store` no está en el
+  vocabulario de plataformas.
+- **El detalle del juego es de solo lectura.** Muestra las reseñas de todas las plataformas del juego
+  canónico después de la comparación de precios, en una tarjeta discreta y visualmente secundaria, sin
+  duplicar el editor. Si no hay reseñas, la tarjeta no existe.
+- **Campos aditivos.** `gameId` y `review` se suman a cada item de `GET /api/library`; `reviews` se suma al
+  payload del detalle. Los normalizadores toleran su ausencia (`null` / arreglo vacío) y nunca inventan una
+  reseña. La `review` de una fila solo se pinta si su `gameId` y `platform` coinciden con la fila. La nota
+  se acepta solo como entero 0–100 y el mes solo como `YYYY-MM`; cualquier otra forma degrada a `null`, y
+  `isGoty` solo es verdadero con el literal `true`.
 
 ### DataGrid (`components/data-grid/data-grid.tsx`)
 
@@ -553,6 +678,12 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   list is re-fetched in place: no navigation happens, so the scroll position is kept. Failure renders in
   the row itself (`role="alert"`), never as a page-level error, and a limiter rejection is worded as a wait
   instruction instead of an error.
+- **Import (library):** the file is read and validated in the browser first, then posted as JSON through
+  `csrfFetch`, so the existing global CSRF middleware covers it and is not weakened. A dedicated `importing`
+  flag drives only the button's `loading` and the `aria-live` status line, and disables the input so the
+  chosen file cannot change mid-flight; the list already on screen keeps rendering and the page never
+  re-enters its "Cargando..." state. On success the report appears at the top and the list is re-fetched in
+  place.
 - **Error:** `Alert variant="danger"` on the detail page; inline `.text-danger` `role="alert"` text in
   the search client.
 
@@ -696,6 +827,12 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   the expected list is around 600 rows and the API returns the complete snapshot. The shared `DataGrid`
   is currently unpaged in this screen; add server-side filtering/pagination only when list size or measured
   render cost makes this boundary real.
+- **The library is unpaged on the server and filtered in the browser.** The API returns the whole
+  `user_library` snapshot (~2.6k rows), so `/library` filters by store client-side and reveals 100 rows per
+  "Mostrar más". The normalizer (`app/library/_lib/library-contract.ts`) caps a payload at 20000 items and
+  drops any item whose `state` it does not know instead of guessing `owned`. The import size check exists in
+  the browser (early feedback) and in the BFF (the real 10 MiB limit); the file is never persisted. Add
+  server-side paging/filtering only when a real account outgrows this.
 - **The first sync of a big wishlist can take minutes, and the page can only wait.** `POST
   /api/wishlist/sync` pulls the games with no local row from Steam **sequentially, inside the HTTP
   request**, with no pacing (the backend carries its own `ponytail:` note about it): an empty database plus

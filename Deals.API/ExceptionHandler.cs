@@ -13,6 +13,8 @@ public sealed class ExceptionHandler(ILogger<ExceptionHandler> logger) : IExcept
         {
             ArgumentException => (StatusCodes.Status400BadRequest, "Solicitud no válida", "Revise los datos enviados."),
             UnauthorizedAccessException => (StatusCodes.Status401Unauthorized, "No autorizado", "No fue posible autenticar la solicitud."),
+            // Kestrel raises this when the endpoint/body size limit is exceeded; keep its status (413).
+            BadHttpRequestException badRequest => (badRequest.StatusCode, "Solicitud no válida", "Revise los datos enviados."),
             _ => (StatusCodes.Status500InternalServerError, "Error interno del servidor", "Ocurrió un error al procesar la solicitud.")
         };
 

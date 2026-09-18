@@ -2,12 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ExternalLink, Gamepad2 } from "lucide-react";
+import { ExternalLink, Gamepad2, Trophy } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/ui/cn";
 import type { SteamBundleTier, SteamGame, SteamGameBundle, SteamGameOffer } from "@/lib/contracts/steam";
 import { getSteamGame, refreshSteamGame } from "@/app/steam/_lib/steam-api";
+import { storeLabel } from "@/lib/contracts/stores";
+import { formatReviewMonth } from "@/lib/contracts/reviews";
 import { formatCurrency } from "@/lib/format/currency";
 
 interface GameClientProps {
@@ -753,6 +755,13 @@ export function GameClient({ appId }: GameClientProps) {
   const coverUrl = game.imageUrl && !coverFailed ? game.imageUrl : null;
   const storeUrl = steamStoreUrl(game.appId);
 
+  // Posesión según la biblioteca: tiendas con identidad exacta, Game Pass y coincidencias candidatas.
+  // Si no hay nada que mostrar, el bloque no existe (sin contenedor vacío ni espacio extra).
+  const ownershipOwnedStores = game.ownership.ownedStores;
+  const ownershipPossibleStores = game.ownership.possibleMatchStores;
+  const hasOwnershipBadges =
+    ownershipOwnedStores.length > 0 || game.ownership.hasGamePass || ownershipPossibleStores.length > 0;
+
   // Agrupado por proveedor: cada grupo compara y marca sus propias filas. `classification` ya no
   // filtra nada, solo decide el badge (oficial / keyshop / ninguno).
   // ITAD trae una oferta por tienda → tabla. gg.deals trae un agregado por bucket → lista compacta.
@@ -816,6 +825,23 @@ export function GameClient({ appId }: GameClientProps) {
             <p className="text-sm text-secondary">
               AppID {game.appId}{game.type ? ` · ${game.type}` : ""}
             </p>
+            {hasOwnershipBadges ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {ownershipOwnedStores.map((store) => (
+                  <span key={store} className="tabler-badge tabler-badge-info">
+                    Ya lo tienes en {storeLabel(store)}
+                  </span>
+                ))}
+                {game.ownership.hasGamePass ? (
+                  <span className="tabler-badge tabler-badge-solid tabler-badge-primary">Game Pass</span>
+                ) : null}
+                {ownershipPossibleStores.length > 0 ? (
+                  <span className="tabler-badge tabler-badge-warning">
+                    Posible coincidencia en {ownershipPossibleStores.map((store) => storeLabel(store)).join(", ")}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
             <div className="flex flex-wrap items-baseline gap-2">
               <p className={cn("deal-price text-3xl", game.isFree ? "text-success" : hasPrice ? "text-primary" : "text-danger")}>
                 {priceDisplay}
@@ -1097,6 +1123,61 @@ export function GameClient({ appId }: GameClientProps) {
               />
             ))}
           </div>
+        </section>
+      ) : null}
+
+      {game.reviews.length > 0 ? (
+        <section className="app-card space-y-4 p-5" aria-labelledby="reviews-heading">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted">Reseñas</p>
+            <h2 id="reviews-heading" className="text-xl font-semibold tracking-tight text-primary">
+              Tus reseñas de este juego
+            </h2>
+            <p className="text-xs text-muted">
+              Una reseña por plataforma. Se crean y se editan en la biblioteca; aquí solo se leen.
+            </p>
+          </div>
+          <ul className="space-y-3">
+            {game.reviews.map((review) => {
+              const started = formatReviewMonth(review.startedMonth);
+              const finished = formatReviewMonth(review.finishedMonth);
+              const range =
+                started && finished
+                  ? `De ${started} a ${finished}`
+                  : started
+                    ? `Desde ${started}`
+                    : finished
+                      ? `Hasta ${finished}`
+                      : null;
+              return (
+                <li key={review.reviewId} className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">
+                      {storeLabel(review.platform)}
+                    </span>
+                    {review.score !== null ? (
+                      <span className="tabler-badge tabler-badge-info">
+                        Nota {review.score}
+                        {review.scoreLabel ? ` · ${review.scoreLabel}` : ""}
+                      </span>
+                    ) : (
+                      <span className="tabler-badge tabler-badge-muted">Sin nota</span>
+                    )}
+                    {review.isGoty ? (
+                      <span className="tabler-badge tabler-badge-success">
+                        <Trophy className="h-3 w-3" aria-hidden="true" />
+                        GOTY
+                      </span>
+                    ) : null}
+                    {range ? <span className="text-xs text-muted">{range}</span> : null}
+                  </div>
+                  {review.body ? (
+                    <p className="mt-1 whitespace-pre-wrap break-words text-sm text-secondary">{review.body}</p>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
         </section>
       ) : null}
     </div>

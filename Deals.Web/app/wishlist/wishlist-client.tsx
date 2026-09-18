@@ -7,8 +7,8 @@ import { Gamepad2, RefreshCw } from "lucide-react";
 import { DataGrid } from "@/components/data-grid/data-grid";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { PriceFact, PriceValue } from "@/components/ui/price-value";
 import { refreshSteamGame } from "@/app/steam/_lib/steam-api";
-import { formatCurrency } from "@/lib/format/currency";
 import { cn } from "@/lib/ui/cn";
 import { getWishlist, syncWishlist, updateWishlistPreferences } from "./_lib/wishlist-api";
 import { dealScore, discountPercent } from "./_lib/wishlist-metrics";
@@ -35,13 +35,8 @@ function formatDateTime(value: string | null) {
   return Number.isNaN(date.getTime()) ? null : dateFormatter.format(date);
 }
 
-// Mismo criterio que el detalle del juego (`game-client.tsx`): se formatea en la moneda original del
-// dato, sin convertir. Una moneda que no es MXN se ve distinta porque Intl imprime su código
-// (p.ej. "XYZ 1,234.00") en vez de "MX$". Sin importe o sin moneda no hay nada que formatear: "—".
-function formatMinor(amountMinor: number | null, currency: string | null) {
-  if (amountMinor === null || currency === null) return null;
-  return formatCurrency(amountMinor / 100, "es-MX", currency);
-}
+// El formateo de importes (`formatMinor`, `PriceValue`, `PriceFact`) vive en
+// `components/ui/price-value.tsx` y lo comparten esta página y la biblioteca.
 
 // La prioridad de Steam sigue en la tabla (por si algún día se usa) pero nace oculta: está disponible
 // en el menú «Columnas» y no aparece en la línea meta de las tiles móviles.
@@ -105,35 +100,6 @@ function ItadBadge({ itadGameId }: { readonly itadGameId: string | null }) {
     <span className="tabler-badge tabler-badge-info">Identificado en ITAD</span>
   ) : (
     <span className="tabler-badge tabler-badge-muted">Sin identificar en ITAD</span>
-  );
-}
-
-interface PriceValueProps {
-  readonly amountMinor: number | null;
-  readonly currency: string | null;
-}
-
-// Un precio sin dato no se rellena con 0 ni se marca como gratis: lee "—" en tono muted.
-function PriceValue({ amountMinor, currency }: PriceValueProps) {
-  const display = formatMinor(amountMinor, currency);
-  return display === null ? (
-    <span className="text-muted">—</span>
-  ) : (
-    <span className="deal-price text-primary">{display}</span>
-  );
-}
-
-interface PriceFactProps extends PriceValueProps {
-  readonly label: string;
-}
-
-// Versión para las tiles móviles: etiqueta arriba, importe abajo, dos por fila a 360px.
-function PriceFact({ label, amountMinor, currency }: PriceFactProps) {
-  return (
-    <div className="min-w-0">
-      <p className="text-xs text-muted">{label}</p>
-      <PriceValue amountMinor={amountMinor} currency={currency} />
-    </div>
   );
 }
 

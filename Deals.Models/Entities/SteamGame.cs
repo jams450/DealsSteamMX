@@ -74,6 +74,12 @@ public class SteamGame : BaseModel
     [Column("observed_at", TypeName = "timestamp with time zone")]
     public DateTime ObservedAt { get; set; }
 
+    /// <summary>Nullable canonical link. A snapshot may exist before the resolver has seen it.</summary>
+    [Column("game_id")]
+    public long? GameId { get; set; }
+
+    public Game? Game { get; set; }
+
     public ICollection<SteamPriceObservation> PriceObservations { get; set; } = new List<SteamPriceObservation>();
 
     public ICollection<GameOffer> Offers { get; set; } = new List<GameOffer>();

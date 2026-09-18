@@ -1,4 +1,4 @@
-import { Bookmark, Home, Search, Users } from "lucide-react";
+import { Bookmark, Home, Library, Search, Users } from "lucide-react";
 
 export type NavItem = {
   href: string;
@@ -9,7 +9,8 @@ export type NavItem = {
 export const productNavItems: NavItem[] = [
   { href: "/", label: "Inicio", icon: Home },
   { href: "/search", label: "Comparar", icon: Search },
-  { href: "/wishlist", label: "Wishlist", icon: Bookmark }
+  { href: "/wishlist", label: "Wishlist", icon: Bookmark },
+  { href: "/library", label: "Biblioteca", icon: Library }
 ];
 
 export const adminNavItems: NavItem[] = [

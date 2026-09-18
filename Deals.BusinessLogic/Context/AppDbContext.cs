@@ -17,7 +17,10 @@ public class AppDbContext : DbContext
 
     public DbSet<User> Users { get; set; } = null!;
     public DbSet<UserSession> UserSessions { get; set; } = null!;
+    public DbSet<Game> Games { get; set; } = null!;
+    public DbSet<GameExternalId> GameExternalIds { get; set; } = null!;
     public DbSet<UserLibrary> UserLibrary { get; set; } = null!;
+    public DbSet<GameReview> GameReviews { get; set; } = null!;
     public DbSet<SteamGame> SteamGames { get; set; } = null!;
     public DbSet<SteamPriceObservation> SteamPriceObservations { get; set; } = null!;
     public DbSet<GameOffer> GameOffers { get; set; } = null!;
@@ -82,16 +85,58 @@ public class AppDbContext : DbContext
         {
             entity.HasIndex(e => new { e.UserId, e.Store, e.StoreGameId, e.State }).IsUnique();
             entity.HasIndex(e => new { e.UserId, e.ItadGameId });
+            entity.HasIndex(e => e.GameId);
             // The (user_id, lower(title)) index is not expressible in EF Core; it lives in SQL only.
             entity.HasOne(e => e.User)
                 .WithMany()
                 .HasForeignKey(e => e.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.Game)
+                .WithMany()
+                .HasForeignKey(e => e.GameId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<GameReview>(entity =>
+        {
+            // One review per (user, game, platform). Deliberately no FK to user_library: that row is an
+            // import artifact whose unique key includes state, so a reimport recreates it.
+            entity.HasIndex(e => new { e.UserId, e.GameId, e.Platform }).IsUnique();
+            entity.HasIndex(e => e.GameId);
+            entity.HasOne<User>()
+                .WithMany()
+                .HasForeignKey(e => e.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<Game>()
+                .WithMany()
+                .HasForeignKey(e => e.GameId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<Game>(entity =>
+        {
+            // Not UNIQUE on purpose: normalized_title compares and displays, it never asserts identity.
+            entity.HasIndex(e => e.NormalizedTitle);
+            entity.HasMany(e => e.ExternalIds)
+                .WithOne(e => e.Game)
+                .HasForeignKey(e => e.GameId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<GameExternalId>(entity =>
+        {
+            entity.HasIndex(e => new { e.NamespaceName, e.ExternalId }).IsUnique();
+            entity.HasIndex(e => e.GameId);
         });
 
         modelBuilder.Entity<SteamGame>(entity =>
         {
             entity.HasIndex(e => new { e.AppId, e.Region }).IsUnique();
+            entity.HasIndex(e => e.GameId);
+            entity.HasOne(e => e.Game)
+                .WithMany()
+                .HasForeignKey(e => e.GameId)
+                .OnDelete(DeleteBehavior.Restrict);
             entity.HasMany(e => e.PriceObservations)
                 .WithOne(e => e.SteamGame)
                 .HasForeignKey(e => e.SteamGameId)

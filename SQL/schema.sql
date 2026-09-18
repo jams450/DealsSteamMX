@@ -198,3 +198,69 @@ CREATE TABLE fx_rates (
     PRIMARY KEY (base, quote, rate_date)
 );
 
+-- Canonical game identity (docs/PLAN_CATALOG.md). games + game_external_ids are the shared identity;
+-- steam_games.game_id and user_library.game_id are nullable derived links added below. No existing
+-- anchor (game_offers, steam_price_observations, external_bundle_games) changes.
+CREATE TABLE games (
+    game_id BIGSERIAL PRIMARY KEY,
+    title VARCHAR(512) NOT NULL,
+    normalized_title VARCHAR(512) NOT NULL,   -- comparison/display key only, never identity
+    type VARCHAR(32),
+    image_url VARCHAR(512),
+    is_free BOOLEAN NOT NULL DEFAULT FALSE,
+    release_year INT,
+    first_release_date DATE,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100),
+    updated_by VARCHAR(100)
+);
+
+-- Not UNIQUE on purpose: a normalized title never asserts identity.
+CREATE INDEX idx_games_normalized_title ON games(normalized_title);
+
+-- Durable identity. namespace reuses the user_library.store vocabulary plus provider namespaces.
+CREATE TABLE game_external_ids (
+    game_external_id BIGSERIAL PRIMARY KEY,
+    game_id BIGINT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+    namespace VARCHAR(32) NOT NULL,
+    external_id VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100),
+    updated_by VARCHAR(100),
+    CONSTRAINT uq_game_external_ids UNIQUE (namespace, external_id)
+);
+
+CREATE INDEX idx_game_external_ids_game ON game_external_ids(game_id);
+
+-- Nullable derived links: NULL on user_library is a valid "no canonical identity" state, so neither
+-- column is ever made NOT NULL.
+ALTER TABLE steam_games ADD COLUMN game_id BIGINT NULL REFERENCES games(game_id);
+ALTER TABLE user_library ADD COLUMN game_id BIGINT NULL REFERENCES games(game_id);
+
+CREATE INDEX idx_steam_games_game ON steam_games(game_id);
+CREATE INDEX idx_user_library_game ON user_library(game_id);
+
+-- Per-platform reviews (docs/PLAN_LIBRARY.md §9). Deliberately NOT foreign-keyed to user_library: that
+-- row is an import artifact whose unique key includes state, so a reimport or a state change recreates
+-- it. (game_id, platform) is stable. The score label is computed, never persisted, and there are no
+-- CHECK constraints (validation lives in ReviewService), matching the rest of the schema.
+CREATE TABLE game_reviews (
+    game_review_id BIGSERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    game_id BIGINT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+    platform VARCHAR(32) NOT NULL,   -- same vocabulary as user_library.store
+    started_month DATE,              -- day 1 of the month
+    finished_month DATE,
+    score SMALLINT,                  -- 0..100
+    is_goty BOOLEAN NOT NULL DEFAULT FALSE,
+    body TEXT,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100),
+    updated_by VARCHAR(100),
+    CONSTRAINT uq_game_reviews UNIQUE (user_id, game_id, platform)
+);
+
+CREATE INDEX idx_game_reviews_game ON game_reviews(game_id);

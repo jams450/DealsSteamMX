@@ -9,7 +9,7 @@ plataforma (§9). Sin integraciones por tienda y sin Steam por API: eso queda di
 Alcance del producto: dos partes. **Wishlist y precios** (`PLAN_WISHLIST.md`) y **biblioteca con reseñas**
 (este plan, que en esta fase construye la biblioteca y el binding).
 
-Continúa a `PLAN_WISHLIST.md` y `PLAN_CATALOG.md`. Leer también `AGENTS.md` y `PLAN_BASE_MVP.md`.
+Continúa a `PLAN_WISHLIST.md`, `PLAN_CATALOG.md` y `PLAN_IMPLEMENTACION_BIBLIOTECA.md`. Leer también `AGENTS.md` y `PLAN_BASE_MVP.md`.
 
 Este plan absorbe la mitad "biblioteca poseída" que `PLAN_WISHLIST.md` declaraba en sus §3, §4 y §5.
 

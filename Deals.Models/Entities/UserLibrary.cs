@@ -22,6 +22,10 @@ public class UserLibrary : BaseModel
     [StringLength(36)]
     public string? ItadGameId { get; set; }
 
+    /// <summary>Nullable canonical link: <c>NULL</c> means "no canonical identity", a valid state.</summary>
+    [Column("game_id")]
+    public long? GameId { get; set; }
+
     [Column("store")]
     [Required]
     [StringLength(32)]
@@ -55,4 +59,6 @@ public class UserLibrary : BaseModel
     public DateTime ImportedAt { get; set; }
 
     public User? User { get; set; }
+
+    public Game? Game { get; set; }
 }

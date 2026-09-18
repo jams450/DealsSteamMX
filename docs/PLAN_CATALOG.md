@@ -7,8 +7,9 @@ para que la misma ficha de juego se lea en un solo sitio, y para que añadir fue
 (HowLongToBeat, IGDB) sea **insertar datos y no migrar**. No se renombra `steam_games` ni se re-ancla
 `game_offers` a `game_id`.
 
-Continúa a `PLAN_ITAD.md`. Consumidores: `PLAN_LIBRARY.md` (biblioteca y reseñas) y `PLAN_WISHLIST.md`
-(wishlist y alertas). Leer también `AGENTS.md` y `PLAN_BASE_MVP.md`.
+Continúa a `PLAN_ITAD.md` y `PLAN_IMPLEMENTACION_BIBLIOTECA.md`. Consumidores: `PLAN_LIBRARY.md`
+(biblioteca y reseñas) y `PLAN_WISHLIST.md` (wishlist y alertas). Leer también `AGENTS.md` y
+`PLAN_BASE_MVP.md`.
 
 ## 1. El problema y la decisión
 

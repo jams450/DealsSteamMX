@@ -20,6 +20,10 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICurrentUserService, CurrentUserService>();
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<ISteamGameService, SteamGameService>();
+        services.AddScoped<IGameIdentityResolver, GameIdentityResolver>();
+        services.AddScoped<ILibraryPriceBindingService, LibraryPriceBindingService>();
+        services.AddScoped<IGameOwnershipService, GameOwnershipService>();
+        services.AddScoped<IReviewService, ReviewService>();
         services.AddScoped<IRepository, Repository>();
         services.AddHttpClient<ISteamStoreClient, SteamStoreClient>((serviceProvider, client) =>
         {

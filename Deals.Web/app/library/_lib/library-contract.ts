@@ -1,0 +1,269 @@
+// Rutas relativas a propósito: este módulo se cubre con `node --test`, que no resuelve el alias `@/`.
+import { normalizeReview, type Review } from "../../../lib/contracts/reviews.ts";
+import { toStoreKey } from "../../../lib/contracts/stores.ts";
+
+type UnknownRecord = Record<string, unknown>;
+
+// Estados de `user_library.state` que la biblioteca sabe pintar. `wished` comparte tabla con la
+// wishlist: se muestra con su propio tag y nunca como posesión. Un estado que no esté aquí se
+// descarta (la fila se cae), nunca se mapea a `owned`: una suscripción no puede leerse como compra.
+export const LIBRARY_STATES = ["owned", "subscription", "wished"] as const;
+export type LibraryState = (typeof LIBRARY_STATES)[number];
+
+// Tope del archivo de Playnite en bytes: se valida en el cliente (aviso temprano) y en el BFF (el
+// límite real). El export real pesa menos de 1 MiB, así que 10 MiB es holgado.
+export const LIBRARY_IMPORT_MAX_BYTES = 10 * 1024 * 1024;
+
+// Resultado del binding de precios que calcula el backend. `none` es el valor seguro: cualquier cosa que
+// no esté en esta lista (o que falte) cae ahí, nunca a `exact`, porque un vínculo inventado mostraría un
+// precio que nadie confirmó.
+export const LIBRARY_PRICE_STATES = ["exact", "title_candidate", "none", "subscription"] as const;
+export type LibraryPriceState = (typeof LIBRARY_PRICE_STATES)[number];
+
+// Por qué identidad se llegó al precio: appid de Steam, UUID de ITAD o coincidencia de título.
+export const LIBRARY_BINDING_SOURCES = ["steam", "itad", "title"] as const;
+export type LibraryBindingSource = (typeof LIBRARY_BINDING_SOURCES)[number];
+
+export type LibraryItem = {
+  readonly userLibraryId: number;
+  readonly store: string;
+  // Identidad de tienda: solo se usa como dato de la fila (nunca se pinta en la UI).
+  readonly storeGameId: string;
+  readonly title: string;
+  readonly state: LibraryState;
+  readonly isInstalled: boolean;
+  readonly addedAt: string | null;
+  readonly importedAt: string | null;
+  readonly priceState: LibraryPriceState;
+  // Identidad del vínculo: se normaliza para no pintarla nunca; la UI solo distingue por `priceState`.
+  readonly bindingSource: LibraryBindingSource | null;
+  readonly steamAppId: number | null;
+  // Identidad canónica del juego: es la llave para reseñar. `null` significa que el catálogo todavía no
+  // lo reconoce, así que la fila no se puede reseñar (no se ofrece una acción rota).
+  readonly gameId: number | null;
+  // Reseña del usuario para este `(gameId, platform)`, si existe. Se pinta solo cuando coincide con la
+  // fila; ver `normalizeLibraryItem`.
+  readonly review: Review | null;
+  // Los dos mínimos ya vienen convertidos a MXN por el backend; el precio base y el mínimo histórico
+  // llegan en la moneda del proveedor (`baseCurrency`) y no se convierten en el navegador.
+  readonly bestOfficialMinor: number | null;
+  readonly bestKeyshopMinor: number | null;
+  readonly historyLowMinor: number | null;
+  readonly basePriceMinor: number | null;
+  readonly baseCurrency: string | null;
+};
+
+export type LibraryResponse = {
+  readonly items: readonly LibraryItem[];
+};
+
+export type LibraryStoreCount = {
+  readonly store: string;
+  readonly count: number;
+};
+
+export type LibraryImportReport = {
+  readonly imported: number;
+  readonly updated: number;
+  readonly unresolved: number;
+  readonly unsupportedSource: number;
+  readonly byStore: readonly LibraryStoreCount[];
+};
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === "object" && value !== null;
+}
+
+// El backend responde camelCase; se tolera PascalCase porque los DTOs de .NET pueden reconfigurarse.
+function read(value: UnknownRecord, key: string): unknown {
+  return value[key] ?? value[key.charAt(0).toUpperCase() + key.slice(1)];
+}
+
+function toText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function toBoundedText(value: unknown, maxLength: number): string | null {
+  const text = toText(value);
+  return text === null ? null : text.slice(0, maxLength);
+}
+
+function toPositiveInteger(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function toNonNegativeInteger(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+// Timestamp normalizado a UTC. Acepta día suelto, ISO sin zona (se asume UTC: es lo que significa un
+// DateTime sin `Kind` guardado así) y zona explícita; la fracción de segundos se descarta. El
+// renderizador formatea siempre con `timeZone: "UTC"`, así que un `Added` de Playnite no cambia de día.
+const UTC_TIMESTAMP = /^(\d{4}-\d{2}-\d{2})(T\d{2}:\d{2}(?::\d{2})?)?(?:\.\d+)?(Z|[+-]\d{2}:\d{2})?$/;
+
+function toUtcTimestamp(value: unknown): string | null {
+  const text = toText(value);
+  if (text === null) return null;
+
+  const match = UTC_TIMESTAMP.exec(text);
+  if (match === null) return null;
+
+  const day = match[1] ?? "";
+  const calendar = new Date(`${day}T00:00:00Z`);
+  if (Number.isNaN(calendar.getTime()) || calendar.toISOString().slice(0, 10) !== day) return null;
+
+  const normalized = `${day}${match[2] ?? "T00:00:00"}${match[3] ?? "Z"}`;
+  return Number.isNaN(new Date(normalized).getTime()) ? null : normalized;
+}
+
+// Tienda normalizada a minúsculas: el filtro y el conteo agrupan por este valor, así que "GOG" y "gog"
+// no pueden aparecer como dos tiendas distintas. El nombre visible lo pone la capa de UI.
+function toStore(value: unknown): string | null {
+  const text = toBoundedText(value, 64)?.toLowerCase();
+  return text === undefined ? null : text;
+}
+
+function toLibraryState(value: unknown): LibraryState | null {
+  const text = toText(value)?.toLowerCase();
+  return text === "owned" || text === "subscription" || text === "wished" ? text : null;
+}
+
+function toPriceState(value: unknown): LibraryPriceState {
+  const text = toText(value)?.toLowerCase();
+  return text === "exact" || text === "title_candidate" || text === "none" || text === "subscription" ? text : "none";
+}
+
+function toBindingSource(value: unknown): LibraryBindingSource | null {
+  const text = toText(value)?.toLowerCase();
+  return text === "steam" || text === "itad" || text === "title" ? text : null;
+}
+
+// Importes en la unidad mínima de su moneda (mismo criterio que la wishlist): entero seguro y no
+// negativo. Un decimal, un negativo o un texto raro se descartan a null, nunca se redondean.
+function toPriceMinor(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+// ISO-4217 de tres letras. Es la única forma que llega a `Intl.NumberFormat`: un código malformado
+// lanzaría RangeError en el render.
+function toCurrencyCode(value: unknown): string | null {
+  const text = toText(value)?.toUpperCase();
+  return text !== undefined && /^[A-Z]{3}$/.test(text) ? text : null;
+}
+
+const MAX_TITLE_LENGTH = 256;
+const MAX_STORE_GAME_ID_LENGTH = 128;
+// Tope defensivo del render: el export real trae ~2.6k filas. ponytail: trunca en silencio; subirlo si
+// alguna cuenta supera el tope.
+const MAX_LIBRARY_ITEMS = 20_000;
+const MAX_BY_STORE_ENTRIES = 64;
+
+function normalizeLibraryItem(value: unknown): LibraryItem | null {
+  if (!isRecord(value)) return null;
+
+  const userLibraryId = toPositiveInteger(read(value, "userLibraryId"));
+  const store = toStore(read(value, "store"));
+  const storeGameId = toBoundedText(read(value, "storeGameId"), MAX_STORE_GAME_ID_LENGTH);
+  const title = toBoundedText(read(value, "title"), MAX_TITLE_LENGTH);
+  const state = toLibraryState(read(value, "state"));
+  if (userLibraryId === null || store === null || storeGameId === null || title === null || state === null) {
+    return null;
+  }
+
+  // Una suscripción no puede llevar precio aunque el backend lo mande: el estado se fuerza aquí, así que
+  // ningún render puede mostrar un importe ni un vínculo de Game Pass.
+  const subscription = state === "subscription";
+
+  // La reseña solo se acepta si pertenece a esta fila: un `gameId`/`platform` que no coincide se descarta
+  // en vez de pintar una reseña ajena sobre el juego equivocado.
+  const gameId = toPositiveInteger(read(value, "gameId"));
+  const platform = toStoreKey(store);
+  const review = normalizeReview(read(value, "review"));
+  const matchedReview =
+    review !== null && gameId !== null && platform !== null && review.gameId === gameId && review.platform === platform
+      ? review
+      : null;
+
+  return {
+    userLibraryId,
+    store,
+    storeGameId,
+    title,
+    state,
+    // Solo un `true` literal marca instalado: cualquier otra cosa se queda en `false`, así que el
+    // indicador nunca puede aparecer por un dato dudoso.
+    isInstalled: read(value, "isInstalled") === true,
+    addedAt: toUtcTimestamp(read(value, "addedAt")),
+    importedAt: toUtcTimestamp(read(value, "importedAt")),
+    priceState: subscription ? "subscription" : toPriceState(read(value, "priceState")),
+    bindingSource: toBindingSource(read(value, "bindingSource")),
+    steamAppId: toPositiveInteger(read(value, "steamAppId")),
+    gameId,
+    review: matchedReview,
+    bestOfficialMinor: subscription ? null : toPriceMinor(read(value, "bestOfficialMinor")),
+    bestKeyshopMinor: subscription ? null : toPriceMinor(read(value, "bestKeyshopMinor")),
+    historyLowMinor: subscription ? null : toPriceMinor(read(value, "historyLowMinor")),
+    basePriceMinor: subscription ? null : toPriceMinor(read(value, "basePriceMinor")),
+    baseCurrency: subscription ? null : toCurrencyCode(read(value, "baseCurrency"))
+  };
+}
+
+// Acepta `{ items: [...] }` (contrato) y también el arreglo crudo, porque el BFF es el único que habla
+// con la API y conviene que un cambio de envoltura no rompa la página. Un `items` que no es arreglo sí
+// se rechaza: una forma inválida no puede leerse como "biblioteca vacía".
+export function normalizeLibraryResponse(input: unknown): LibraryResponse | null {
+  const rawItems = Array.isArray(input)
+    ? input
+    : isRecord(input) && Array.isArray(read(input, "items"))
+      ? (read(input, "items") as unknown[])
+      : null;
+  if (rawItems === null) return null;
+
+  const items: LibraryItem[] = [];
+  for (const entry of rawItems) {
+    const item = normalizeLibraryItem(entry);
+    if (item === null) continue;
+    items.push(item);
+    if (items.length === MAX_LIBRARY_ITEMS) break;
+  }
+
+  return { items };
+}
+
+function normalizeByStore(value: unknown): LibraryStoreCount[] {
+  if (!isRecord(value)) return [];
+
+  const counts: LibraryStoreCount[] = [];
+  for (const [key, rawCount] of Object.entries(value)) {
+    const store = toStore(key);
+    const count = toNonNegativeInteger(rawCount);
+    if (store === null || count === null) continue;
+    counts.push({ store, count });
+    if (counts.length === MAX_BY_STORE_ENTRIES) break;
+  }
+
+  return counts.sort((left, right) => right.count - left.count || left.store.localeCompare(right.store, "es-MX"));
+}
+
+// Los cuatro contadores son parte del contrato: si falta uno, el reporte entero se rechaza en vez de
+// mostrar un 0 inventado. `byStore` es el desglose: si llega raro se pierde el desglose, no el reporte.
+export function normalizeLibraryImportResponse(input: unknown): LibraryImportReport | null {
+  if (!isRecord(input)) return null;
+
+  const imported = toNonNegativeInteger(read(input, "imported"));
+  const updated = toNonNegativeInteger(read(input, "updated"));
+  const unresolved = toNonNegativeInteger(read(input, "unresolved"));
+  const unsupportedSource = toNonNegativeInteger(read(input, "unsupportedSource"));
+  if (imported === null || updated === null || unresolved === null || unsupportedSource === null) return null;
+
+  return {
+    imported,
+    updated,
+    unresolved,
+    unsupportedSource,
+    byStore: normalizeByStore(read(input, "byStore"))
+  };
+}

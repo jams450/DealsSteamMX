@@ -1,6 +1,9 @@
 using Deals.API.Models.Steam;
+using Deals.API.Models.Reviews;
 using Deals.BusinessLogic.Interfaces;
+using Deals.BusinessLogic.Models.Library;
 using Deals.BusinessLogic.Models.Steam;
+using Deals.Models.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
@@ -11,7 +14,11 @@ namespace Deals.API.Controllers;
 [Route("api/steam")]
 [Authorize(Policy = "UserWithId")]
 [EnableRateLimiting("steam-read")]
-public sealed class SteamController(ISteamGameService steamGameService) : ControllerBase
+public sealed class SteamController(
+    ISteamGameService steamGameService,
+    ICurrentUserService currentUserService,
+    IGameOwnershipService gameOwnershipService,
+    IReviewService reviewService) : ControllerBase
 {
     [HttpGet("search")]
     public async Task<ActionResult<IReadOnlyList<SteamSearchResponse>>> Search(
@@ -59,7 +66,18 @@ public sealed class SteamController(ISteamGameService steamGameService) : Contro
         try
         {
             var game = await steamGameService.GetByAppIdAsync(appId, forceRefresh, cancellationToken);
-            return game == null ? NotFound() : Ok(ToResponse(game));
+            if (game == null)
+            {
+                return NotFound();
+            }
+
+            var ownership = await ResolveOwnershipAsync(appId, cancellationToken);
+            var reviews = await reviewService.GetForSteamAppAsync(
+                currentUserService.GetRequiredUserId(),
+                appId,
+                cancellationToken);
+
+            return Ok(ToResponse(game, ownership, reviews));
         }
         catch (HttpRequestException)
         {
@@ -67,10 +85,22 @@ public sealed class SteamController(ISteamGameService steamGameService) : Contro
         }
     }
 
+    // Optional additive block: an unresolvable user id is "no ownership", never a failure.
+    private async Task<GameOwnership> ResolveOwnershipAsync(int appId, CancellationToken cancellationToken)
+    {
+        var userId = currentUserService.GetUserId();
+        return userId is > 0
+            ? await gameOwnershipService.ResolveAsync(appId, userId.Value, cancellationToken)
+            : GameOwnership.None;
+    }
+
     private static SteamSearchResponse ToResponse(SteamSearchResult result) =>
         new(result.AppId, result.Name, result.Type, result.ImageUrl, result.HasDetails, result.RefreshedAt);
 
-    private static SteamGameResponse ToResponse(SteamGameDetails game) =>
+    private static SteamGameResponse ToResponse(
+        SteamGameDetails game,
+        GameOwnership ownership,
+        IReadOnlyList<GameReview> reviews) =>
         new(game.AppId, game.Name, game.Type, game.ImageUrl, game.IsFree, game.Currency, game.InitialPriceMinor,
             game.CurrentPriceMinor, game.DiscountPercent, game.LowestPriceMinor, game.LowestPriceAt,
             game.Region, game.ObservedAt,
@@ -81,7 +111,12 @@ public sealed class SteamController(ISteamGameService steamGameService) : Contro
             game.GgDealsStale,
             (game.Bundles ?? []).Select(ToResponse).ToList(),
             game.BundlesRefreshedAt,
-            game.BundlesStale);
+            game.BundlesStale,
+            new SteamGameOwnershipResponse(
+                ownership.OwnedStores.ToArray(),
+                ownership.HasGamePass,
+                ownership.PossibleMatchStores.ToArray()),
+            reviews.Select(ReviewResponse.From).ToList());
 
     private static SteamGameBundleResponse ToResponse(SteamGameBundle bundle) =>
         new(bundle.Source, bundle.BundleKey, bundle.Title, bundle.ShopId, bundle.ShopName,

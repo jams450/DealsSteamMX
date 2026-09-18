@@ -1,5 +1,7 @@
 namespace Deals.API.Models.Steam;
 
+using Deals.API.Models.Reviews;
+
 /// <summary>
 /// Provider-neutral offer snapshot exposed to clients. Includes the original price, the derived MXN
 /// value and the FX metadata used for it. Never exposes entity type names or navigation state.
@@ -80,6 +82,17 @@ public sealed record SteamGameBundleResponse(
     DateTime ObservedAt,
     IReadOnlyList<SteamGameBundleTierResponse> Tiers);
 
+/// <summary>
+/// Additive ownership block of the game detail. <see cref="PossibleMatchStores"/> is a read-only
+/// normalized-title candidate and never asserts ownership; a subscription is reported only through
+/// <see cref="HasGamePass"/>. Store keys reuse the <c>user_library.store</c> vocabulary and never
+/// include <c>steam</c> (the page itself).
+/// </summary>
+public sealed record SteamGameOwnershipResponse(
+    string[] OwnedStores,
+    bool HasGamePass,
+    string[] PossibleMatchStores);
+
 public sealed record SteamGameResponse(
     int AppId,
     string Name,
@@ -101,4 +114,6 @@ public sealed record SteamGameResponse(
     bool GgDealsStale,
     IReadOnlyList<SteamGameBundleResponse> Bundles,
     DateTime? BundlesRefreshedAt,
-    bool BundlesStale);
+    bool BundlesStale,
+    SteamGameOwnershipResponse Ownership,
+    IReadOnlyList<ReviewResponse> Reviews);

@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text.Json;
 using Deals.BusinessLogic.Interfaces;
+using Deals.BusinessLogic.Models.Catalog;
 using Deals.BusinessLogic.Models.GgDeals;
 using Deals.BusinessLogic.Models.Itad;
 using Deals.BusinessLogic.Models.Steam;
@@ -21,6 +23,7 @@ public sealed class SteamGameService(
     IItadClient itadClient,
     IGgDealsClient ggDealsClient,
     IFxRateService fxRateService,
+    IGameIdentityResolver identityResolver,
     SteamOffersSettings? offersSettings = null) : ISteamGameService
 {
     private const string Region = "mx";
@@ -168,7 +171,8 @@ public sealed class SteamGameService(
                     Type = result.Type,
                     ImageUrl = result.ImageUrl,
                     Region = Region,
-                    ObservedAt = observedAt
+                    ObservedAt = observedAt,
+                    GameId = await ResolveCanonicalGameIdAsync(result.Name, result.AppId, null, cancellationToken)
                 });
                 // A row written by search holds name/type/artwork only: no details, no provider refresh.
                 mapped.Add(result);
@@ -184,6 +188,12 @@ public sealed class SteamGameService(
             }
 
             game.ObservedAt = observedAt;
+            if (game.GameId is null)
+            {
+                // Progressive backfill: rows created before the canonical catalog acquire identity here.
+                game.GameId = await ResolveCanonicalGameIdAsync(result.Name, result.AppId, game.ItadGameId, cancellationToken);
+            }
+
             await repository.SaveChangesAsync();
 
             // Detail snapshot and provider timestamps come from the persisted row, not from the search hit.
@@ -554,9 +564,15 @@ public sealed class SteamGameService(
             {
                 AppId = details.AppId,
                 Region = details.Region,
-                Name = details.Name
+                Name = details.Name,
+                GameId = await ResolveCanonicalGameIdAsync(details.Name, details.AppId, null, ct)
             };
             await repository.Save(game);
+        }
+        else if (game.GameId is null)
+        {
+            // Progressive backfill: an old snapshot gets its canonical row on the next detail write.
+            game.GameId = await ResolveCanonicalGameIdAsync(details.Name, details.AppId, game.ItadGameId, ct);
         }
 
         game.Name = details.Name;
@@ -598,6 +614,34 @@ public sealed class SteamGameService(
         }
 
         return game;
+    }
+
+    /// <summary>
+    /// Canonical identity for one Steam snapshot: always seeds <c>('steam', appid)</c> and, when the
+    /// snapshot already knows one, <c>('itad', uuid)</c>. DB-only: it never triggers an ITAD lookup and
+    /// never inspects provider data. Runs inside the caller's transaction when there is one.
+    /// </summary>
+    private async Task<long> ResolveCanonicalGameIdAsync(
+        string title,
+        int appId,
+        string? itadGameId,
+        CancellationToken cancellationToken)
+    {
+        var ids = new List<GameExternalIdRef>(2)
+        {
+            new(GameExternalIdNamespaces.Steam, appId.ToString(CultureInfo.InvariantCulture))
+        };
+
+        if (!string.IsNullOrWhiteSpace(itadGameId))
+        {
+            ids.Add(new GameExternalIdRef(GameExternalIdNamespaces.Itad, itadGameId));
+        }
+
+        var game = await identityResolver.ResolveOrCreateGameAsync(
+            new GameIdentityRequest(title, ids),
+            cancellationToken);
+
+        return game.GameId;
     }
 
     /// <summary>

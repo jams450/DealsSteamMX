@@ -1,3 +1,6 @@
+import { toStoreKey, type StoreKey } from "./stores.ts";
+import { normalizeReviewList, type Review } from "./reviews.ts";
+
 type UnknownRecord = Record<string, unknown>;
 
 export type SteamSearchResult = {
@@ -83,6 +86,14 @@ export type SteamGameBundle = {
   readonly tiers: readonly SteamBundleTier[];
 };
 
+// Posesión de la biblioteca tal como la calcula el backend: tiendas con identidad exacta y coincidencias
+// por título. Se muestra tal cual: la UI nunca confunde "posible" con "confirmado".
+export type SteamOwnership = {
+  readonly ownedStores: readonly StoreKey[];
+  readonly hasGamePass: boolean;
+  readonly possibleMatchStores: readonly StoreKey[];
+};
+
 export type SteamGame = SteamSearchResult & {
   readonly isFree: boolean;
   readonly currency: string | null;
@@ -101,7 +112,43 @@ export type SteamGame = SteamSearchResult & {
   readonly bundles: readonly SteamGameBundle[];
   readonly bundlesRefreshedAt: string | null;
   readonly bundlesStale: boolean;
+  readonly ownership: SteamOwnership;
+  // Reseñas del usuario para el juego canónico, en todas sus plataformas. Campo aditivo: un payload sin
+  // `reviews` da arreglo vacío y la sección no se renderiza. Solo lectura en el detalle.
+  readonly reviews: readonly Review[];
 };
+
+// Tope defensivo: una biblioteca real no tiene más tiendas que el catálogo.
+const MAX_OWNERSHIP_STORES = 16;
+
+function toOwnershipStores(value: unknown): readonly StoreKey[] {
+  if (!Array.isArray(value)) return [];
+
+  const seen = new Set<string>();
+  const stores: StoreKey[] = [];
+  for (const entry of value) {
+    const key = toStoreKey(entry);
+    if (key === null || key === "steam" || seen.has(key)) continue;
+    seen.add(key);
+    stores.push(key);
+    if (stores.length === MAX_OWNERSHIP_STORES) break;
+  }
+  return stores;
+}
+
+// `ownership` ausente o ilegible es "nada que mostrar": arreglos vacíos y `false`. Nunca bloquea ni
+// inventa una coincidencia.
+function normalizeOwnership(value: unknown): SteamOwnership {
+  if (!isRecord(value)) {
+    return { ownedStores: [], hasGamePass: false, possibleMatchStores: [] };
+  }
+
+  return {
+    ownedStores: toOwnershipStores(read(value, "ownedStores")),
+    hasGamePass: read(value, "hasGamePass") === true,
+    possibleMatchStores: toOwnershipStores(read(value, "possibleMatchStores"))
+  };
+}
 
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null;
@@ -437,6 +484,8 @@ export function normalizeSteamGame(input: unknown): SteamGame | null {
     ggDealsStale: read(value, "ggDealsStale") === true,
     bundles: normalizeSteamBundles(read(value, "bundles")),
     bundlesRefreshedAt: toIsoDateTime(read(value, "bundlesRefreshedAt")),
-    bundlesStale: read(value, "bundlesStale") === true
+    bundlesStale: read(value, "bundlesStale") === true,
+    ownership: normalizeOwnership(read(value, "ownership")),
+    reviews: normalizeReviewList(read(value, "reviews"))
   };
 }
