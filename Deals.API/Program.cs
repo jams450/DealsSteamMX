@@ -15,6 +15,7 @@ builder.Services.Configure<SteamOptions>(builder.Configuration.GetSection(SteamO
 builder.Services.Configure<ItadOptions>(builder.Configuration.GetSection(ItadOptions.SectionName));
 builder.Services.Configure<GgDealsOptions>(builder.Configuration.GetSection(GgDealsOptions.SectionName));
 builder.Services.Configure<FxOptions>(builder.Configuration.GetSection(FxOptions.SectionName));
+builder.Services.Configure<WishlistOptions>(builder.Configuration.GetSection(WishlistOptions.SectionName));
 
 builder.Services
     .AddApiMvc()

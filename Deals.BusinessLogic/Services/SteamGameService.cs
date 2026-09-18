@@ -40,6 +40,21 @@ public sealed class SteamGameService(
     private const string MxnCurrency = "MXN";
     private const string FxBaseCurrency = "USD";
     private const string FxQuoteCurrency = "MXN";
+    private const string FxSourceFallback = "Banxico";
+
+    // Honest tier comparison. status/reason are machine codes; the UI renders the Spanish copy.
+    private const string ComparableStatus = "ok";
+    private const string NoSavingStatus = "no_saving";
+    private const string NoTierPriceReason = "no_tier_price";
+    private const string AddonReason = "addon";
+    private const string IncompleteItemsReason = "items_incomplete";
+    private const string UnpricedItemReason = "item_unpriced";
+    private const string NotComparableReason = "not_comparable";
+    private const string CurrencyMismatchReason = "currency_mismatch";
+    private const string StaleSnapshotReason = "stale_snapshot";
+
+    // Items that take part in the tier comparison: only a plain game has a comparable standalone price.
+    private const string ComparableItemType = "game";
     private const int DefaultRefreshAfterDays = 7;
     private const int MinRefreshAfterDays = 1;
     private const int MaxRefreshAfterDays = 90;
@@ -369,63 +384,7 @@ public sealed class SteamGameService(
 
             if (details is not null)
             {
-                // Judged before a brand-new row exists, so an unseen game never has a comparable low.
-                // Lowest price is only comparable inside the same currency; a switch restarts the local low.
-                var currencyChanged = game is not null &&
-                    !string.Equals(game.Currency, details.Currency, StringComparison.OrdinalIgnoreCase);
-                var priceChanged = game is null || game.Currency != details.Currency ||
-                    game.InitialPriceMinor != details.InitialPriceMinor ||
-                    game.CurrentPriceMinor != details.CurrentPriceMinor ||
-                    game.DiscountPercent != details.DiscountPercent;
-
-                if (game is null)
-                {
-                    game = new SteamGame
-                    {
-                        AppId = details.AppId,
-                        Region = details.Region,
-                        Name = details.Name
-                    };
-                    await repository.Save(game);
-                }
-
-                game.Name = details.Name;
-                game.Type = details.Type;
-                game.IsFree = details.IsFree;
-                game.Currency = details.Currency;
-                game.InitialPriceMinor = details.InitialPriceMinor;
-                game.CurrentPriceMinor = details.CurrentPriceMinor;
-                game.DiscountPercent = details.DiscountPercent;
-                game.ObservedAt = observedAt;
-
-                // Detail artwork (header_image) is richer than search tiny_image; prefer it when Steam returns one.
-                if (!string.IsNullOrWhiteSpace(details.ImageUrl))
-                {
-                    game.ImageUrl = details.ImageUrl;
-                }
-
-                if (details.CurrentPriceMinor.HasValue && !string.IsNullOrWhiteSpace(details.Currency))
-                {
-                    var hasComparableLow = game.LowestPriceMinor.HasValue && !currencyChanged;
-                    if (!hasComparableLow || details.CurrentPriceMinor.Value < game.LowestPriceMinor!.Value)
-                    {
-                        game.LowestPriceMinor = details.CurrentPriceMinor.Value;
-                        game.LowestPriceAt = observedAt;
-                    }
-                }
-
-                if (priceChanged)
-                {
-                    await repository.Save(new SteamPriceObservation
-                    {
-                        SteamGameId = game.SteamGameId,
-                        Currency = details.Currency,
-                        InitialPriceMinor = details.InitialPriceMinor,
-                        CurrentPriceMinor = details.CurrentPriceMinor,
-                        DiscountPercent = details.DiscountPercent,
-                        ObservedAt = observedAt
-                    });
-                }
+                game = await PersistSteamSnapshotAsync(game, details, observedAt, cancellationToken);
             }
             else if (game is null)
             {
@@ -489,6 +448,11 @@ public sealed class SteamGameService(
                 await PurgeOrphanItadBundlesAsync(cancellationToken);
             }
 
+            // Read-only lookup of the day rate: needed only when the response is about to carry bundles.
+            var bundleFxRate = game.BundleLinks.Count > 0
+                ? await fxRateService.GetLatestRateAsync(FxBaseCurrency, FxQuoteCurrency, cancellationToken)
+                : null;
+
              return baseDetails with
              {
                  ImageUrl = game.ImageUrl,
@@ -503,18 +467,137 @@ public sealed class SteamGameService(
                 OffersStale = offersStale,
                 GgDealsRefreshedAt = game.GgDealsRefreshedAt,
                 GgDealsStale = ggDealsStale,
-                Bundles = game.BundleLinks
-                    .Where(link => !removedLinks.Contains(link) &&
-                        link.Bundle is not null &&
-                        (link.Bundle.ExpiresAt is null || link.Bundle.ExpiresAt.Value > now))
-                    .OrderBy(link => link.Bundle!.ExpiresAt ?? DateTime.MaxValue)
-                    .ThenBy(link => link.Bundle!.Title, StringComparer.OrdinalIgnoreCase)
-                    .Select(ToBundleModel)
-                    .ToList(),
+                 Bundles = game.BundleLinks
+                     .Where(link => !removedLinks.Contains(link) &&
+                         link.Bundle is not null &&
+                         (link.Bundle.ExpiresAt is null || link.Bundle.ExpiresAt.Value > now))
+                     .OrderBy(link => link.Bundle!.ExpiresAt ?? DateTime.MaxValue)
+                     .ThenBy(link => link.Bundle!.Title, StringComparer.OrdinalIgnoreCase)
+                     .Select(link => ToBundleModel(link, bundleFxRate, bundlesStale))
+                     .ToList(),
                 BundlesRefreshedAt = game.BundlesRefreshedAt,
                 BundlesStale = bundlesStale
             };
         });
+    }
+
+    /// <summary>
+    /// Steam-only load: one store call, one persisted snapshot, nothing else. There is no ITAD, gg.deals,
+    /// bundle or governor traffic, no refresh window is consulted and no provider timestamp or
+    /// <c>itad_game_id</c> is written, so this never marks a game as priced. It exists to seed a
+    /// <c>steam_games</c> row (name + price) for a game that has never been opened; real provider pricing
+    /// still goes through <see cref="GetByAppIdAsync"/>.
+    /// </summary>
+    public async Task<SteamGameDetails?> GetAppDetailsOnlyAsync(int appId, CancellationToken cancellationToken)
+    {
+        if (appId <= 0)
+        {
+            throw new ArgumentException("AppID must be greater than zero.", nameof(appId));
+        }
+
+        var details = await steamClient.GetAppDetailsAsync(appId, cancellationToken);
+        if (details is null || !HoldsSteamDetails(details))
+        {
+            // A payload with no price, currency or free flag is not a detail snapshot: persisting it would
+            // create a row that HoldsSteamDetails rejects forever.
+            return null;
+        }
+
+        // Same per-app gate as the full load: concurrent callers for one app must not race the
+        // (app_id, region) unique index. Acquired after the HTTP call, so the network wait is not held.
+        var gate = AppGates.GetOrAdd(appId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            // Tracked reload under the gate, so the insert/update is based on the current row.
+            var game = await repository.GetTrack<SteamGame>()
+                .FirstOrDefaultAsync(
+                    existing => existing.AppId == appId && existing.Region == details.Region,
+                    cancellationToken);
+
+            return await repository.ExecuteInTransactionAsync<SteamGameDetails?>(async () =>
+            {
+                await PersistSteamSnapshotAsync(game, details, details.ObservedAt, cancellationToken);
+                await repository.SaveChangesAsync();
+                return details;
+            });
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// DB-only: writes one Steam detail snapshot onto the tracked row (creating it when absent) and appends
+    /// the price observation when the price changed. No provider call happens here, and nothing but the
+    /// Steam scalar snapshot and the local lowest price is written.
+    /// </summary>
+    private async Task<SteamGame> PersistSteamSnapshotAsync(
+        SteamGame? game,
+        SteamGameDetails details,
+        DateTime observedAt,
+        CancellationToken ct)
+    {
+        // Judged before a brand-new row exists, so an unseen game never has a comparable low.
+        // Lowest price is only comparable inside the same currency; a switch restarts the local low.
+        var currencyChanged = game is not null &&
+            !string.Equals(game.Currency, details.Currency, StringComparison.OrdinalIgnoreCase);
+        var priceChanged = game is null || game.Currency != details.Currency ||
+            game.InitialPriceMinor != details.InitialPriceMinor ||
+            game.CurrentPriceMinor != details.CurrentPriceMinor ||
+            game.DiscountPercent != details.DiscountPercent;
+
+        if (game is null)
+        {
+            game = new SteamGame
+            {
+                AppId = details.AppId,
+                Region = details.Region,
+                Name = details.Name
+            };
+            await repository.Save(game);
+        }
+
+        game.Name = details.Name;
+        game.Type = details.Type;
+        game.IsFree = details.IsFree;
+        game.Currency = details.Currency;
+        game.InitialPriceMinor = details.InitialPriceMinor;
+        game.CurrentPriceMinor = details.CurrentPriceMinor;
+        game.DiscountPercent = details.DiscountPercent;
+        game.ObservedAt = observedAt;
+
+        // Detail artwork (header_image) is richer than search tiny_image; prefer it when Steam returns one.
+        if (!string.IsNullOrWhiteSpace(details.ImageUrl))
+        {
+            game.ImageUrl = details.ImageUrl;
+        }
+
+        if (details.CurrentPriceMinor.HasValue && !string.IsNullOrWhiteSpace(details.Currency))
+        {
+            var hasComparableLow = game.LowestPriceMinor.HasValue && !currencyChanged;
+            if (!hasComparableLow || details.CurrentPriceMinor.Value < game.LowestPriceMinor!.Value)
+            {
+                game.LowestPriceMinor = details.CurrentPriceMinor.Value;
+                game.LowestPriceAt = observedAt;
+            }
+        }
+
+        if (priceChanged)
+        {
+            await repository.Save(new SteamPriceObservation
+            {
+                SteamGameId = game.SteamGameId,
+                Currency = details.Currency,
+                InitialPriceMinor = details.InitialPriceMinor,
+                CurrentPriceMinor = details.CurrentPriceMinor,
+                DiscountPercent = details.DiscountPercent,
+                ObservedAt = observedAt
+            });
+        }
+
+        return game;
     }
 
     /// <summary>
@@ -827,8 +910,9 @@ public sealed class SteamGameService(
     }
 
     /// <summary>
-    /// Maps provider tiers to the persisted/display shape: item ids are dropped and both lists are capped
-    /// to the display contract, so what is stored is exactly what the client can render.
+    /// Maps provider tiers to the sanitized persisted shape: item ids are dropped and both lists are capped
+    /// to the display contract. The item's current ITAD price is kept because it is what allows the honest
+    /// comparison at read time, but no saving is stored as truth.
     /// </summary>
     private static IReadOnlyList<SteamGameBundleTier> MapTiers(IReadOnlyList<ItadBundleTier> tiers)
     {
@@ -838,10 +922,21 @@ public sealed class SteamGameService(
             var games = new List<SteamGameBundleTierGame>(Math.Min(tier.Games.Count, MaxBundleTierGames));
             foreach (var game in tier.Games.Take(MaxBundleTierGames))
             {
-                games.Add(new SteamGameBundleTierGame(game.Title, game.Type));
+                games.Add(new SteamGameBundleTierGame(
+                    game.Title,
+                    game.Type,
+                    game.CurrentPriceMinor,
+                    game.PriceCurrency));
             }
 
-            mapped.Add(new SteamGameBundleTier(tier.PriceMinor, tier.Currency, tier.Addon, games));
+            mapped.Add(new SteamGameBundleTier(
+                tier.PriceMinor,
+                tier.Currency,
+                tier.Addon,
+                // The persistence cap is a truncation too: a tier summed over fewer items than its own
+                // list is a partial total, so it must be persisted as incomplete.
+                tier.ItemsComplete && tier.Games.Count <= MaxBundleTierGames,
+                games));
         }
 
         return mapped;
@@ -1149,7 +1244,7 @@ public sealed class SteamGameService(
             offer.HistoryLowAllMinor,
             offer.HistoryLowCurrency);
 
-    private static SteamGameBundle ToBundleModel(ExternalBundleGame link)
+    private static SteamGameBundle ToBundleModel(ExternalBundleGame link, FxRate? fxRate, bool bundlesStale)
     {
         var bundle = link.Bundle!;
         return new(
@@ -1164,8 +1259,105 @@ public sealed class SteamGameService(
             bundle.PublishedAt,
             bundle.ExpiresAt,
             bundle.ObservedAt,
-            DeserializeTiers(bundle.TiersJson));
+            DeserializeTiers(bundle.TiersJson)
+                .Select(tier => DeriveTierComparison(tier, fxRate, bundlesStale))
+                .ToList());
     }
+
+    /// <summary>
+    /// Honest comparison of one tier against the current ITAD prices of its own items. Comparability rules:
+    /// every eligible item has a current ITAD price and all of them (tier included) share one currency, so
+    /// the total and the savings are never a mixed-currency fabrication. The result is derived here, from
+    /// persisted data, and never stored: it is not truth, it is a reading.
+    /// </summary>
+    private static SteamGameBundleTier DeriveTierComparison(SteamGameBundleTier tier, FxRate? fxRate, bool bundlesStale)
+    {
+        // A stale snapshot cannot publish a savings figure at all, whatever the tier's own data says: the
+        // numbers underneath may no longer be in force. The bundle is still shown.
+        if (bundlesStale)
+        {
+            return TierWithoutSavings(tier, StaleSnapshotReason);
+        }
+
+        if (!tier.ItemsComplete)
+        {
+            return TierWithoutSavings(tier, IncompleteItemsReason);
+        }
+
+        if (tier.Addon)
+        {
+            return TierWithoutSavings(tier, AddonReason);
+        }
+
+        if (tier.PriceMinor is null || tier.Currency is null)
+        {
+            return TierWithoutSavings(tier, NoTierPriceReason);
+        }
+
+        // Only comparable items take part: a bundle can legitimately contain DLC or packages, they are
+        // displayed anyway but they are not games with a comparable standalone price.
+        var eligible = tier.Games
+            .Where(game => string.Equals(game.Type, ComparableItemType, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (eligible.Count == 0)
+        {
+            return TierWithoutSavings(tier, NotComparableReason);
+        }
+
+        if (eligible.Any(game => game.PriceMinor is null || game.PriceCurrency is null))
+        {
+            return TierWithoutSavings(tier, UnpricedItemReason);
+        }
+
+        var currencies = eligible
+            .Select(game => game.PriceCurrency!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (currencies.Count != 1 || !string.Equals(currencies[0], tier.Currency, StringComparison.Ordinal))
+        {
+            return TierWithoutSavings(tier, CurrencyMismatchReason);
+        }
+
+        var individualTotalMinor = eligible.Sum(game => game.PriceMinor!.Value);
+        var savingsMinor = individualTotalMinor - tier.PriceMinor.Value;
+        var savingsPercent = individualTotalMinor > 0
+            ? (int?)Math.Round(savingsMinor * 100m / individualTotalMinor, MidpointRounding.AwayFromZero)
+            : null;
+
+        var comparable = tier with
+        {
+            Status = ComparableStatus,
+            Reason = null,
+            IndividualTotalMinor = individualTotalMinor,
+            SavingsMinor = savingsMinor,
+            SavingsPercent = savingsPercent
+        };
+
+        // FX estimate is optional and exactly one: a USD tier may be converted with the day's rate. Any
+        // other currency is shown unconverted and labelled, never implied.
+        if (string.Equals(tier.Currency, FxBaseCurrency, StringComparison.Ordinal) && fxRate is not null)
+        {
+            return comparable with
+            {
+                FxRate = fxRate.Rate,
+                FxRateDate = fxRate.RateDate,
+                FxSource = fxRate.Source,
+                PricingType = FxEstimatePricing,
+                MxnIndividualTotalMinor = ConvertMinor(individualTotalMinor, fxRate.Rate),
+                MxnSavingsMinor = ConvertMinor(savingsMinor, fxRate.Rate)
+            };
+        }
+
+        return comparable;
+    }
+
+    /// <summary>
+    /// A tier without a complete, comparable comparison is shown with its published price and the short
+    /// reason, and carries no savings figure at all.
+    /// </summary>
+    private static SteamGameBundleTier TierWithoutSavings(SteamGameBundleTier tier, string reason) =>
+        tier with { Status = NoSavingStatus, Reason = reason };
 
     /// <summary>
     /// True when the persisted row actually holds a Steam detail snapshot. <see cref="SearchAsync"/> also
@@ -1178,6 +1370,17 @@ public sealed class SteamGameService(
         game.CurrentPriceMinor is not null ||
         game.InitialPriceMinor is not null ||
         game.OffersRefreshedAt is not null;
+
+    /// <summary>
+    /// The <see cref="HoldsSteamDetails(SteamGame)"/> criteria applied to a fresh Steam payload (the row
+    /// carries no provider timestamp yet): a snapshot with no price, currency or free flag is not a detail
+    /// snapshot and is not worth persisting.
+    /// </summary>
+    private static bool HoldsSteamDetails(SteamGameDetails details) =>
+        details.IsFree ||
+        details.Currency is not null ||
+        details.CurrentPriceMinor is not null ||
+        details.InitialPriceMinor is not null;
 
     /// <summary>
     /// Newest provider refresh timestamp, used by the search/suggestion results. Null only when neither

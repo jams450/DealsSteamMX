@@ -148,12 +148,22 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
     }
 
     /// <summary>
+    /// Type of item comparable inside a tier: only a plain game has a comparable standalone price;
+    /// DLC, packages and untyped items are displayed but never priced into the comparison.
+    /// </summary>
+    private const string ComparableItemType = "game";
+
+    /// <summary>
     /// Outbound bundle phase: POST games/overview/v2 with the queried ids. The response is one object with
-    /// <c>prices[]</c> (ignored here) and a flat <c>bundles[]</c>, not an array of games: the caller
-    /// attributes each bundle to the game it asked for through <c>tiers[].games[].id</c>. A malformed
-    /// bundle is discarded instead of failing the batch, because bundles are auxiliary display metadata;
-    /// a missing or non-array <c>bundles</c> does throw, because an empty list would look authoritative
-    /// and purge the persisted snapshot.
+    /// <c>prices[]</c> and a flat <c>bundles[]</c>, not an array of games: the caller attributes each bundle
+    /// to the game it asked for through <c>tiers[].games[].id</c>. A malformed bundle is discarded instead of
+    /// failing the batch; a missing or non-array <c>bundles</c> throws, because returning an empty list would
+    /// look authoritative and purge the persisted snapshot.
+    ///
+    /// After parsing, the current ITAD price of every comparable item is resolved with the existing prices
+    /// call, so the tier comparison uses the same source, budget and currency. Any provider failure here
+    /// must fail the whole bundles phase: without item prices the persisted snapshot must be preserved, not
+    /// replaced by a version that simply cannot be compared.
     /// </summary>
     public async Task<IReadOnlyList<ItadBundle>> GetBundlesAsync(
         IReadOnlyCollection<string> itadIds,
@@ -187,7 +197,94 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
             throw new JsonException(MalformedBundlesMessage);
         }
 
-        return result;
+        var priced = await PriceItemsAsync(result, cancellationToken);
+        return result.Select(bundle => WithItemPrices(bundle, priced)).ToList();
+    }
+
+    /// <summary>
+    /// Collects the ids of every comparable item of every bundle and resolves them with the existing prices
+    /// call: same shared governor, same retries, one response per batch. Mixed anonymised currencies or a
+    /// missing price resolve to unpriced, never to a fabricated number.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, (int? Minor, string? Currency)>> PriceItemsAsync(
+        IReadOnlyList<ItadBundle> bundles,
+        CancellationToken cancellationToken)
+    {
+        // Sin precio de tier no hay comparación posible, así que los precios por ítem no se pueden usar:
+        // saltarse el fan-out deja libre el governor compartido para lo que sí lo necesita. Caso real:
+        // los bundles "Build your Own" de Fanatical llegan con price null.
+        if (bundles.SelectMany(bundle => bundle.Tiers).All(tier => tier.PriceMinor is null))
+        {
+            return new Dictionary<string, (int? Minor, string? Currency)>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var itemIds = bundles
+            .SelectMany(bundle => bundle.Tiers)
+            .SelectMany(tier => tier.Games)
+            .Where(item => string.Equals(item.Type, ComparableItemType, StringComparison.OrdinalIgnoreCase))
+            .Select(item => item.Id)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (itemIds.Count == 0)
+        {
+            return new Dictionary<string, (int? Minor, string? Currency)>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var priced = new Dictionary<string, (int? Minor, string? Currency)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in await GetPricesAsync(itemIds, cancellationToken))
+        {
+            priced[entry.ItadId] = ResolveItemPrice(entry);
+        }
+
+        return priced;
+    }
+
+    /// <summary>
+    /// Lowest current price reported for the item. Only a single currency across all reported deals
+    /// qualifies: comparing against a mixed-currency total would be a fabrication. No deals means unpriced.
+    /// </summary>
+    private static (int? Minor, string? Currency) ResolveItemPrice(ItadGamePrices entry)
+    {
+        if (entry.Deals.Count == 0)
+        {
+            return (null, null);
+        }
+
+        var currencies = entry.Deals
+            .Select(deal => deal.Currency)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (currencies.Count != 1)
+        {
+            return (null, null);
+        }
+
+        return (entry.Deals.Min(deal => deal.CurrentPriceMinor), currencies[0]);
+    }
+
+    private static ItadBundle WithItemPrices(
+        ItadBundle bundle,
+        IReadOnlyDictionary<string, (int? Minor, string? Currency)> prices) =>
+        bundle with
+        {
+            Tiers = bundle.Tiers
+                .Select(tier => tier with { Games = PriceItems(tier.Games, prices) })
+                .ToList()
+        };
+
+    private static IReadOnlyList<ItadBundleItem> PriceItems(
+        IReadOnlyList<ItadBundleItem> items,
+        IReadOnlyDictionary<string, (int? Minor, string? Currency)> prices)
+    {
+        var priced = new List<ItadBundleItem>(items.Count);
+        foreach (var item in items)
+        {
+            priced.Add(prices.TryGetValue(item.Id, out var price)
+                ? item with { CurrentPriceMinor = price.Minor, PriceCurrency = price.Currency }
+                : item);
+        }
+
+        return priced;
     }
 
     private async Task<IReadOnlyList<ItadBundle>> GetBundlesBatchAsync(
@@ -438,6 +535,9 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
 
             if (game.ValueKind != JsonValueKind.Object)
             {
+                // Anything that could be a tier item but was dropped must count as unknown content: only
+                // an intact item list may be presented as complete.
+                truncated = true;
                 continue;
             }
 
@@ -445,7 +545,9 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
             var title = SanitizeText(TryReadString(game, "title"), MaxBundleTitleLength);
             if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(title))
             {
-                // Without both an id and a title the item can neither be attributed nor displayed.
+                // Without both an id and a title the item can neither be attributed nor priced: it is
+                // dropped from the display list, and the tier can no longer be sold as complete.
+                truncated = true;
                 continue;
             }
 

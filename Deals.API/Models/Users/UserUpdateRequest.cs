@@ -18,4 +18,7 @@ public class UserUpdateRequest
 
     public bool Active { get; set; } = true;
     public bool Admin { get; set; } = false;
+
+    [StringLength(20)]
+    public string? SteamId64 { get; set; }
 }

@@ -58,6 +58,7 @@ export function UsersClient({ username }: Props) {
     const payload: UserCreatePayload | UserUpdatePayload = {
       name: form.name.trim(),
       email: form.email.trim().toLowerCase(),
+      steamId64: form.steamId64.trim() || null,
       ...(form.password.trim() ? { password: form.password.trim() } : {}),
       active: form.active,
       admin: form.admin
@@ -117,8 +118,8 @@ export function UsersClient({ username }: Props) {
     >
       <UsersToastStack toasts={toasts} onDismiss={dismissToast} />
 
-      <section className="space-y-2 md:space-y-2">
-        <section className="overflow-hidden px-4 py-3 sm:px-5">
+      <section className="space-y-4">
+        <section className="app-card p-4 sm:p-5">
           <UsersToolbar
             total={users.length}
             filtered={filteredUsers.length}

@@ -1,4 +1,5 @@
 import { CheckCircle2, CircleAlert, X } from "lucide-react";
+import { cn } from "@/lib/ui/cn";
 
 export type UsersToast = {
   id: string;
@@ -20,15 +21,16 @@ export function UsersToastStack({ toasts, onDismiss }: Props) {
           <div
             key={toast.id}
             role="status"
-            className={isSuccess
-              ? "tabler-panel pointer-events-auto flex items-start gap-2.5 border-[var(--color-success)]/35 bg-[var(--color-surface-1)]/95 px-3 py-2.5 text-[var(--color-success)]"
-              : "tabler-panel pointer-events-auto flex items-start gap-2.5 border-[var(--color-danger)]/35 bg-[var(--color-surface-1)]/95 px-3 py-2.5 text-[var(--color-danger)]"}
+            className={cn(
+              "app-card pointer-events-auto flex items-start gap-2.5 rounded-[var(--radius-md)] px-3 py-2.5",
+              isSuccess ? "text-success" : "text-danger"
+            )}
           >
-            {isSuccess ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> : <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" />}
+            {isSuccess ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" /> : <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />}
             <p className="min-w-0 flex-1 text-sm font-medium">{toast.message}</p>
             <button
               type="button"
-              className="text-muted hover:bg-[var(--color-accent-soft)] hover:text-primary rounded-md p-1 transition"
+              className="text-muted hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-text-primary)] rounded-[var(--radius-sm)] p-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
               onClick={() => onDismiss(toast.id)}
               aria-label="Cerrar notificación"
             >

@@ -9,6 +9,9 @@ CREATE TABLE users (
     session_version INT NOT NULL DEFAULT 1,
     failed_login_count INT NOT NULL DEFAULT 0,
     locked_until TIMESTAMPTZ,
+    steam_id64 VARCHAR(20),
+    wishlist_synced_at TIMESTAMPTZ,
+    wishlist_state VARCHAR(16),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_by VARCHAR(100),
@@ -33,6 +36,31 @@ CREATE TABLE user_sessions (
 
 CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
 CREATE INDEX idx_user_sessions_expires_at ON user_sessions(expires_at);
+
+-- Store library/wishlist snapshot per user. state tells wishlist from owned library entries; the
+-- unique key makes a re-import an upsert instead of a duplicate. itad_game_id links the entry back to
+-- steam_games.itad_game_id when the store title can be resolved.
+CREATE TABLE user_library (
+    user_library_id BIGSERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    itad_game_id VARCHAR(36),
+    store VARCHAR(32) NOT NULL,
+    store_game_id VARCHAR(64) NOT NULL,
+    title VARCHAR(256) NOT NULL,
+    state VARCHAR(16) NOT NULL,
+    is_installed BOOLEAN,
+    priority INT,
+    added_at TIMESTAMPTZ,
+    imported_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100),
+    updated_by VARCHAR(100),
+    CONSTRAINT uq_user_library UNIQUE (user_id, store, store_game_id, state)
+);
+
+CREATE INDEX idx_user_library_user_itad ON user_library(user_id, itad_game_id);
+CREATE INDEX idx_user_library_user_title ON user_library(user_id, lower(title));
 
 CREATE TABLE steam_games (
     steam_game_id SERIAL PRIMARY KEY,
@@ -118,7 +146,8 @@ CREATE INDEX idx_game_offers_game ON game_offers(steam_game_id);
 -- Canonical external bundle snapshot, keyed by (source, bundle_key) and shared by every game it was
 -- seen in. Not an offer: bundles never take part in the price comparison and are never written to
 -- game_offers. deal_url and page_url are the provider URLs verbatim (affiliate tag included), validated
--- HTTPS only; tiers_json is the sanitized tier list (camelCase, no item ids, no raw payload).
+-- HTTPS only; tiers_json is the sanitized tier list (camelCase, no item ids, no raw payload) plus each
+-- item's current ITAD price, the input of the read-time tier comparison. No saving is ever stored.
 CREATE TABLE external_bundles (
     external_bundle_id BIGSERIAL PRIMARY KEY,
     source VARCHAR(16) NOT NULL,

@@ -1,6 +1,5 @@
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/ui/cn";
-import { tableActionBaseClass, tableActionStyles } from "@/lib/ui/table-action-styles";
 import type { AdminUser } from "@/lib/contracts/users-admin";
 import { Pencil, Power, Trash2 } from "lucide-react";
 
@@ -12,18 +11,15 @@ type Props = {
   onDelete: (user: AdminUser) => void;
 };
 
-export function UserActionsMenu({ user, mobile = false, onEdit, onToggleActive, onDelete }: Props) {
-  const baseClass = tableActionBaseClass;
+const actionClass = "h-8 gap-1.5 px-2 text-[11px] font-semibold";
 
+export function UserActionsMenu({ user, mobile = false, onEdit, onToggleActive, onDelete }: Props) {
   return (
-    <div className={cn("flex justify-end gap-1.5", mobile && "grid grid-cols-3 gap-1.5")} role="group" aria-label={`Acciones para ${user.email}`}>
+    <div className={cn("gap-1.5", mobile ? "grid grid-cols-3" : "flex justify-end")} role="group" aria-label={`Acciones para ${user.email}`}>
       <Button
         type="button"
-        variant="ghost"
-        className={cn(
-          baseClass,
-          tableActionStyles.edit
-        )}
+        variant="secondary"
+        className={actionClass}
         onClick={() => onEdit(user)}
         aria-label={`Editar usuario ${user.email}`}
       >
@@ -33,13 +29,8 @@ export function UserActionsMenu({ user, mobile = false, onEdit, onToggleActive, 
 
       <Button
         type="button"
-        variant="ghost"
-        className={cn(
-          baseClass,
-          user.active
-            ? tableActionStyles.deactivate
-            : tableActionStyles.activate
-        )}
+        variant="secondary"
+        className={actionClass}
         onClick={() => onToggleActive(user)}
         aria-label={`${user.active ? "Desactivar" : "Activar"} usuario ${user.email}`}
       >
@@ -49,11 +40,8 @@ export function UserActionsMenu({ user, mobile = false, onEdit, onToggleActive, 
 
       <Button
         type="button"
-        variant="ghost"
-        className={cn(
-          baseClass,
-          tableActionStyles.delete
-        )}
+        variant="danger"
+        className={actionClass}
         onClick={() => onDelete(user)}
         aria-label={`Borrar usuario ${user.email}`}
       >

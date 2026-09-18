@@ -17,6 +17,7 @@ public class AppDbContext : DbContext
 
     public DbSet<User> Users { get; set; } = null!;
     public DbSet<UserSession> UserSessions { get; set; } = null!;
+    public DbSet<UserLibrary> UserLibrary { get; set; } = null!;
     public DbSet<SteamGame> SteamGames { get; set; } = null!;
     public DbSet<SteamPriceObservation> SteamPriceObservations { get; set; } = null!;
     public DbSet<GameOffer> GameOffers { get; set; } = null!;
@@ -75,6 +76,17 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => e.UserId);
             entity.HasIndex(e => e.RefreshTokenHash).IsUnique();
             entity.HasIndex(e => e.ExpiresAt);
+        });
+
+        modelBuilder.Entity<UserLibrary>(entity =>
+        {
+            entity.HasIndex(e => new { e.UserId, e.Store, e.StoreGameId, e.State }).IsUnique();
+            entity.HasIndex(e => new { e.UserId, e.ItadGameId });
+            // The (user_id, lower(title)) index is not expressible in EF Core; it lives in SQL only.
+            entity.HasOne(e => e.User)
+                .WithMany()
+                .HasForeignKey(e => e.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<SteamGame>(entity =>

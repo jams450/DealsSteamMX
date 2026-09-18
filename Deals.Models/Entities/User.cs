@@ -41,6 +41,21 @@ namespace Deals.Models.Entities
         [Column("locked_until", TypeName = "timestamp with time zone")]
         public DateTime? LockedUntil { get; set; }
 
+        [Column("steam_id64")]
+        [StringLength(20)]
+        public string? SteamId64 { get; set; }
+
+        [Column("wishlist_synced_at", TypeName = "timestamp with time zone")]
+        public DateTime? WishlistSyncedAt { get; set; }
+
+        /// <summary>
+        /// Outcome of the last wishlist sync: "ok" | "inaccessible". Never-synced is derived from
+        /// <see cref="WishlistSyncedAt"/> being null, so it is not stored here.
+        /// </summary>
+        [Column("wishlist_state")]
+        [StringLength(16)]
+        public string? WishlistState { get; set; }
+
         public virtual ICollection<UserSession> Sessions { get; set; } = new List<UserSession>();
     }
 }

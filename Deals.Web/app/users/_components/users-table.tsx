@@ -29,6 +29,11 @@ export function UsersTable({ rows, loading, errorMessage, onEdit, onToggleActive
       },
       { accessorKey: "email", header: "Correo" },
       {
+        accessorKey: "steamId64",
+        header: "SteamID64",
+        cell: ({ row }) => <span className="whitespace-nowrap">{row.original.steamId64 ?? "—"}</span>
+      },
+      {
         accessorKey: "admin",
         header: "Rol",
         cell: ({ row }) => <span className={getUserRoleBadgeClass(row.original)}>{getUserRoleLabel(row.original)}</span>
@@ -49,17 +54,15 @@ export function UsersTable({ rows, loading, errorMessage, onEdit, onToggleActive
   );
 
   return (
-    <div className="app-grid-skin overflow-hidden rounded-none p-0">
-      <DataGrid
-        columns={columns}
-        rows={rows}
-        loading={loading}
-        errorMessage={errorMessage}
-        emptyMessage="No hay usuarios con filtros actuales"
-        density="compact"
-        stickyHeader
-        stickyActionsColumn
-      />
-    </div>
+    <DataGrid
+      columns={columns}
+      rows={rows}
+      loading={loading}
+      errorMessage={errorMessage}
+      emptyMessage="No hay usuarios con filtros actuales"
+      density="compact"
+      stickyHeader
+      stickyActionsColumn
+    />
   );
 }

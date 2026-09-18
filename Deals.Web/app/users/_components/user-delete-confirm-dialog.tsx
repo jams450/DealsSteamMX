@@ -17,7 +17,7 @@ export function UserDeleteConfirmDialog({ user, open, loading, onCancel, onConfi
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[var(--color-overlay)] p-4 backdrop-blur-sm" role="presentation" onClick={onCancel}>
       <section
-        className="w-full max-w-md p-4"
+        className="app-card w-full max-w-md p-4"
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="delete-user-title"
@@ -32,7 +32,7 @@ export function UserDeleteConfirmDialog({ user, open, loading, onCancel, onConfi
         </p>
 
         <div className="mt-4 flex justify-end gap-2">
-          <Button type="button" variant="ghost" className="h-9 border-[var(--color-danger)]/50 bg-[var(--color-danger)]/15 text-[var(--color-danger)] hover:border-[var(--color-danger)]/70 hover:bg-[var(--color-danger)]/25" onClick={onCancel}>
+          <Button type="button" variant="secondary" className="h-9" onClick={onCancel}>
             Cancelar
           </Button>
           <Button type="button" variant="danger" className="h-9" loading={loading} loadingText="Borrando..." onClick={onConfirm}>

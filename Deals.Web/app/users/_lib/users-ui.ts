@@ -1,6 +1,6 @@
 import type { AdminUser } from "@/lib/contracts/users-admin";
 
-const badgeBase = "tabler-badge tabler-badge-solid";
+const badgeBase = "tabler-badge";
 
 export function getUserRoleLabel(user: AdminUser) {
   return user.admin ? "Admin" : "Usuario";

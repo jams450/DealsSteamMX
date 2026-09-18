@@ -4,6 +4,7 @@ using Deals.Models.Entities;
 using IPasswordService = Deals.BusinessLogic.Interfaces.IPasswordService;
 using Microsoft.EntityFrameworkCore;
 using System.Net.Mail;
+using System.Text.RegularExpressions;
 
 namespace Deals.BusinessLogic.Services
 {
@@ -45,6 +46,7 @@ namespace Deals.BusinessLogic.Services
             user.Name = NormalizeNameOrThrow(user.Name);
             user.Email = NormalizeEmailOrThrow(user.Email);
             ValidatePasswordOrThrow(user.Password);
+            user.SteamId64 = ValidateSteamId64OrThrow(user.SteamId64);
 
             if (await EmailExistsAsync(user.Email))
             {
@@ -82,6 +84,7 @@ namespace Deals.BusinessLogic.Services
 
             existing.Name = normalizedName;
             existing.Email = normalizedEmail;
+            existing.SteamId64 = ValidateSteamId64OrThrow(user.SteamId64);
 
             if (existing.Active != user.Active)
             {
@@ -382,6 +385,22 @@ namespace Deals.BusinessLogic.Services
             catch (FormatException)
             {
                 throw new ArgumentException("Invalid email format");
+            }
+
+            return cleaned;
+        }
+
+        private static string? ValidateSteamId64OrThrow(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            var cleaned = value.Trim();
+            if (!Regex.IsMatch(cleaned, "^[0-9]{17}$"))
+            {
+                throw new ArgumentException("SteamID64 must be 17 digits");
             }
 
             return cleaned;

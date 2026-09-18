@@ -10,6 +10,10 @@ public static class RateLimitingExtensions
     {
         services.AddRateLimiter(options =>
         {
+            // A rate limit is not a server failure: without this the middleware replies 503 and clients
+            // cannot tell "wait a minute" from "the API is down".
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
             options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
                 context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                 _ => new FixedWindowRateLimiterOptions

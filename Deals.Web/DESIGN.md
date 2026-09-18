@@ -16,7 +16,7 @@ Tailwind v4 is configured in CSS (`@import "tailwindcss"` in `app/globals.css`);
   `components/theme/theme-toggle.tsx`, `lib/ui/cn.ts`, `lib/bff/http.ts` (typed errors).
 - Shells: `components/navigation/product-shell.tsx` (product surface) and
   `components/navigation/admin-shell.tsx` (admin surface, despite the file name — it is imported by
-  `/users` and `/steam`).
+  `/users` and `/steam`). Both now draw on the same tokens, `.app-card`/`.app-topbar`, radii and shadows.
 - Patterns: semantic classes (`btn-*-semantic`, `input-semantic`, `table-*`, `app-card`,
   `tabler-badge-*`) instead of raw Tailwind palette utilities.
 - Theme starts dark by default (`app/layout.tsx` init script, `localStorage.theme`), so dark values
@@ -32,15 +32,18 @@ when it was last observed.
 | `/` | `app/page.tsx` | Product | Home: search as the central CTA, how-it-works, price source note |
 | `/search` | `app/search/page.tsx`, `app/search/search-client.tsx` | Product | Text search; `?q=` pre-runs the query; local suggestions while typing (≥2 chars) |
 | `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: cover, Steam price block, local-low row, Steam source table, multi-store offers grouped by provider (ITAD / gg.deals) |
+| `/wishlist` | `app/wishlist/{page,wishlist-client}.tsx`, `app/wishlist/_lib/*` | Product | Steam wishlist: four explicit states, "Sincronizar ahora" with its report, a price-reference table (base, historical low, MXN official/keyshop minimums) with a per-row refresh |
 | `/login` | `app/login/page.tsx` | Public | Only public page, plus `/api/auth/{login,refresh,session}` |
-| `/users` | `app/users/*` | Admin | Reference admin slice (`AdminShell` + `DataGrid`), admin role only |
+| `/users` | `app/users/*` | Admin | Reference admin slice (`AdminShell` + `DataGrid`), admin role only; consumes the same tokens, cards, badges and `Button` variants as the product surface |
 | `/steam` | `app/steam/*` | Product (legacy) | Earlier Steam page rendered inside `AdminShell`; not part of `ProductShell` |
 
 - **Gate:** `middleware.ts` + `isPublicRoute` (`lib/security/route-policy.ts`) redirect any app route
   without a usable session to `/login?reason=session_expired`. There is currently no public product
   surface; "product" means the consumer-facing area (`/`, `/search`, `/games/*`), not anonymous access.
-- **Scope of this contract:** `/`, `/search`, `/games/[steamAppId]` and `ProductShell`. `/users` and
-  `/steam` keep `AdminShell` and their current layout.
+- **Scope of this contract:** `/`, `/search`, `/games/[steamAppId]`, `/wishlist` and `ProductShell`. `/users`
+  also consumes it (tokens, `.app-card`, `.app-topbar`, `.table-*`, semantic badges and `Button` variants)
+  while keeping `AdminShell` and its admin-only gating. `/steam` still renders inside `AdminShell` with its
+  previous layout: it inherits the shared tokens but was not migrated.
 - **Data reality:** the detail page is fed by three sources. The regional price is Steam
   (`/api/bff/steam/search`, `/api/bff/steam/games/[appId]`, `/api/bff/steam/suggestions`), MXN / Mexico
   region. Cross-store offers ride on the same game payload (`offers`); the explicit refresh uses
@@ -57,6 +60,20 @@ when it was last observed.
   each provider's historical low but are not rendered in v1. Offers are a per-provider snapshot, not
   history. The "local low" (`lowestPriceMinor`/`lowestPriceAt`) is the lowest price observed locally in
   the app's own database, not a Steam-provided value, and it is never a discount.
+- **Wishlist reality:** `/wishlist` is fed by the API's `GET /api/wishlist` (BFF `GET /api/bff/wishlist`)
+  and `POST /api/wishlist/sync` (BFF `POST /api/bff/wishlist/sync`). The list is a local snapshot imported
+  from Steam's wishlist service (appid, priority, added date, cover) and enriched with ITAD's canonical
+  game id; it is not a live Steam call per render. Sync is explicit and manual — the page never polls — and
+  it does two things in one request: it imports the list, and it pulls a Steam snapshot for every wished
+  game that had no local row yet (that second part is why its report has its own counters). The
+  API answers with one of four states (`ok | inaccessible | no_steam_id | never_synced`) and the UI renders
+  that state verbatim: it never infers "empty" from a private wishlist, because Steam returns the same
+  empty payload for both. Each item also carries a price snapshot (`basePriceMinor`/`baseCurrency`,
+  `historyLowMinor`/`historyLowCurrency`, `bestOfficialMinor`, `bestKeyshopMinor`) shown as a reference
+  beside the wishlist data, plus a per-row refresh that reuses the game detail's refresh endpoint. No price
+  from this page enters the comparator, `selectBestPrice` or any savings math. The list uses the shared
+  `DataGrid` in client mode for sorting and global filtering; mobile tiles consume the same name/AppID
+  filter state.
 
 ## 2. Principles
 
@@ -315,6 +332,81 @@ ITAD store against a gg.deals row.
   the zone keeps its kicker and places `Ver en Steam` at the bottom. The Steam CTA always remains at the
   bottom of this historical zone.
 
+### Wishlist (`/wishlist`)
+
+- Rendered inside `ProductShell` (`title="Wishlist de Steam"`). The page is a server component that
+  redirects to `/login` without a session and delegates every state to `wishlist-client.tsx`; the route is
+  protected by the global matcher in `middleware.ts` (`lib/security/route-policy.ts` is untouched).
+- Two stacked zones: an `app-card-accent` summary (kicker "Sincronización", `text-xl` heading "Wishlist de
+  Steam", the sync control, the state badges and the sync report) and one `app-card` items section.
+- Summary badges: item count (`tabler-badge-muted`, only in state `ok`) plus "Última sincronización
+  <fecha>" (`tabler-badge-info`) or "Sin fecha de sincronización" (`tabler-badge-warning`). Tone is never
+  the only signal: every badge carries its words.
+- Items: a `ul` of bordered tiles below `md` and a `.table-shell` table from `md` up
+  (`Portada | Juego | Precio base | Mínimo histórico | Mín. oficial | Mín. keys | Prioridad | Alta |
+  Actualizado | Acciones`), so the row works at 360px and the desktop table is never squashed. The game
+  name is an internal `Link` to `/games/<appId>`; the cover is the local `WishlistThumb` (90×34 below `sm`,
+  120×45 above, decorative `alt=""`, `Gamepad2` placeholder when the URL is missing or fails). The ITAD
+  identity is a badge ("Identificado en ITAD" info / "Sin identificar en ITAD" muted) in the row, never a
+  bare id. On the tiles the four price columns become a two-column `Precio base / Mínimo histórico /
+  Mín. oficial / Mín. keys` grid above the meta line.
+- **Money is shown in the currency it arrives in, never converted.** `Precio base` and
+  `Mínimo histórico` use `Intl.NumberFormat("es-MX", { style: "currency", currency })` (via
+  `lib/format/currency.ts`, the same helper the game detail uses), so a non-MXN code prints with its own
+  symbol or code ("US$12.34", "XYZ 1,234.00") and can never be read as MX$. `Mín. oficial` and `Mín. keys`
+  are MXN because the API already converted them; they are not marked as approximate and the section note
+  says so. An amount without its currency (or the reverse) reads "—": the pair is never half-rendered and no
+  currency is assumed. A `0` prints as a zero amount, never as "Gratis".
+- **Per-row "Sincronizar"** reuses the existing detail refresh (`refreshSteamGame(appId)` →
+  `POST /api/bff/steam/games/<appId>`, which updates Steam, ITAD and gg.deals in one call). It is the only
+  per-row action, all 10 columns above include it, and it is a real `Button` (`variant="secondary"`,
+  `type="button"`) with an `aria-label` naming the game and its AppID.
+- Dates use `Intl.DateTimeFormat("es-MX", { dateStyle: "medium" })` through a guarded formatter, so an
+  invalid value renders "—" instead of throwing. Priority renders the raw 0-based rank the API sends, or
+  "—" when null — the client never renumbers it.
+- **Filter and sorting:** desktop delegates to the shared `DataGrid` in client mode, with its own global
+  search input (`Buscar por nombre o AppID`) and `getFilteredRowModel`/`getSortedRowModel`. The custom
+  filter matches the game name or AppID text. Mobile uses a compact native input tied to the same filter
+  state before mapping its tiles, so filtering never disappears at 360px. There is no server-side filter,
+  pagination or reordering.
+- **Sortable columns:** `Juego` (alphabetical), `Prioridad`, `Alta`, `Actualizado`, `Precio base`,
+  `Mínimo histórico`, `Mín. oficial` and `Mín. keys`. `Portada` and `Acciones` are not sortable. Numeric
+  and date values sort by their raw number/timestamp, not their formatted label.
+- **Null sorting:** the column comparator explicitly places `null` values last in both ascending and
+  descending directions. A missing price is never coerced to zero, so it cannot appear as the cheapest row.
+- The list never renders raw JSON, upstream error bodies, provider ids beyond `appId`, or filesystem paths.
+
+| Condition | Treatment |
+|---|---|
+| first load in flight | `app-card p-5 text-sm text-muted` "Cargando...", same size as the resolved content |
+| fetch failure | `Alert variant="danger"` with the message plus a `Button variant="secondary"` "Reintentar" that re-runs the load |
+| `state === "no_steam_id"` | info `Alert`: "Falta configurar tu SteamID64." + explanation and a `.btn-secondary-semantic` link to `/users`. The sync button is **not rendered**: the import cannot work without the id |
+| `state === "never_synced"` | info `Alert`: "Aún no hay ninguna sincronización." + "Usa «Sincronizar ahora» para traerla." |
+| `state === "inaccessible"` | info `Alert` that says literally "La wishlist es privada o el perfil no es accesible." and explains that the profile **and** the wishlist must be public. Never rendered as "0 juegos" |
+| `state === "ok"` with 0 items | `app-card` empty state "Tu wishlist de Steam está vacía." plus the hint to add games in Steam and sync again |
+| `state === "ok"` with items | the items section renders and the count badge appears in the summary |
+| no filter text | all items render in both desktop grid and mobile tiles |
+| filter text | desktop `DataGrid` and mobile tiles match by name or AppID, case-insensitively |
+| non-empty wishlist but no filter matches | `DataGrid` and mobile area say "Ningún juego coincide con la búsqueda."; this is not presented as an empty wishlist |
+| items present in a non-`ok` state | the items section still renders below the notice: the notice explains the state, the rows are real data |
+| item field missing/invalid (`imageUrl`, `priority`, `addedAt`, `refreshedAt`, `itadGameId`) | that cell reads "—" / the muted ITAD badge; the row stays |
+| `basePriceMinor` + `baseCurrency` present | `Precio base` in that currency, unconverted and unprefixed; a non-MXN code looks different from MX$ by construction |
+| `historyLowMinor` + `historyLowCurrency` present | `Mínimo histórico` in the provider currency, same formatter |
+| `bestOfficialMinor` / `bestKeyshopMinor` present | `Mín. oficial` / `Mín. keys` as MXN (`MX$…`), no `≈` and no note: the API sends them already converted |
+| amount present, currency missing (or the reverse) | the cell reads "—"; the pair is never half-rendered and no currency is assumed |
+| amount `0` | prints as a zero amount of its currency, never as "Gratis": these are reference prices, not a current offer |
+| item without `appId` or `name` | dropped by the normalizer, never rendered |
+| invalid `imageUrl` (not absolute `https:`) | treated as missing and replaced by the placeholder — the value is never used as a `src` |
+| row refresh in flight | only that row's button shows `loading`/`aria-busy`; the other rows' buttons are `disabled` so a burst cannot burn the 6-per-minute budget |
+| row refresh failure | `role="alert"` `.text-danger` line in an extra table row (`colSpan` across the table) / under the tile; the rest of the page and the previous prices stay untouched |
+| row refresh rejected by the rate limiter | "Se alcanzó el límite de refrescos (6 por minuto por IP). Espera un minuto y vuelve a intentar." — a wait instruction, never the bare word "error" |
+| row refresh failed for another reason | the upstream message plus the factual limit note, so a rejection always ends in a wait instruction |
+| row refresh succeeded | the list is re-fetched with `getWishlist` and re-rendered in place; there is no navigation, so the scroll position is preserved |
+| row refresh succeeded but the reload failed | the page-level `Alert variant="danger"` in the summary says the prices were updated and asks for a page reload |
+| `state` missing or unknown | the whole response is rejected at the BFF (502 upstream error), never mapped to a guess |
+| a sync report count missing or invalid | the report is rejected at the BFF; no count is defaulted to 0 |
+| always | one `sr-only` `<caption>` on the table, `th scope="col"`, decorative covers with `alt=""` and the item name as adjacent text |
+
 ### DataGrid (`components/data-grid/data-grid.tsx`)
 
 Admin-only today (`/users`). Props are additive-only; column IDs are a public contract. Available:
@@ -375,6 +467,26 @@ stickyActionsColumn, enableGlobalFilter, globalFilterPlaceholder, globalFilterFn
   nothing is comparable it degrades to a muted line; it never renders a zero, a dash inside a price
   class, or a green claim without a comparable number behind it.
 - **Empty:** muted "Sin resultados" inside an `.app-card` (search results).
+- **Sync (wishlist):** "Sincronizar ahora" posts through `csrfFetch` (`syncWishlist`,
+  `app/wishlist/_lib/wishlist-api.ts`). A dedicated `syncing` flag drives only the button's
+  `loading`/`aria-busy` and an `aria-live` status line ("Consultando la wishlist de Steam..."), so the list
+  already on screen stays readable and the page never returns to its loading state. On success the report
+  renders in an `aria-live="polite"` block inside the summary and the list is re-fetched; if the reload
+  fails, the report stays and an inline `Alert variant="danger"` says the list could not be refreshed. The
+  report carries the eight counters the API returns, including the sync's own Steam pass ("Traídos de
+  Steam" always visible — a `0` there means nothing was missing — and "Fallidos de Steam" in danger tone
+  only when `> 0`), and one muted line states that the sync does not touch offer prices, which is why
+  "Refrescados" and "Fallidos" are always `0` here.
+- **Sync failure (wishlist):** inline `Alert variant="danger"`; the previous list, badges and dates stay
+  untouched. A failed sync never blanks the page.
+- **Refresh per row (wishlist):** "Sincronizar" calls the existing `refreshSteamGame(appId)`
+  (`app/steam/_lib/steam-api.ts`) — the same BFF `POST /api/bff/steam/games/<appId>` the game detail uses,
+  which refreshes Steam, ITAD and gg.deals in one call. A `refreshingAppId` flag scopes the `loading`
+  state to that single row (the page never returns to "Cargando...") and disables the other row buttons
+  while a request is in flight, because the endpoint allows 6 refreshes per minute per IP. On success the
+  list is re-fetched in place: no navigation happens, so the scroll position is kept. Failure renders in
+  the row itself (`role="alert"`), never as a page-level error, and a limiter rejection is worded as a wait
+  instruction instead of an error.
 - **Error:** `Alert variant="danger"` on the detail page; inline `.text-danger` `role="alert"` text in
   the search client.
 
@@ -429,8 +541,11 @@ stickyActionsColumn, enableGlobalFilter, globalFilterPlaceholder, globalFilterFn
   cell), never as a discount, and it is not compared when the currency is missing.
 - **Light theme.** The graphite retune touched `.dark` only; light themes are untouched and still
   legible, but they were not visually reviewed in this change.
-- **Shared tokens.** The dark token retune is global, so `/users` and `/steam` (which render inside
-  `AdminShell`) also shift to graphite. Their layout and components were not modified.
+- **Shared tokens.** The dark token retune is global, so `/steam` (which renders inside `AdminShell`) also
+  shifts to graphite without a layout migration. `/users` was migrated to this contract (`app-card`/
+  `app-topbar`, semantic badges, `Button` variants) inside `AdminShell`; `AdminShell`'s props, drawer,
+  focus trap and scroll lock are unchanged, and the `AdminShell`/`ProductShell` duplication remains
+  accepted debt.
 - **Providers in scope (policy reversal).** An earlier version of this contract excluded keyshops,
   forbade the word "keys" and forbade claiming "all stores". gg.deals is now a first-class second
   provider and its keyshop aggregate is deliberately in scope, so the UI renders those rows and labels
@@ -440,9 +555,11 @@ stickyActionsColumn, enableGlobalFilter, globalFilterPlaceholder, globalFilterFn
   and never a per-seller identity**, so copy must never name a keyshop seller or imply that one is
   known, and the gg.deals group must never read as store-by-store detail.
   Still out of scope: any provider other than ITAD and gg.deals, per-seller keyshop prices (a gg.deals
-  Premium feature), grey-market sourcing details, price history charts, alerts/watchlists, currency
-  switching, bundles and historical FX — only the day's rate is used. **Bundles are out of scope for the
-  currently implemented comparator** (Steam + ITAD + gg.deals/FX) and are deferred to the repo-root
+  Premium feature), grey-market sourcing details, price history charts, alerts and notifications,
+  currency switching, bundles and historical FX — only the day's rate is used. The Steam wishlist
+  (`/wishlist`) **is** in scope as an explicit, manual import with its own page; it brings no alerts, no
+  Telegram, no scheduled polling and no owned-library cross-store matching. **Bundles are out of scope for
+  the currently implemented comparator** (Steam + ITAD + gg.deals/FX) and are deferred to the repo-root
   `PLAN_BUNDLES.md` as a separate future phase; nothing in this contract defines bundle UI, bundle
   comparison, or bundle savings.
   **The `retail` bucket carries no classification badge:** it is an aggregate of official *and*
@@ -492,6 +609,42 @@ stickyActionsColumn, enableGlobalFilter, globalFilterPlaceholder, globalFilterFn
   that kind with no build error and no visible failure. That is how `keyshop` could have disappeared.
 - **No unit tests.** `selectBestPrice` / `cheapestTies` are pure functions on purpose so they can be
   covered the day a test runner exists; this repo has none and adding one is out of scope here.
+- **Wishlist has no filter, sort or pagination.** The API returns the whole snapshot and the page renders
+  it in one pass; the normalizer (`app/wishlist/_lib/wishlist-contract.ts`) caps a payload at 5000 items and
+  drops unknown/extra fields. Add server-side paging plus a title or store filter only against a real
+  oversized account, not speculatively.
+- **Two wishlist trust boundaries, one shape.** The BFF route and the client share the same normalizer, so
+  both reject an invalid `state` and default a malformed item to "dropped" instead of rendering it. The
+  client re-validates what the BFF already normalized: cheap, and it keeps a future non-BFF consumer honest.
+- **`WishlistThumb` duplicates `SteamThumb`.** Both are local components with the same 120×45 recipe;
+  extract one shared component when a third consumer appears. Same `<img>` debt as the cover note above
+  (`next.config.ts` has no `images.remotePatterns`).
+- **Manual sync only.** The wishlist page never polls and never syncs on load: a snapshot older than the
+  last manual run is shown with its own `syncedAt` badge, and "Sin fecha de sincronización" when the API
+  reports none. Scheduled refresh is out of scope.
+- **Client-side filtering, no pagination.** Wishlist filtering and sorting stay in the browser because
+  the expected list is around 600 rows and the API returns the complete snapshot. The shared `DataGrid`
+  is currently unpaged in this screen; add server-side filtering/pagination only when list size or measured
+  render cost makes this boundary real.
+- **The first sync of a big wishlist can take minutes, and the page can only wait.** `POST
+  /api/wishlist/sync` pulls the games with no local row from Steam **sequentially, inside the HTTP
+  request**, with no pacing (the backend carries its own `ponytail:` note about it): an empty database plus
+  a 500-game wishlist means ~500 Steam calls on a single request, so "Sincronizar ahora" can sit in
+  `loading` far longer than a normal sync and a proxy or browser timeout may cut it off. The UI states the
+  truth rather than faking progress: the button stays `loading`, the list already on screen keeps working,
+  and if the request dies the §8 error path reports it. Fixing it belongs in the backend (move the fetch
+  pass into the background job or pace it like the price pass) — do not paper over it with a client-side
+  timeout or an invented progress bar.
+- **The per-row refresh cannot tell a `429` from a `503`.** `refreshSteamGame` collapses the HTTP status
+  into the BFF message, so the client only ever sees text. The rate-limit wording is therefore recognized by
+  matching that message, and the factual note ("6 por minuto por IP: espera un minuto y vuelve a intentar")
+  is appended to any other failure too — a rejection by the limiter always ends in a wait instruction, never
+  in a bare "error". Give the row its own state only if the helper ever exposes the status.
+- **The four price columns are references, not offers.** `basePriceMinor`/`baseCurrency` and
+  `historyLow*` come from the game's own snapshot in its own currency; `bestOfficialMinor` and
+  `bestKeyshopMinor` are MXN snapshots the backend derived. They are deliberately **not** part of
+  `game_offers`, `selectBestPrice` or any savings math, are never compared across rows, and a row with no
+  observation shows "—" for all four instead of a stale or invented number.
 - **Verification.** No test project exists in this repo, so the check is `pnpm build` plus manual
   browser QA (owed: home/search/detail at light and dark, mobile drawer keyboard walkthrough, and the
   offers section with: the ITAD table and the gg.deals aggregate list side by side, a keyshop bucket

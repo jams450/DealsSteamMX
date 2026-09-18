@@ -4,6 +4,7 @@ export type AdminUser = {
   userId: number;
   name: string;
   email: string;
+  steamId64: string | null;
   active: boolean;
   admin: boolean;
 };
@@ -12,6 +13,7 @@ export type UserCreatePayload = {
   name: string;
   email: string;
   password: string;
+  steamId64: string | null;
   active: boolean;
   admin: boolean;
 };
@@ -20,6 +22,7 @@ export type UserUpdatePayload = {
   name: string;
   email: string;
   password?: string;
+  steamId64: string | null;
   active: boolean;
   admin: boolean;
 };
@@ -28,6 +31,7 @@ export type UserFormState = {
   name: string;
   email: string;
   password: string;
+  steamId64: string;
   active: boolean;
   admin: boolean;
 };
@@ -59,6 +63,7 @@ export function normalizeUsers(input: unknown): AdminUser[] {
       const userId = toNumber(item.userId ?? item.UserId);
       const nameRaw = item.name ?? item.Name;
       const emailRaw = item.email ?? item.Email;
+      const steamId64Raw = item.steamId64 ?? item.SteamId64;
       if (userId === null || typeof nameRaw !== "string" || typeof emailRaw !== "string") {
         return null;
       }
@@ -67,6 +72,7 @@ export function normalizeUsers(input: unknown): AdminUser[] {
         userId,
         name: nameRaw.trim(),
         email: emailRaw.trim().toLowerCase(),
+        steamId64: typeof steamId64Raw === "string" && steamId64Raw.trim() ? steamId64Raw.trim() : null,
         active: toBool(item.active ?? item.Active, true),
         admin: toBool(item.admin ?? item.Admin, false)
       } satisfies AdminUser;
@@ -80,6 +86,7 @@ export function toUserFormState(user?: AdminUser): UserFormState {
       name: "",
       email: "",
       password: "",
+      steamId64: "",
       active: true,
       admin: false
     };
@@ -89,6 +96,7 @@ export function toUserFormState(user?: AdminUser): UserFormState {
     name: user.name,
     email: user.email,
     password: "",
+    steamId64: user.steamId64 ?? "",
     active: user.active,
     admin: user.admin
   };
@@ -113,6 +121,11 @@ export function validateUserForm(form: UserFormState, isEdit: boolean): UserForm
 
   if (isEdit && form.password.trim().length > 0 && form.password.trim().length < 8) {
     errors.password = "Si cambias password, mínimo 8 caracteres";
+  }
+
+  const steamId64 = form.steamId64.trim();
+  if (steamId64 && !/^[0-9]{17}$/.test(steamId64)) {
+    errors.steamId64 = "SteamID64 debe tener 17 dígitos";
   }
 
   return errors;

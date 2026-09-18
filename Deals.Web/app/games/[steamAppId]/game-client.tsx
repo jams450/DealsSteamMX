@@ -81,10 +81,83 @@ function safeDealUrl(value: string | null) {
   }
 }
 
-// Sin ahorro en V1: el tier solo declara su propio precio y moneda, sin comparación ni verde.
+// Precio publicado del tier (nativo, en `currency`). El ahorro lo aporta `tierComparisonView`, nunca
+// este helper: sin comparación válida aquí no hay cifra que interpretar.
 function tierPrice(tier: SteamBundleTier) {
-  if (tier.priceMinor === null || tier.currency === null) return { display: "Precio no disponible", muted: true };
+  // El bundle solo puede venir de ITAD en V1: sin precio en el proveedor se dice tal cual, para que no
+  // se lea como un fallo nuestro. La cifra nunca se sustituye por un cero ni por un "gratis".
+  if (tier.priceMinor === null || tier.currency === null) return { display: "Sin precio en ITAD", muted: true };
   return { display: tier.priceMinor === 0 ? "Gratis" : formatMinor(tier.priceMinor, tier.currency), muted: false };
+}
+
+// `status`/`reason` son códigos de máquina; el copy vive en la UI. Un motivo desconocido no inventa cifras.
+const BUNDLE_REASON_LABELS: Record<string, string> = {
+  no_tier_price: "ITAD no publica un precio único para este bundle",
+  addon: "El tier es un addon",
+  items_incomplete: "Contenido no listado completo",
+  item_unpriced: "Falta el precio individual de algún juego",
+  not_comparable: "El tier incluye ítems no comparables",
+  currency_mismatch: "Monedas distintas entre ítems",
+  stale_snapshot: "Precios del bundle desactualizados"
+};
+
+function bundleReasonLabel(reason: string | null) {
+  return (reason !== null ? BUNDLE_REASON_LABELS[reason] : undefined) ?? "Motivo no especificado";
+}
+
+// El MXN derivado de FX es siempre estimación, nunca precio final: se etiqueta y se muestra la tasa.
+function mxnEstimate(amountMinor: number | null, tier: SteamBundleTier) {
+  if (amountMinor === null || tier.pricingType !== "fx_estimate") return null;
+
+  const rate = tier.fxRate === null ? null : `tasa ${rateFormatter.format(tier.fxRate)}`;
+  const note = [rate, formatIsoDate(tier.fxRateDate), tier.fxSource].filter((part): part is string => Boolean(part)).join(" · ");
+  return `≈ ${formatMinor(amountMinor, "MXN")} · FX estimado${note ? ` (${note})` : ""}`;
+}
+
+interface TierComparisonView {
+  readonly bundleDisplay: string;
+  readonly individualDisplay: string;
+  readonly savingsText: string;
+  readonly savingsPositive: boolean;
+  readonly mxnIndividual: string | null;
+  readonly mxnSavings: string | null;
+}
+
+/**
+ * Vista de un tier con comparación válida (`status === "ok"`). El verde se decide **solo** por
+ * `savingsMinor > 0`: `ok` significa que la comparación es posible, no que el bundle sea más barato
+ * (el ahorro puede ser 0 o negativo). Devuelve `null` si falta algún campo, y entonces el tier cae al
+ * copy por `reason` sin ninguna cifra.
+ */
+function tierComparisonView(tier: SteamBundleTier): TierComparisonView | null {
+  const currency = tier.currency;
+  const bundleMinor = tier.bundlePriceMinor ?? tier.priceMinor;
+  const individualTotal = tier.individualTotalMinor;
+  if (currency === null || bundleMinor === null || individualTotal === null) return null;
+
+  const savingsMinor = tier.savingsMinor;
+  let savingsText: string;
+  let savingsPositive = false;
+  if (savingsMinor === null) {
+    savingsText = "Comparación publicada sin cifra de ahorro.";
+  } else if (savingsMinor > 0) {
+    savingsPositive = true;
+    const percent = tier.savingsPercent !== null ? ` (${tier.savingsPercent}%)` : "";
+    savingsText = `Ahorro ${formatMinor(savingsMinor, currency)}${percent} frente a comprar los juegos por separado`;
+  } else if (savingsMinor === 0) {
+    savingsText = "El bundle no sale más barato: mismo precio que comprar los juegos por separado.";
+  } else {
+    savingsText = `El bundle no sale más barato: cuesta ${formatMinor(-savingsMinor, currency)} más que comprar los juegos por separado.`;
+  }
+
+  return {
+    bundleDisplay: formatMinor(bundleMinor, currency),
+    individualDisplay: formatMinor(individualTotal, currency),
+    savingsText,
+    savingsPositive,
+    mxnIndividual: mxnEstimate(individualTotal, tier),
+    mxnSavings: savingsPositive ? mxnEstimate(tier.mxnSavingsMinor, tier) : null
+  };
 }
 
 // Única base comparable entre tiendas: el snapshot en MXN. La moneda original nunca se compara.
@@ -483,15 +556,17 @@ interface BundleCardProps {
 }
 
 /**
- * Bundle externo: bloque propio, nunca una fila de ofertas ni parte del «mejor precio». Muestra tiers
- * con su precio y moneda, los ítems incluidos, la caducidad y el enlace del proveedor. **Sin cifra de
- * ahorro**: V1 no cruza bundles con precios individuales ni con biblioteca poseída.
+ * Bundle externo: bloque propio, nunca una fila de ofertas ni parte del «mejor precio». Por tier
+ * muestra precio del bundle, total individual y ahorro **solo** cuando la comparación es válida
+ * (`status === "ok"`); si no, muestra el motivo en texto y ninguna cifra. El verde se limita a
+ * `savingsMinor > 0`.
  */
 function BundleCard({ bundle, gameName }: BundleCardProps) {
   const expiresDisplay = formatObserved(bundle.expiresAt);
   const publishedDisplay = formatObserved(bundle.publishedAt);
   const observedDisplay = formatObserved(bundle.observedAt);
   const href = safeDealUrl(bundle.dealUrl ?? bundle.pageUrl);
+  const hasValidComparison = bundle.tiers.some((tier) => tier.status === "ok");
 
   return (
     <article className="space-y-3 rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4">
@@ -527,18 +602,48 @@ function BundleCard({ bundle, gameName }: BundleCardProps) {
         <ul className="space-y-3">
           {bundle.tiers.map((tier, tierIndex) => {
             const price = tierPrice(tier);
+            const comparison = tier.status === "ok" ? tierComparisonView(tier) : null;
             return (
               <li key={tierIndex} className="border-t border-default pt-3 first:border-t-0 first:pt-0">
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                  <span className={cn("deal-price", price.muted ? "text-muted" : "text-primary")}>{price.display}</span>
-                  {tier.currency ? (
-                    <span className="text-xs font-semibold uppercase text-secondary">{tier.currency}</span>
-                  ) : null}
-                  {tier.addon ? <span className="tabler-badge tabler-badge-warning">Addon</span> : null}
-                  {tier.games.length === 0 ? (
-                    <span className="tabler-badge tabler-badge-muted">Contenido no detallado</span>
-                  ) : null}
-                </div>
+                {comparison ? (
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <span className="text-xs text-muted">Precio del bundle</span>
+                      <span className="deal-price text-primary">{comparison.bundleDisplay}</span>
+                      {tier.currency ? (
+                        <span className="text-xs font-semibold uppercase text-secondary">{tier.currency}</span>
+                      ) : null}
+                      {tier.addon ? <span className="tabler-badge tabler-badge-warning">Addon</span> : null}
+                    </div>
+                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <span className="text-xs text-muted">Total individual</span>
+                      <span className="deal-price text-primary">{comparison.individualDisplay}</span>
+                    </div>
+                    <p className={cn("text-sm font-semibold", comparison.savingsPositive ? "text-success" : "text-secondary")}>
+                      {comparison.savingsText}
+                    </p>
+                    {comparison.mxnIndividual ? (
+                      <p className="text-xs text-muted">Total individual estimado en MXN: {comparison.mxnIndividual}</p>
+                    ) : null}
+                    {comparison.mxnSavings ? (
+                      <p className="text-xs text-muted">Ahorro estimado en MXN: {comparison.mxnSavings}</p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <span className={cn("deal-price", price.muted ? "text-muted" : "text-primary")}>{price.display}</span>
+                      {tier.currency ? (
+                        <span className="text-xs font-semibold uppercase text-secondary">{tier.currency}</span>
+                      ) : null}
+                      {tier.addon ? <span className="tabler-badge tabler-badge-warning">Addon</span> : null}
+                      {tier.games.length === 0 ? (
+                        <span className="tabler-badge tabler-badge-muted">Contenido no detallado</span>
+                      ) : null}
+                    </div>
+                    <p className="text-xs text-muted">Sin comparación: {bundleReasonLabel(tier.reason)}</p>
+                  </div>
+                )}
                 {tier.games.length > 0 ? (
                   <ul className="mt-2 flex flex-wrap gap-1">
                     {tier.games.map((item, itemIndex) => {
@@ -559,6 +664,13 @@ function BundleCard({ bundle, gameName }: BundleCardProps) {
       ) : (
         <p className="tabler-badge tabler-badge-muted">Sin tiers publicados por el proveedor</p>
       )}
+
+      {hasValidComparison ? (
+        <p className="text-xs text-muted">
+          La comparación usa los precios actuales de ITAD en el momento de la observación; pueden cambiar
+          y la disponibilidad no está garantizada.
+        </p>
+      ) : null}
     </article>
   );
 }
@@ -952,7 +1064,9 @@ export function GameClient({ appId }: GameClientProps) {
             <h2 id="bundles-heading" className="text-xl font-semibold tracking-tight text-primary">Bundles encontrados</h2>
             <p className="text-xs text-muted">
               Paquetes que incluyen este juego, según ITAD. Se muestran aparte de las ofertas: un bundle
-              tiene tiers y varios ítems, y caduca. No se calcula ni se muestra ahorro.
+              tiene tiers y varios ítems, y caduca. Cuando ITAD publica el precio individual de todos los
+              ítems, el tier compara el bundle contra comprarlos por separado; si falta algún dato, se
+              muestra el motivo y ninguna cifra de ahorro.
             </p>
             <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm font-semibold text-secondary">
               <span>Datos de bundles:</span>

@@ -90,10 +90,17 @@ public sealed class SteamController(ISteamGameService steamGameService) : Contro
             bundle.Tiers.Select(ToResponse).ToList());
 
     private static SteamGameBundleTierResponse ToResponse(SteamGameBundleTier tier) =>
-        new(tier.PriceMinor, tier.Currency, tier.Addon, tier.Games.Select(ToResponse).ToList());
+        new(tier.PriceMinor, tier.Currency, tier.Addon, tier.ItemsComplete,
+            tier.Games.Select(ToResponse).ToList(),
+            tier.Status, tier.Reason, tier.IndividualTotalMinor,
+            // bundlePriceMinor is the tier's own published price, restated beside the savings so the
+            // client never has to guess which side moved.
+            tier.PriceMinor, tier.SavingsMinor, tier.SavingsPercent,
+            tier.FxRate, tier.FxRateDate, tier.FxSource, tier.PricingType,
+            tier.MxnIndividualTotalMinor, tier.MxnSavingsMinor);
 
     private static SteamGameBundleTierGameResponse ToResponse(SteamGameBundleTierGame game) =>
-        new(game.Title, game.Type);
+        new(game.Title, game.Type, game.PriceMinor, game.PriceCurrency);
 
     private static SteamGameOfferResponse ToResponse(SteamGameOffer offer) =>
         new(offer.Source, offer.OfferKey, offer.ShopId, offer.ShopName, offer.Classification,

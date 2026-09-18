@@ -1,5 +1,7 @@
 namespace Deals.BusinessLogic.Models.Steam;
 
+using System.Text.Json.Serialization;
+
 /// <summary>
 /// One current shop offer for a game. Original price/currency is the source of truth; the MXN
 /// values are derived and null when no conversion applies (see <see cref="PricingType"/>).
@@ -28,20 +30,38 @@ public sealed record SteamGameOffer(
     string? HistoryLowCurrency = null);
 
 /// <summary>
-/// One item listed in a bundle tier, as the display contract expects it: title plus optional type. The
-/// provider game id is deliberately not persisted nor exposed.
+/// One item listed in a bundle tier, as the display contract expects it: title, optional type and the
+/// current ITAD price of the item itself. The provider game id is deliberately not persisted nor exposed,
+/// but the item price is what makes the tier comparison honest.
 /// </summary>
-public sealed record SteamGameBundleTierGame(string Title, string? Type);
+public sealed record SteamGameBundleTierGame(
+    string Title,
+    string? Type,
+    int? PriceMinor,
+    string? PriceCurrency);
 
 /// <summary>
-/// One tier of a bundle: its own price and currency (null when the provider reports none), the addon flag
-/// and the items it lists. The price is displayed as published; no saving is ever computed from it.
+/// One tier of a bundle: its own price, the items it lists and the honest, same-provider comparison
+/// derived at read time. The comparison (Status/Reason/individual total/savings) is never persisted: it
+/// is recomputed from the persisted tier snapshot, so it cannot become stale truth.
 /// </summary>
 public sealed record SteamGameBundleTier(
     int? PriceMinor,
     string? Currency,
     bool Addon,
-    IReadOnlyList<SteamGameBundleTierGame> Games);
+    bool ItemsComplete,
+    IReadOnlyList<SteamGameBundleTierGame> Games,
+    [property: JsonIgnore] string? Status = null,
+    [property: JsonIgnore] string? Reason = null,
+    [property: JsonIgnore] int? IndividualTotalMinor = null,
+    [property: JsonIgnore] int? SavingsMinor = null,
+    [property: JsonIgnore] int? SavingsPercent = null,
+    [property: JsonIgnore] decimal? FxRate = null,
+    [property: JsonIgnore] DateOnly? FxRateDate = null,
+    [property: JsonIgnore] string? FxSource = null,
+    [property: JsonIgnore] string? PricingType = null,
+    [property: JsonIgnore] int? MxnIndividualTotalMinor = null,
+    [property: JsonIgnore] int? MxnSavingsMinor = null);
 
 /// <summary>
 /// One external bundle the game appears in. Purely informational: it is not comparable to an offer and

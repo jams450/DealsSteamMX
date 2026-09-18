@@ -40,18 +40,34 @@ export type SteamGameOffer = {
   readonly observedAt: string | null;
 };
 
-// Bundle externo (V1: ITAD). No es una oferta: tiene tiers, varios ítems y caduca. El ahorro NO se
-// calcula ni se representa en este contrato.
+// Bundle externo (V1.1: ITAD). No es una oferta: tiene tiers, varios ítems y caduca. El ahorro se derive
+// en el backend por tier contra el precio actual de ITAD, nunca contra Steam ni gg.deals: el cliente
+// solo valida la forma y los caps. `status`/`reason` son códigos de máquina; el copy va en la UI.
 export type SteamBundleTierItem = {
   readonly title: string;
   readonly type: string | null;
+  readonly priceMinor: number | null;
+  readonly priceCurrency: string | null;
 };
 
 export type SteamBundleTier = {
   readonly priceMinor: number | null;
   readonly currency: string | null;
   readonly addon: boolean;
+  readonly itemsComplete: boolean;
   readonly games: readonly SteamBundleTierItem[];
+  readonly status: string | null;
+  readonly reason: string | null;
+  readonly individualTotalMinor: number | null;
+  readonly bundlePriceMinor: number | null;
+  readonly savingsMinor: number | null;
+  readonly savingsPercent: number | null;
+  readonly fxRate: number | null;
+  readonly fxRateDate: string | null;
+  readonly fxSource: string | null;
+  readonly pricingType: string | null;
+  readonly mxnIndividualTotalMinor: number | null;
+  readonly mxnSavingsMinor: number | null;
 };
 
 export type SteamGameBundle = {
@@ -103,6 +119,18 @@ function toPositiveInteger(value: unknown): number | null {
 function toPriceMinor(value: unknown): number | null {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+// Un ahorro puede ser negativo (el bundle cuesta más que sus piezas): sin cifra, no maquillada.
+function toSignedMinor(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+// Igual que toPriceMinor pero aceptando negativos: `mxnSavingsMinor` deriva de un ahorro con signo.
+function toSignedPercent(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= -100 && parsed <= 100 ? parsed : null;
 }
 
 function toPercent(value: unknown): number | null {
@@ -287,6 +315,8 @@ const MAX_BUNDLE_TIER_GAMES = 50;
 const MAX_BUNDLE_TITLE_LENGTH = 200;
 const MAX_BUNDLE_SHOP_NAME_LENGTH = 120;
 const MAX_BUNDLE_DETAILS_LENGTH = 600;
+const MAX_BUNDLE_STATUS_LENGTH = 40;
+const STEAM_BUNDLE_STATUS_LENGTH = MAX_BUNDLE_STATUS_LENGTH;
 
 function normalizeBundleTierItem(value: unknown): SteamBundleTierItem | null {
   const record = isRecord(value) ? value : null;
@@ -295,7 +325,9 @@ function normalizeBundleTierItem(value: unknown): SteamBundleTierItem | null {
 
   return {
     title,
-    type: toBoundedText(record === null ? null : read(record, "type"), MAX_BUNDLE_TITLE_LENGTH)
+    type: toBoundedText(record === null ? null : read(record, "type"), MAX_BUNDLE_TITLE_LENGTH),
+    priceMinor: toPriceMinor(record === null ? null : read(record, "priceMinor")),
+    priceCurrency: toCurrencyCode(record === null ? null : read(record, "priceCurrency"))
   };
 }
 
@@ -317,7 +349,20 @@ function normalizeBundleTier(value: unknown): SteamBundleTier | null {
     priceMinor: toPriceMinor(read(value, "priceMinor")),
     currency: toCurrencyCode(read(value, "currency")),
     addon: read(value, "addon") === true,
-    games
+    itemsComplete: read(value, "itemsComplete") !== false,
+    games,
+    status: toBoundedText(read(value, "status"), STEAM_BUNDLE_STATUS_LENGTH),
+    reason: toBoundedText(read(value, "reason"), STEAM_BUNDLE_STATUS_LENGTH),
+    individualTotalMinor: toPriceMinor(read(value, "individualTotalMinor")),
+    bundlePriceMinor: toPriceMinor(read(value, "bundlePriceMinor")),
+    savingsMinor: toSignedMinor(read(value, "savingsMinor")),
+    savingsPercent: toSignedPercent(read(value, "savingsPercent")),
+    fxRate: toPositiveDecimal(read(value, "fxRate")),
+    fxRateDate: toIsoDate(read(value, "fxRateDate")),
+    fxSource: toText(read(value, "fxSource")),
+    pricingType: toPricingType(read(value, "pricingType")),
+    mxnIndividualTotalMinor: toPriceMinor(read(value, "mxnIndividualTotalMinor")),
+    mxnSavingsMinor: toSignedMinor(read(value, "mxnSavingsMinor"))
   };
 }
 

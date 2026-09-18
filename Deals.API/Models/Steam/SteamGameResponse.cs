@@ -28,20 +28,38 @@ public sealed record SteamGameOfferResponse(
     string? HistoryLowCurrency);
 
 /// <summary>
-/// Item listed in a bundle tier. Mirrors the frontend contract exactly: title plus optional type.
+/// Item listed in a bundle tier. Mirrors the frontend contract exactly. <see cref="PriceMinor"/> and
+/// <see cref="PriceCurrency"/> are the item's current ITAD price, reported by the same provider as the tier.
 /// </summary>
-public sealed record SteamGameBundleTierGameResponse(string Title, string? Type);
+public sealed record SteamGameBundleTierGameResponse(
+    string Title,
+    string? Type,
+    int? PriceMinor,
+    string? PriceCurrency);
 
 /// <summary>
-/// One tier of a bundle as published by the provider. <paramref name="PriceMinor"/> and
-/// <paramref name="Currency"/> are null when no price is reported; <paramref name="Addon"/> marks a tier
-/// that is an add-on. No saving is derived from these values.
+/// One tier of a bundle with the honest, same-provider comparison derived at read time. The savings are
+/// only present when <see cref="Status"/> is "ok"; otherwise <see cref="Reason"/> carries why. FX/MXN
+/// fields are the optional single conversion of that comparison, only for a USD tier with a day rate.
 /// </summary>
 public sealed record SteamGameBundleTierResponse(
     int? PriceMinor,
     string? Currency,
     bool Addon,
-    IReadOnlyList<SteamGameBundleTierGameResponse> Games);
+    bool ItemsComplete,
+    IReadOnlyList<SteamGameBundleTierGameResponse> Games,
+    string? Status,
+    string? Reason,
+    int? IndividualTotalMinor,
+    int? BundlePriceMinor,
+    int? SavingsMinor,
+    int? SavingsPercent,
+    decimal? FxRate,
+    DateOnly? FxRateDate,
+    string? FxSource,
+    string? PricingType,
+    int? MxnIndividualTotalMinor,
+    int? MxnSavingsMinor);
 
 /// <summary>
 /// External bundle the game appears in. Display-only metadata: it never feeds the offer comparison.

@@ -7,4 +7,5 @@ public class UserResponse
     public string Email { get; set; } = string.Empty;
     public bool Active { get; set; }
     public bool Admin { get; set; }
+    public string? SteamId64 { get; set; }
 }

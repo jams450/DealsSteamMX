@@ -1,10 +1,10 @@
 # DealExt: plan de bundles externos
 
-Estado: **V1 display implementado** (ITAD, sin cálculo de ahorro). No pertenece al comparador de precios ya implementado (Steam + ITAD + gg.deals + FX) y no debe regresarlo.
+Estado: **V1.1 implementado** (ITAD: display + comparación de precio por tier). No pertenece al comparador de precios ya implementado (Steam + ITAD + gg.deals + FX) y no debe regresarlo.
 
-Implementado: `IItadClient.GetBundlesAsync` (`games/overview/v2?country=MX`, header, lotes de 200, mismo governor/retry), parseo defensivo, bundle canónico `external_bundles` UNIQUE(source, bundle_key) + relación `external_bundle_games` (upserts atómicos `ON CONFLICT`), `steam_games.bundles_refreshed_at` con stale propio, purga ITAD aislada, y bloque UI separado con tiers/precio/expiración/enlaces verbatim y atribución.
+Implementado: `IItadClient.GetBundlesAsync` (`games/overview/v2?country=MX`, header, lotes de 200, mismo governor/retry), parseo defensivo, bundle canónico `external_bundles` UNIQUE(source, bundle_key) + relación `external_bundle_games` (upserts atómicos `ON CONFLICT`), `steam_games.bundles_refreshed_at` con stale propio, purga ITAD aislada, y bloque UI separado con tiers/precio/expiración/enlaces verbatim y atribución. Comparación por tier según §D.1 (precios individuales ITAD, derivación en lectura, estados y razones).
 
-Pendiente bloqueante de release: **no hay respuesta real guardada** de `overview/v2` para MX; sin fixture sanitizada no se certifica el parser ni se cierra §B. El cálculo de ahorro sigue **no implementado** y fuera de V1 (§D).
+Pendiente bloqueante de release: **no hay respuesta real guardada** de `overview/v2` para MX; sin fixture sanitizada no se certifica el parser ni se cierra §B. `§C` (gg.deals) sigue fuera de V1 y por eso Build Your Own no está cubierto.
 
 Documento de diseño; nada aquí está verificado contra una respuesta real salvo lo que se marca explícitamente.
 
@@ -19,7 +19,7 @@ Referencias: `AGENTS.md`, `PLAN_BASE_MVP.md`, `PLAN_ITAD.md`, `PLAN_GGDEALS.md`,
 5. **Sin ahorro basado en biblioteca poseída en V1.** "Lo que ahorrarías porque ya tienes parte del bundle" depende de `user_library`, que es el plan de `PLAN_WISHLIST.md`. En V1 no se cruza ni se insinúa.
 6. **El bundle no es una oferta.** Es un paquete con varios tiers, varios ítems y una fecha de expiración. Se muestra como bloque propio, no como fila de la tabla de ofertas.
 
-## B) Contrato ITAD verificado (pending de confirmación en vivo)
+## B) Contrato ITAD verificado
 
 Endpoint de lote elegido para V1:
 
@@ -34,7 +34,17 @@ ITAD-API-Key: <key>
 - El cuerpo es un array de **gids de ITAD** (los mismos UUID que ya se persisten en `steam_games.itad_game_id`), máximo **200** por llamada.
 - Devuelve los **bundles activos que contienen los juegos consultados**. No es un catálogo general de bundles.
 - La autenticación es la estándar de ITAD. El cliente existente (`ItadClient`) ya envía la key por header `ITAD-API-Key`, nunca en query; el nuevo método debe seguir ese patrón.
-- **Verificación obligatoria antes de codificar:** no hay una respuesta completa capturada todavía. El primer paso de la fase 1 es obtener una respuesta real y fijarla como fixture. Hasta entonces el contrato no está cerrado.
+
+### B.1) Confirmación en vivo (respuesta real de MX)
+
+Una respuesta real de `country=MX` confirmó el esquema y cerró las incógnitas:
+
+- Bundle real observado: Fanatical id `16557`, *"Prestige Collection - Build your Own Bundle (Fall 2026)"*, `counts {games: 28, media: 1}`, un solo tier, `addon: false`, `publish`/`expiry` con offset (activo), `note: null`.
+- Raíz objeto con `prices[]` y `bundles[]`; `bundles[]` es un **array plano** de bundles activos (no agrupado por juego).
+- Ítems en `tiers[].games[]`: el identificador es **`id`** (UUID), no `gid`, y traen además `slug`, `title`, `type`, `mature`, `assets`. `type` observado: `game` y `package`.
+- **`counts.games` coincide con el número de ítems listados en los tiers**; `counts.media` **no aparece** en `tiers[].games[]` (en el caso observado, `media: 1` y ningún ítem media en la lista). `media > 0` no invalida el contenido listado, pero tampoco se puede comparar.
+- **`price` puede venir `null` con la clave presente** — conforme a spec, no es un defecto del consumidor. Caso real y frecuente: los bundles **Build your Own** de Fanatical tienen precio dinámico (según cuántos juegos elijas), así que ITAD no publica un precio único de tier. Su propia ficha pública tampoco muestra línea de `Price` en ese caso.
+- Los ítems `package` no tienen precio individual en `prices/v3` → quedan fuera de cualquier suma (no son comparables).
 
 Endpoint alternativo descartado para el lote de V1:
 
@@ -44,11 +54,17 @@ GET https://api.isthereanydeal.com/games/bundles/v2?id=<itad-gid>
 
 - Es **un gid por request**; con varios juegos multiplica llamadas contra el presupuesto compartido. No se usa para V1. Puede reevaluarse si `overview/v2` resulta insuficiente.
 
-Esquema que hay que confirmar en la respuesta real:
+Endpoint `bundles/v1`: **no aporta nada al precio** y no es una alternativa.
 
-- bundle: `id`, título, tienda/página de la tienda, `url`, campos de `details`, fecha de publicación, fecha de expiración, `counts`, `tiers`.
-- tier: precio (`amountInt` + `currency`), `addon`, y lista de juegos (`gid`, `title`, `type`).
-- **Regla de atribución:** la `url` (que incluye el tag de afiliado de ITAD) se guarda y se renderiza **verbatim**, nunca se reescribe ni se limpia. La atribución a IsThereAnyDeal debe ser un **hipervínculo activo** visible, igual que en el comparador (`Deals.Web/DESIGN.md` §8, §11).
+- Devuelve el mismo `obj.bundle` (mismo `$ref`), con `tiers[].price` igual de nulable. Migrar no arreglaría un precio ausente.
+- Es un **catálogo paginado** (`offset`/`limit` ≤ 50, sin parámetro de ids): no asocia juego→bundle, así que responder "bundles de este juego" obligaría a paginar el catálogo entero y cruzar en local.
+- Solo sirve como contraste de diagnóstico, no como fuente de V1.
+
+Esquema confirmado:
+
+- bundle: `id`, `title`, `page` (`id`/`name`/`shopId`), `url`, `details`, `isMature`, `publish`, `expiry` (nulable), `note`, `counts`, `tiers`.
+- tier: `price` (`oneOf` precio/nulo, clave siempre presente), `addon`, `games[]`.
+- **Regla de atribución:** la `url` (que incluye el tag de afiliado de ITAD) se guarda y se renderiza **verbatim**, nunca se reescribe ni se limpia. La atribución a IsThereAnyDeal debe ser un **hipervínculo activo** visible, igual que en el comparador (`Deals.Web/DESIGN.md` §8, §11). `details` es la página de ITAD y no está en `required`.
 
 Incógnitas a resolver contra la respuesta real antes de fijar el contrato (decision gate de la fase 1):
 
@@ -94,6 +110,21 @@ El ahorro de un tier solo se calcula si se cumplen **todas** estas condiciones:
 10. **Nunca** se mezclan en silencio precios de ITAD, gg.deals, Steam o keyshops entre sí.
 
 Si cualquier condición falla: **se muestra el bundle, sin cifra de ahorro**, con una razón mínima y legible ("Sin cálculo: contenido incompleto", "Sin cálculo: Build Your Own", "Sin cálculo: moneda distinta", etc.). No se inventa un número ni se muestra un ahorro parcial como si fuera total.
+
+### D.1) Contrato de comparación implementado (V1.1)
+
+El ahorro se **deriva en lectura**; nunca se persiste como verdad.
+
+- Ambas partes salen de **ITAD**: el precio del tier y el precio actual individual de cada ítem del tier (mínimo `CurrentPriceMinor` entre los deals de ese id). Prohibido comparar contra Steam, gg.deals o keyshops.
+- `status` expuesto: `ok` (comparación válida) | `no_saving` (no comparable).
+- `reason` cuando `status = no_saving`: `no_tier_price`, `addon`, `items_incomplete`, `item_unpriced`, `not_comparable`, `currency_mismatch`, `stale_snapshot`.
+- `ok` **no** implica que el bundle sea más barato: `savingsMinor = individualTotalMinor - bundlePriceMinor` puede ser 0 o negativo, y la UI no debe usar tono de éxito en ese caso.
+- Ítems que no son juegos (`dlc`/`package`/`unknown`) ⇒ `not_comparable`, sin cifra.
+- Cualquier truncado o descarte que vuelva incompleta la lista de ítems (cap de parseo, cap de persistencia, entrada saltada por el parser) ⇒ `items_incomplete`, sin cifra. Ninguna suma parcial puede presentarse como total del tier.
+- Snapshot de bundles stale ⇒ ningún tier puede ser `ok` (`stale_snapshot`): se muestra el bundle sin cifra de ahorro.
+- MXN solo con **una** conversión FX etiquetada (`pricingType = "fx_estimate"` + `fxRate`/`fxRateDate`/`fxSource`); la cifra nativa nunca se presenta como MXN.
+- Si la consulta de precios falla, el refresco de bundles **falla**: snapshot conservado, `bundles_stale`, timestamp sin avanzar, sin purga.
+- Build Your Own solo puede detectarse vía gg.deals (fase 2): hoy no se puede marcar, así que ese caso no está cubierto.
 
 Texto base de la comparación honesta:
 

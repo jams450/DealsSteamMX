@@ -169,10 +169,6 @@ body {
 }
 
 @layer components {
-  .tabler-shell {
-    @apply w-full px-0 py-0;
-  }
-
   /* Semantic utility classes */
   .app-page {
     @apply relative min-h-dvh overflow-x-clip;
@@ -367,12 +363,6 @@ body {
     border-top: 1px solid var(--color-border);
   }
 
-  .tabler-panel {
-    border: 1px solid var(--tabler-border);
-    border-radius: var(--tabler-radius-md);
-    background: var(--tabler-surface-2);
-  }
-
   .drawer-header-semantic {
     @apply sticky top-0 z-10 border-b px-4 py-3 backdrop-blur sm:px-5 sm:py-4;
     border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
@@ -412,7 +402,8 @@ body {
   }
 
   .tabler-badge-solid {
-    @apply border-transparent text-white;
+    @apply border-transparent;
+    color: var(--color-text-inverse);
   }
 
   .tabler-badge.tabler-badge-primary:not(.tabler-badge-solid) {
@@ -450,19 +441,19 @@ body {
   }
 
   .tabler-badge-primary.tabler-badge-solid {
-    background: #2563eb;
+    background: var(--color-accent);
   }
 
   .tabler-badge-success.tabler-badge-solid {
-    background: #16a34a;
+    background: var(--color-success);
   }
 
   .tabler-badge-danger.tabler-badge-solid {
-    background: #dc2626;
+    background: var(--color-danger);
   }
 
   .tabler-badge-muted.tabler-badge-solid {
-    background: #475569;
+    background: color-mix(in srgb, var(--color-text-muted) 72%, var(--color-surface-3));
   }
 
   .tabler-badge-primary {
@@ -491,95 +482,6 @@ body {
 
   .tabler-badge-muted {
     color: var(--color-text-muted);
-  }
-
-  .app-grid-skin table thead {
-    background: color-mix(in srgb, var(--color-surface-3) 92%, transparent);
-  }
-
-  .app-grid-skin table thead th {
-    @apply px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.08em];
-    border-bottom: 1px solid color-mix(in srgb, var(--color-border-strong) 82%, transparent);
-    color: var(--color-text-muted);
-  }
-
-  .app-grid-skin table tbody tr {
-    border-top: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
-  }
-
-  .app-grid-skin table tbody tr:nth-child(odd) {
-    background: color-mix(in srgb, var(--color-surface-2) 84%, transparent);
-  }
-
-  .app-grid-skin table tbody tr:nth-child(even) {
-    background: color-mix(in srgb, var(--color-surface-3) 58%, transparent);
-  }
-
-  .app-grid-skin table tbody tr:hover {
-    background: color-mix(in srgb, var(--color-accent) 12%, transparent) !important;
-  }
-
-  .app-grid-skin table tbody td {
-    @apply px-4 py-3;
-    border-color: var(--color-border);
-    color: var(--color-text-primary);
-  }
-
-  .app-grid-skin table tbody td p {
-    color: var(--color-text-primary);
-  }
-
-  .app-grid-skin table tbody td .text-slate-500,
-  .app-grid-skin table tbody td .text-slate-600,
-  .app-grid-skin table tbody td .dark\:text-slate-400 {
-    color: var(--color-text-muted);
-  }
-
-  .app-grid-skin .overflow-x-auto {
-    @apply overflow-hidden rounded-2xl;
-    border: 1px solid color-mix(in srgb, var(--color-border-strong) 85%, transparent);
-    background: color-mix(in srgb, var(--color-surface-2) 88%, transparent);
-    box-shadow: var(--shadow-md);
-  }
-
-  .app-grid-skin table tbody tr:first-child td:first-child {
-    border-top-left-radius: 0.85rem;
-  }
-
-  .app-grid-skin table tbody tr:first-child td:last-child {
-    border-top-right-radius: 0.85rem;
-  }
-
-  .app-grid-skin table tbody tr:last-child td:first-child {
-    border-bottom-left-radius: 0.85rem;
-  }
-
-  .app-grid-skin table tbody tr:last-child td:last-child {
-    border-bottom-right-radius: 0.85rem;
-  }
-
-  .app-grid-skin .tabler-badge {
-    border-color: color-mix(in srgb, var(--color-border-strong) 75%, transparent);
-    background: color-mix(in srgb, var(--color-surface-3) 88%, transparent);
-    color: var(--color-text-primary);
-  }
-
-  .app-grid-skin .tabler-badge.tabler-badge-primary {
-    border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
-    background: color-mix(in srgb, var(--color-accent) 20%, transparent);
-    color: var(--color-text-primary);
-  }
-
-  .app-grid-skin .tabler-badge.tabler-badge-success {
-    border-color: color-mix(in srgb, var(--color-success) 50%, transparent);
-    background: color-mix(in srgb, var(--color-success) 20%, transparent);
-    color: var(--color-success);
-  }
-
-  .app-grid-skin .tabler-badge.tabler-badge-danger {
-    border-color: color-mix(in srgb, var(--color-danger) 50%, transparent);
-    background: color-mix(in srgb, var(--color-danger) 20%, transparent);
-    color: var(--color-danger);
   }
 
   .tabler-page {

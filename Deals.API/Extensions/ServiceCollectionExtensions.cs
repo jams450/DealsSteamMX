@@ -144,6 +144,52 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IFxRateService, FxRateService>();
         services.AddHostedService<FxRateRefreshJob>();
 
+        services.AddOptions<WishlistOptions>()
+            .Validate(
+                options => IsHttps(options.ApiBaseUrl),
+                "Wishlist:ApiBaseUrl must be an absolute HTTPS URL.")
+            .Validate(
+                options => options.RunAtHour is >= 0 and <= 23,
+                "Wishlist:RunAtHour must be between 0 and 23.")
+            .Validate(
+                options => options.JitterMinutes >= 0,
+                "Wishlist:JitterMinutes must not be negative.")
+            .Validate(
+                options => ValidateWishlistTimeZone(options.TimeZoneId),
+                "Wishlist:TimeZoneId no es resoluble o está vacío.")
+            .Validate(
+                options => options.StartupDelaySeconds >= 0,
+                "Wishlist:StartupDelaySeconds must not be negative.")
+            .Validate(
+                options => options.MaxRefreshesPerHour > 0,
+                "Wishlist:MaxRefreshesPerHour must be greater than zero.")
+            .Validate(
+                options => options.TimeoutSeconds > 0,
+                "Wishlist:TimeoutSeconds must be greater than zero.")
+            .ValidateOnStart();
+
+        services.AddSingleton(serviceProvider =>
+        {
+            var options = serviceProvider.GetRequiredService<IOptions<WishlistOptions>>().Value;
+            var itadOptions = serviceProvider.GetRequiredService<IOptions<ItadOptions>>().Value;
+            return new WishlistSyncSettings(options.MaxRefreshesPerHour, itadOptions.RefreshAfterDays);
+        });
+
+        services.AddHttpClient<ISteamWishlistClient, SteamWishlistClient>((serviceProvider, client) =>
+        {
+            var options = serviceProvider.GetRequiredService<IOptions<WishlistOptions>>().Value;
+            if (!IsHttps(options.ApiBaseUrl))
+            {
+                throw new InvalidOperationException("Wishlist:ApiBaseUrl must be an absolute HTTPS URL.");
+            }
+
+            client.BaseAddress = new Uri(options.ApiBaseUrl);
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.TimeoutSeconds, 1, 60));
+        });
+
+        services.AddScoped<IWishlistSyncService, WishlistSyncService>();
+        services.AddHostedService<WishlistSyncJob>();
+
         return services;
     }
 
@@ -154,4 +200,26 @@ public static class ServiceCollectionExtensions
 
     private static bool IsHttps(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps;
+
+    private static bool ValidateWishlistTimeZone(string? timeZoneId)
+    {
+        if (string.IsNullOrWhiteSpace(timeZoneId))
+        {
+            return false;
+        }
+
+        try
+        {
+            TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+            return true;
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return false;
+        }
+        catch (InvalidTimeZoneException)
+        {
+            return false;
+        }
+    }
 }
