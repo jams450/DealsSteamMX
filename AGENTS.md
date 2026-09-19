@@ -6,7 +6,7 @@ Operational map for this repo. Read this before changing code.
 Reusable full-stack template. Backend: .NET 9 API (`Deals.API`, `Deals.BusinessLogic`, `Deals.Models`). Frontend: Next.js 15 App Router app that acts as a BFF (`Deals.Web`). Database: PostgreSQL via Npgsql EF Core. The expense domain was deleted on purpose; the admin **Users** feature is the reference vertical slice (backend, BFF, and UI).
 
 ## Current phase
-The current phase is the **price comparator**: direct Steam price + ITAD official/authorized offers + gg.deals retail/keyshops aggregate + FX conversion to MXN (`docs/PLAN_BASE_MVP.md`, `docs/PLAN_ITAD.md`, `docs/PLAN_GGDEALS.md`). It is implemented and pending commit/deploy/runtime validation; the checkout has wide uncommitted changes. External bundles have their own V1 **display-only** implementation on the same game detail (`docs/PLAN_BUNDLES.md`): ITAD `games/overview/v2` discovery + `external_bundles`/`external_bundle_games`. Bundles never enter `game_offers`, `selectBestPrice` or any savings math. Savings calculation is still not implemented, and no live MX fixture has certified the parser yet — treat the ITAD bundle contract as pending runtime validation. Future plans live in `docs/`: canonical games (`PLAN_CATALOG.md`), Playnite library/reviews (`PLAN_LIBRARY.md`), wishlist (`PLAN_WISHLIST.md`), and the verified export procedure (`PLAYNITE_EXPORT.md`). `docs/dealext-library.json` is a personal import fixture and must remain ignored.
+The current phase is the **price comparator**: direct Steam price + ITAD official/authorized offers + gg.deals retail/keyshops aggregate + FX conversion to MXN (`docs/PLAN_BASE_MVP.md`, `docs/PLAN_ITAD.md`, `docs/PLAN_GGDEALS.md`). It is implemented and pending commit/deploy/runtime validation; the checkout has wide uncommitted changes. External bundles have their own V1 **display-only** implementation on the same game detail (`docs/PLAN_BUNDLES.md`): ITAD `games/overview/v2` discovery + `external_bundles`/`external_bundle_games`. Bundles never enter `game_offers`, `selectBestPrice` or any savings math. Savings calculation is still not implemented, and no live MX fixture has certified the parser yet — treat the ITAD bundle contract as pending runtime validation. The Playnite library is implemented with per-game favorites (`user_game_favorites`) and multiple reviews per `(game, platform)` carrying a mandatory `status` (`finished | completed | dropped`; "por jugar" is the absence of a review). Future plans live in `docs/`: canonical games (`PLAN_CATALOG.md`), Playnite library/reviews (`PLAN_LIBRARY.md`), wishlist (`PLAN_WISHLIST.md`), and the verified export procedure (`PLAYNITE_EXPORT.md`). `docs/dealext-library.json` is a personal import fixture and must remain ignored.
 
 ## Reality check
 - `Deals.sln` contains only the 3 backend projects. `Deals.Web` is a separate pnpm project, not in the solution.
@@ -44,12 +44,13 @@ cd Deals.Web
 pnpm install --no-frozen-lockfile
 pnpm build
 pnpm dev   # http://localhost:3000
+node .next/standalone/server.js   # la build de producción como la corre la imagen (pnpm start avisa: output standalone)
 ```
 Both from the repo root (reads `.env`):
 ```bash
 pnpm dev
 ```
-`Deals.Web/Dockerfile` uses `npm ci` on purpose; it runs inside `node:20-alpine`, so it works there.
+`Deals.Web/Dockerfile` mirrors the local toolchain: `node:24-alpine` with pnpm pinned to the same version this machine uses (`pnpm@11.26.0`), installed globally with `npm i -g` (npm exists inside the image even though it is not on this machine). It uses `pnpm install --frozen-lockfile`, so a lockfile out of sync fails the build instead of resolving new versions. The runtime stage has no pnpm and no `node_modules`: `next.config.ts` sets `output: "standalone"` and the container runs `node server.js` as the unprivileged `node` user. `Deals.Web/.dockerignore` keeps the host's `node_modules`, `.next` and `.env` out of the context.
 
 ## Auth and security model
 Backend:
@@ -116,11 +117,11 @@ Copies: `.env.example` (root) and `Deals.Web/.env.example`. Never commit real se
 
 ## Docker
 - `docker compose up -d --build`.
-- `frontend` builds `Deals.Web` (`node:20-alpine`, `npm ci`), container `dealext-frontend`, host port 3000.
-- `api` builds `Dockerfile.api` (.NET 9), container `dealext-api`, host 5000 -> container 8080.
-- `api` joins the external network `shared-db-network`. Postgres is expected to already exist outside this compose file, so create the network first if needed:
+- `frontend` builds `Deals.Web` (`node:24-alpine`, `pnpm install --frozen-lockfile`), container `dealext-frontend`, host port 3010 -> container 3000.
+- `api` builds `Dockerfile.api` (.NET 9), container `dealext-api`, host port 5010 -> container 8080.
+- `api` joins `dealext-network` plus the external network `server-data`. Postgres is expected to already exist outside this compose file, so create the network first if needed:
 ```bash
-docker network create shared-db-network
+docker network create server-data
 ```
 - `docker compose up` is therefore not standalone. It needs a reachable Postgres matching `ConnectionStrings__DefaultConnection`.
 

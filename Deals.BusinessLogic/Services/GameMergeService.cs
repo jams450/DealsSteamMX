@@ -12,8 +12,9 @@ namespace Deals.BusinessLogic.Services;
 /// transaction before deleting it. Everything runs as raw SQL (no tracked entities): the order of the
 /// statements is the correctness argument, not the change tracker's.
 ///
-/// Referrer order is mandatory — reverting it raises 23503, because <c>steam_games</c> and
-/// <c>user_library</c> are NO ACTION while <c>game_reviews.game_id</c> is CASCADE.
+/// Referrer order is mandatory: <c>user_game_favorites</c> carries a composite primary key that would
+/// raise 23505 on a collision and a CASCADE foreign key that would delete the rows outright, while
+/// <c>steam_games</c> and <c>user_library</c> are NO ACTION and would raise 23503.
 /// </summary>
 public sealed class GameMergeService : IGameMergeService
 {
@@ -202,8 +203,8 @@ public sealed class GameMergeService : IGameMergeService
             //    survivor. Nothing is dropped and therefore nothing blocks the merge.
 
             // Snapshot BEFORE any write: only what is destroyed and cannot be rebuilt — the absorbed games
-            // row and its external ids. Repointed rows (steam_games, user_library, game_reviews) are not
-            // copied: they still exist.
+            // row and its external ids. Repointed rows (steam_games, user_library, game_reviews,
+            // user_game_favorites) are not copied: they still exist.
             var snapshot = await CaptureSnapshotAsync(absorbedGameId);
 
             // 5.-9. Repoint every referrer, then delete the absorbed row. Order matters: steam_games and
@@ -225,6 +226,23 @@ public sealed class GameMergeService : IGameMergeService
 
             await _repository.ExecuteSqlRawAsync(
                 "UPDATE public.game_reviews SET game_id = {0}, updated_at = NOW() WHERE game_id = {1}",
+                survivorGameId,
+                absorbedGameId);
+
+            // Favorites have a composite primary key (user_id, game_id) and a CASCADE foreign key, so the
+            // collision is deleted first (the surviving row already means "favorite") and then the rest is
+            // repointed. Deleting the absorbed games row before this would take the rows with it.
+            await _repository.ExecuteSqlRawAsync(
+                """
+                DELETE FROM public.user_game_favorites a
+                USING public.user_game_favorites b
+                WHERE a.game_id = {1} AND b.game_id = {0} AND b.user_id = a.user_id
+                """,
+                survivorGameId,
+                absorbedGameId);
+
+            await _repository.ExecuteSqlRawAsync(
+                "UPDATE public.user_game_favorites SET game_id = {0}, updated_at = NOW() WHERE game_id = {1}",
                 survivorGameId,
                 absorbedGameId);
 

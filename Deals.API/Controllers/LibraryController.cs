@@ -45,17 +45,20 @@ public class LibraryController : ControllerBase
     private readonly IGameIdentityResolver _gameIdentityResolver;
     private readonly ILibraryPriceBindingService _libraryPriceBindingService;
     private readonly IReviewService _reviewService;
+    private readonly IFavoriteService _favoriteService;
 
     public LibraryController(
         IRepository repository,
         IGameIdentityResolver gameIdentityResolver,
         ILibraryPriceBindingService libraryPriceBindingService,
-        IReviewService reviewService)
+        IReviewService reviewService,
+        IFavoriteService favoriteService)
     {
         _repository = repository;
         _gameIdentityResolver = gameIdentityResolver;
         _libraryPriceBindingService = libraryPriceBindingService;
         _reviewService = reviewService;
+        _favoriteService = favoriteService;
     }
 
     [HttpPost("import")]
@@ -233,18 +236,38 @@ public class LibraryController : ControllerBase
                 .Select(game => new { game.GameId, game.ImageUrl })
                 .ToDictionaryAsync(game => game.GameId, game => game.ImageUrl, cancellationToken);
 
+        // The same batch feeds both derived fields of a row: the representative review of the pair and every
+        // year it was played (a replay on another year must show under both years in the report filter).
         var reviewsByGameAndPlatform = new Dictionary<(long GameId, string Platform), GameReview>();
+        var yearsByGameAndPlatform = new Dictionary<(long GameId, string Platform), SortedSet<int>>();
         var reviews = await _reviewService.GetForGamesAsync(userId, gameIds, cancellationToken);
         foreach (var review in reviews)
         {
             var key = (review.GameId, review.Platform);
-            if (reviewsByGameAndPlatform.TryGetValue(key, out var current) && IsAtLeastAsNew(current, review))
+            if (!reviewsByGameAndPlatform.TryGetValue(key, out var current) || !IsAtLeastAsNew(current, review))
+            {
+                reviewsByGameAndPlatform[key] = review;
+            }
+
+            var year = PlayedYear(review);
+            if (year is null)
             {
                 continue;
             }
 
-            reviewsByGameAndPlatform[key] = review;
+            if (yearsByGameAndPlatform.TryGetValue(key, out var years))
+            {
+                years.Add(year.Value);
+            }
+            else
+            {
+                yearsByGameAndPlatform[key] = new SortedSet<int> { year.Value };
+            }
         }
+
+        // Favorites are a separate mark, not a review: one batch query for the whole page.
+        var favoriteGameIds = (await _favoriteService.GetFavoriteGameIdsAsync(userId, gameIds, cancellationToken))
+            .ToHashSet();
 
         var items = rows
             .Select(entry =>
@@ -253,9 +276,14 @@ public class LibraryController : ControllerBase
                     ? resolved
                     : LibraryPriceBinding.None;
                 GameReview? review = null;
+                IReadOnlyList<int> playedYears = [];
                 if (entry.GameId is > 0)
                 {
-                    reviewsByGameAndPlatform.TryGetValue((entry.GameId.Value, entry.Store), out review);
+                    var key = (entry.GameId.Value, entry.Store);
+                    reviewsByGameAndPlatform.TryGetValue(key, out review);
+                    playedYears = yearsByGameAndPlatform.TryGetValue(key, out var years)
+                        ? years.Reverse().ToArray()
+                        : [];
                 }
 
                 return new LibraryItemResponse(
@@ -279,11 +307,23 @@ public class LibraryController : ControllerBase
                     review is null ? null : ReviewResponse.From(review),
                     entry.GameId is > 0 && imageByGameId.TryGetValue(entry.GameId.Value, out var imageUrl)
                         ? imageUrl
-                        : null);
+                        : null,
+                    entry.GameId is > 0 && favoriteGameIds.Contains(entry.GameId.Value),
+                    playedYears);
             })
             .ToList();
 
         return Ok(items);
+    }
+
+    /// <summary>
+    /// Year a review counts for, or null when it has no month. <c>finished_month</c> wins over
+    /// <c>started_month</c>, and a run that crosses New Year is filed under the year it ended.
+    /// </summary>
+    private static int? PlayedYear(GameReview review)
+    {
+        var month = review.FinishedMonth ?? review.StartedMonth;
+        return month?.Year;
     }
 
     /// <summary>True when <paramref name="current"/> was written at or after <paramref name="candidate"/>.</summary>

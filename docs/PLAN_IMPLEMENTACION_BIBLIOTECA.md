@@ -174,11 +174,13 @@ propiedad.
 
 ### Base de datos
 
-`2026-09-28_game_reviews.sql` (+ `2026-09-30_game_reviews_multiple.sql`):
+`2026-09-28_game_reviews.sql` (+ `2026-09-30_game_reviews_multiple.sql`, `2026-10-01_play_status_and_favorites.sql`):
 
 ```text
 (user_id, game_id, platform)  -- sin UNIQUE: un juego rejugado tiene una reseña por partida
 started_month, finished_month, score 0..100, is_goty, body
+status: finished | completed | dropped   -- obligatorio; "por jugar" es la ausencia de reseña
+user_game_favorites(user_id, game_id)    -- favorito del juego, no de la partida
 ```
 
 ### Backend y frontend
@@ -189,12 +191,15 @@ started_month, finished_month, score 0..100, is_goty, body
   reciente (`newestReview`).
 - `ReviewScoreBands.Label` es la única fuente de los rangos:
   malo, flojo, regular, bueno, muy bueno, obra maestra.
+- La biblioteca filtra por tienda, por año jugado (con conteo por año) y por estado de juego (con conteo por
+  estado); el favorito es una estrella por fila que cambia el juego completo.
 
 ### Gate
 
 - Mismo juego en dos plataformas: dos reseñas.
 - Misma plataforma rejugada: dos reseñas, ambas visibles en el drawer, y se edita la vieja sin tocar la nueva.
 - Reimport y cambio `state` no borran ni rompen reseñas.
+- Editar una reseña sin estado se rechaza; el filtro de año cuenta los dos años de un juego rejugado.
 
 **Fuera:** score de crítica/comunidad y duración IGDB/HLTB.
 

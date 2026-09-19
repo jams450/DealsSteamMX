@@ -1,5 +1,5 @@
 // Rutas relativas a propósito: este módulo se cubre con `node --test`, que no resuelve el alias `@/`.
-import { normalizeReview, type Review } from "../../../lib/contracts/reviews.ts";
+import { normalizeReview, playStatusOf, type Review, type ReviewStatus } from "../../../lib/contracts/reviews.ts";
 import { toStoreKey } from "../../../lib/contracts/stores.ts";
 
 type UnknownRecord = Record<string, unknown>;
@@ -55,6 +55,12 @@ export type LibraryItem = {
   readonly historyLowMinor: number | null;
   readonly basePriceMinor: number | null;
   readonly baseCurrency: string | null;
+  // Marca de favorito del juego canónico. `false` en una fila sin identidad: un favorito cuelga de `games`,
+  // no de la fila de import.
+  readonly isFavorite: boolean;
+  // Años en que se jugó ese par, del más nuevo al más viejo, derivados de TODAS sus reseñas. Un juego
+  // rejugado en 2026 y en 2030 aparece en los dos años; un arreglo vacío es "sin fecha".
+  readonly playedYears: readonly number[];
 };
 
 export type LibraryResponse = {
@@ -85,7 +91,12 @@ export type LibraryGame = {
   readonly isInstalled: boolean;
   readonly hasReview: boolean;
   readonly lastReview: Review | null;
-  readonly playedYear: number | null;
+  // Estado de juego del grupo: el de su reseña representativa, o `backlog` cuando no hay ninguna. Es lo
+  // que filtra el toolbar, y `backlog` significa exactamente "por jugar".
+  readonly playStatus: ReviewStatus | "backlog";
+  // Unión de los años jugados de todas sus plataformas, del más nuevo al más viejo.
+  readonly playedYears: readonly number[];
+  readonly isFavorite: boolean;
   readonly item: LibraryItem;
 };
 
@@ -96,15 +107,16 @@ function reviewTimestamp(review: Review): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-// Año en que se jugó, derivado del mes de la reseña. `finishedMonth` gana sobre `startedMonth`; el
-// formato es `YYYY-MM` estricto, cualquier otra cosa es `null` (nunca se adivina desde `addedAt`).
-const REVIEW_YEAR = /^(\d{4})-\d{2}$/;
-
-function reviewPlayedYear(review: Review | null): number | null {
-  if (review === null) return null;
-  const month = review.finishedMonth ?? review.startedMonth;
-  const match = month === null ? null : REVIEW_YEAR.exec(month);
-  return match === null ? null : Number(match[1]);
+// Unión de los años de todas las plataformas del grupo, del más nuevo al más viejo y sin repetidos. Los
+// años llegan del backend ya derivados de cada reseña (mes de fin, o de inicio si no hay fin).
+function mergePlayedYears(values: readonly (readonly number[])[]): number[] {
+  const years = new Set<number>();
+  for (const list of values) {
+    for (const year of list) {
+      if (Number.isSafeInteger(year) && year > 0) years.add(year);
+    }
+  }
+  return [...years].sort((left, right) => right - left);
 }
 
 /**
@@ -132,14 +144,19 @@ export function groupLibraryItems(items: readonly LibraryItem[]): LibraryGame[] 
     const platforms: LibraryPlatform[] = [];
     let imageUrl: string | null = null;
     let isInstalled = false;
+    let isFavorite = false;
     let lastReview: Review | null = null;
     let lastMark: number | null = null;
+    const playedYears: (readonly number[])[] = [];
 
     for (const row of rows) {
       if (!stores.includes(row.store)) stores.push(row.store);
       if (!states.includes(row.state)) states.push(row.state);
       if (imageUrl === null && row.imageUrl !== null) imageUrl = row.imageUrl;
       if (row.isInstalled) isInstalled = true;
+      // El favorito es del juego: si cualquier fila del grupo lo trae marcado, el grupo lo está.
+      if (row.isFavorite) isFavorite = true;
+      playedYears.push(row.playedYears);
 
       if (row.review !== null) {
         const mark = reviewTimestamp(row.review);
@@ -175,7 +192,11 @@ export function groupLibraryItems(items: readonly LibraryItem[]): LibraryGame[] 
       isInstalled,
       hasReview: lastReview !== null,
       lastReview,
-      playedYear: reviewPlayedYear(lastReview),
+      // Una reseña presente pero no la más reciente posible no importa: el estado se lee de la
+      // representativa, así que `completed` gana sobre un `dropped` anterior y viceversa.
+      playStatus: playStatusOf(lastReview),
+      playedYears: mergePlayedYears(playedYears),
+      isFavorite,
       item: first
     });
   }
@@ -300,6 +321,22 @@ const MAX_STORE_GAME_ID_LENGTH = 128;
 const MAX_LIBRARY_ITEMS = 20_000;
 const MAX_BY_STORE_ENTRIES = 64;
 
+// Años jugados: solo enteros de 4 dígitos, deduplicados y ordenados del más nuevo al más viejo. Un valor
+// raro se descarta en vez de pintar "año NaN".
+const MAX_PLAYED_YEARS = 128;
+
+function normalizePlayedYears(value: unknown): readonly number[] {
+  if (!Array.isArray(value)) return [];
+
+  const years = new Set<number>();
+  for (const entry of value) {
+    if (typeof entry !== "number" || !Number.isSafeInteger(entry) || entry < 1000 || entry > 9999) continue;
+    years.add(entry);
+    if (years.size === MAX_PLAYED_YEARS) break;
+  }
+  return [...years].sort((left, right) => right - left);
+}
+
 function normalizeLibraryItem(value: unknown): LibraryItem | null {
   if (!isRecord(value)) return null;
 
@@ -332,6 +369,9 @@ function normalizeLibraryItem(value: unknown): LibraryItem | null {
     storeGameId,
     title,
     imageUrl: toHttpsUrl(read(value, "imageUrl")),
+    // Solo un `true` literal marca favorito: un dato dudoso nunca pinta la estrella.
+    isFavorite: read(value, "isFavorite") === true,
+    playedYears: normalizePlayedYears(read(value, "playedYears")),
     state,
     // Solo un `true` literal marca instalado: cualquier otra cosa se queda en `false`, así que el
     // indicador nunca puede aparecer por un dato dudoso.

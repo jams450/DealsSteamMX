@@ -19,7 +19,8 @@ public sealed record ReviewResponse(
     bool IsGoty,
     string? Body,
     DateTime Created,
-    DateTime? Updated)
+    DateTime? Updated,
+    string Status)
 {
     public static ReviewResponse From(GameReview review) => new(
         review.GameReviewId,
@@ -32,7 +33,8 @@ public sealed record ReviewResponse(
         review.IsGoty,
         review.Body,
         review.Created ?? DateTime.UtcNow,
-        review.Updated);
+        review.Updated,
+        review.Status);
 
     private static string? ToMonth(DateTime? value) =>
         value?.ToString("yyyy-MM", CultureInfo.InvariantCulture);
@@ -49,7 +51,8 @@ public sealed record ReviewCreateRequest(
     string? FinishedMonth,
     short? Score,
     bool IsGoty,
-    string? Body);
+    string? Body,
+    string? Status);
 
 /// <summary>Update payload: where the review lives is immutable and therefore absent.</summary>
 public sealed record ReviewUpdateRequest(
@@ -57,4 +60,5 @@ public sealed record ReviewUpdateRequest(
     string? FinishedMonth,
     short? Score,
     bool IsGoty,
-    string? Body);
+    string? Body,
+    string? Status);

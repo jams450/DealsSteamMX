@@ -18,7 +18,8 @@ public sealed class SteamController(
     ISteamGameService steamGameService,
     ICurrentUserService currentUserService,
     IGameOwnershipService gameOwnershipService,
-    IReviewService reviewService) : ControllerBase
+    IReviewService reviewService,
+    IFavoriteService favoriteService) : ControllerBase
 {
     [HttpGet("search")]
     public async Task<ActionResult<IReadOnlyList<SteamSearchResponse>>> Search(
@@ -71,13 +72,12 @@ public sealed class SteamController(
                 return NotFound();
             }
 
+            var userId = currentUserService.GetRequiredUserId();
             var ownership = await ResolveOwnershipAsync(appId, cancellationToken);
-            var reviews = await reviewService.GetForSteamAppAsync(
-                currentUserService.GetRequiredUserId(),
-                appId,
-                cancellationToken);
+            var reviews = await reviewService.GetForSteamAppAsync(userId, appId, cancellationToken);
+            var isFavorite = await favoriteService.IsFavoriteForSteamAppAsync(userId, appId, cancellationToken);
 
-            return Ok(ToResponse(game, ownership, reviews));
+            return Ok(ToResponse(game, ownership, reviews, isFavorite));
         }
         catch (HttpRequestException)
         {
@@ -100,7 +100,8 @@ public sealed class SteamController(
     private static SteamGameResponse ToResponse(
         SteamGameDetails game,
         GameOwnership ownership,
-        IReadOnlyList<GameReview> reviews) =>
+        IReadOnlyList<GameReview> reviews,
+        bool isFavorite) =>
         new(game.AppId, game.Name, game.Type, game.ImageUrl, game.IsFree, game.Currency, game.InitialPriceMinor,
             game.CurrentPriceMinor, game.DiscountPercent, game.LowestPriceMinor, game.LowestPriceAt,
             game.Region, game.ObservedAt,
@@ -116,7 +117,8 @@ public sealed class SteamController(
                 ownership.OwnedStores.ToArray(),
                 ownership.HasGamePass,
                 ownership.PossibleMatchStores.ToArray()),
-            reviews.Select(ReviewResponse.From).ToList());
+            reviews.Select(ReviewResponse.From).ToList(),
+            isFavorite);
 
     private static SteamGameBundleResponse ToResponse(SteamGameBundle bundle) =>
         new(bundle.Source, bundle.BundleKey, bundle.Title, bundle.ShopId, bundle.ShopName,

@@ -67,6 +67,8 @@ publish/
 *.Publish.xml
 
 # Node.js / Next.js
+# El proyecto usa pnpm en todas partes (incluido el Dockerfile): un package-lock.json de npm no debe volver.
+package-lock.json
 **/node_modules/
 **/.next/
 **/out/

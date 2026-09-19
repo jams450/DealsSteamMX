@@ -116,4 +116,5 @@ public sealed record SteamGameResponse(
     DateTime? BundlesRefreshedAt,
     bool BundlesStale,
     SteamGameOwnershipResponse Ownership,
-    IReadOnlyList<ReviewResponse> Reviews);
+    IReadOnlyList<ReviewResponse> Reviews,
+    bool IsFavorite);

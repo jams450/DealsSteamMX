@@ -231,6 +231,8 @@ function row(overrides: Partial<LibraryItem> & { readonly userLibraryId: number 
     historyLowMinor: null,
     basePriceMinor: null,
     baseCurrency: null,
+    isFavorite: false,
+    playedYears: [],
     ...overrides
   };
 }
@@ -245,6 +247,7 @@ function reviewFor(overrides: Partial<Review> = {}): Review {
     score: null,
     scoreLabel: null,
     isGoty: false,
+    status: "finished",
     body: null,
     created: null,
     updated: null,
@@ -302,39 +305,59 @@ test("agrupación: lastReview usa el updated mayor; sin updated cae a created", 
   assert.equal(fallback?.lastReview?.reviewId, 4);
 });
 
-test("agrupación: playedYear sale de finishedMonth y cae a startedMonth", () => {
-  const [finished] = groupLibraryItems([
-    row({ userLibraryId: 1, gameId: 100, review: reviewFor({ finishedMonth: "2025-11", startedMonth: "2024-03" }) })
+test("agrupación: playedYears une los años de todas las plataformas, del más nuevo al más viejo", () => {
+  const [game] = groupLibraryItems([
+    row({ userLibraryId: 1, gameId: 100, playedYears: [2026, 2024] }),
+    row({ userLibraryId: 2, gameId: 100, store: "steam", playedYears: [2030, 2026] })
   ]);
-  assert.equal(finished?.playedYear, 2025);
-
-  const [started] = groupLibraryItems([
-    row({ userLibraryId: 1, gameId: 100, review: reviewFor({ finishedMonth: null, startedMonth: "2024-03" }) })
-  ]);
-  assert.equal(started?.playedYear, 2024);
-
-  const [noMonths] = groupLibraryItems([row({ userLibraryId: 1, gameId: 100, review: reviewFor() })]);
-  assert.equal(noMonths?.playedYear, null);
-
-  const [malformed] = groupLibraryItems([
-    row({
-      userLibraryId: 1,
-      gameId: 100,
-      review: reviewFor({ finishedMonth: "2026-1" as unknown as string, startedMonth: null })
-    })
-  ]);
-  assert.equal(malformed?.playedYear, null);
+  // Un juego rejugado aparece en cada año, sin repetir el que comparten las dos plataformas.
+  assert.deepEqual(game?.playedYears, [2030, 2026, 2024]);
 });
 
-test("agrupación: sin reseñas hasReview y playedYear son null/false", () => {
+test("agrupación: sin años registrados playedYears queda vacío", () => {
   const [game] = groupLibraryItems([
     row({ userLibraryId: 1, gameId: 100, isInstalled: false }),
     row({ userLibraryId: 2, gameId: 100, store: "steam" })
   ]);
   assert.equal(game?.hasReview, false);
   assert.equal(game?.lastReview, null);
-  assert.equal(game?.playedYear, null);
+  assert.deepEqual(game?.playedYears, []);
   assert.equal(game?.isInstalled, false);
+});
+
+test("agrupación: playStatus es el de la reseña representativa; sin reseña es backlog", () => {
+  const [completed] = groupLibraryItems([
+    row({ userLibraryId: 1, gameId: 100, review: reviewFor({ status: "completed" }) })
+  ]);
+  assert.equal(completed?.playStatus, "completed");
+
+  const [dropped] = groupLibraryItems([row({ userLibraryId: 1, gameId: 100, review: reviewFor({ status: "dropped" }) })]);
+  assert.equal(dropped?.playStatus, "dropped");
+
+  const [backlog] = groupLibraryItems([row({ userLibraryId: 1, gameId: 100 })]);
+  assert.equal(backlog?.playStatus, "backlog");
+});
+
+test("agrupación: el favorito es del juego, basta con una plataforma marcada", () => {
+  const [game] = groupLibraryItems([
+    row({ userLibraryId: 1, gameId: 100 }),
+    row({ userLibraryId: 2, gameId: 100, store: "steam", isFavorite: true })
+  ]);
+  assert.equal(game?.isFavorite, true);
+
+  const [notFavorite] = groupLibraryItems([row({ userLibraryId: 1, gameId: 100 })]);
+  assert.equal(notFavorite?.isFavorite, false);
+});
+
+test("normalizeLibraryResponse: isFavorite y playedYears toleran formas raras", () => {
+  const [item] = items({ items: [{ ...owned, isFavorite: "yes", playedYears: [2026, "2025", 2026, 12, 20260] }] }) as LibraryItem[];
+  assert.equal(item?.isFavorite, false);
+  // Solo años de cuatro dígitos, sin repetidos y del más nuevo al más viejo.
+  assert.deepEqual(item?.playedYears, [2026]);
+
+  const [missing] = items({ items: [owned] }) as LibraryItem[];
+  assert.equal(missing?.isFavorite, false);
+  assert.deepEqual(missing?.playedYears, []);
 });
 
 test("agrupación: isInstalled es true si cualquier plataforma lo está", () => {

@@ -116,6 +116,9 @@ export type SteamGame = SteamSearchResult & {
   // Reseñas del usuario para el juego canónico, en todas sus plataformas. Campo aditivo: un payload sin
   // `reviews` da arreglo vacío y la sección no se renderiza. Solo lectura en el detalle.
   readonly reviews: readonly Review[];
+  // Favorito del usuario para el juego canónico de este appid. `false` cuando el catálogo todavía no lo
+  // reconoce: sin identidad no hay dónde colgar la marca, y el detalle no ofrece el interruptor.
+  readonly isFavorite: boolean;
 };
 
 // Tope defensivo: una biblioteca real no tiene más tiendas que el catálogo.
@@ -486,6 +489,8 @@ export function normalizeSteamGame(input: unknown): SteamGame | null {
     bundlesRefreshedAt: toIsoDateTime(read(value, "bundlesRefreshedAt")),
     bundlesStale: read(value, "bundlesStale") === true,
     ownership: normalizeOwnership(read(value, "ownership")),
-    reviews: normalizeReviewList(read(value, "reviews"))
+    reviews: normalizeReviewList(read(value, "reviews")),
+    // Solo el literal `true` marca favorito: un dato dudoso nunca pinta la estrella.
+    isFavorite: read(value, "isFavorite") === true
   };
 }

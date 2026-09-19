@@ -11,7 +11,14 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { storeLabel, toStoreKey, type StoreKey } from "@/lib/contracts/stores";
-import { formatReviewMonth, newestReview, type Review } from "@/lib/contracts/reviews";
+import {
+  formatReviewMonth,
+  newestReview,
+  REVIEW_STATUSES,
+  reviewStatusLabel,
+  type Review,
+  type ReviewStatus
+} from "@/lib/contracts/reviews";
 import { createReview, deleteReview, getReviews, updateReview } from "../_lib/reviews-api";
 import type { LibraryGame, LibraryState } from "../_lib/library-contract";
 
@@ -127,6 +134,9 @@ function ReviewEditor({ domId, gameId, platform, existing, onSaved, onCancel }: 
   const [finishedMonth, setFinishedMonth] = useState(existing?.finishedMonth ?? "");
   const [score, setScore] = useState(existing?.score !== null && existing?.score !== undefined ? String(existing.score) : "");
   const [isGoty, setIsGoty] = useState(existing?.isGoty ?? false);
+  // Estado obligatorio: una partida nueva nace "terminada" (el valor por defecto del servidor) y quien la
+  // abandonó o la completó al 100% lo dice con el radio.
+  const [status, setStatus] = useState<ReviewStatus>(existing?.status ?? "finished");
   const [body, setBody] = useState(existing?.body ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -146,6 +156,7 @@ function ReviewEditor({ domId, gameId, platform, existing, onSaved, onCancel }: 
       finishedMonth: finishedMonth || null,
       score: parsedScore,
       isGoty,
+      status,
       body: body.trim() ? body : null
     };
 
@@ -216,6 +227,33 @@ function ReviewEditor({ domId, gameId, platform, existing, onSaved, onCancel }: 
         <p className="text-xs text-muted">La etiqueta de la nota (malo…obra maestra) la calcula el servidor al guardar.</p>
       </div>
 
+      <fieldset className="space-y-1">
+        <legend className="mb-1 block text-xs font-semibold uppercase tracking-widest text-muted">
+          Estado de la partida
+        </legend>
+        <div className="flex flex-wrap items-center gap-4">
+          {REVIEW_STATUSES.map((option) => (
+            <div key={option.value} className="flex items-center gap-2">
+              <input
+                id={`review-status-${option.value}-${domId}`}
+                type="radio"
+                name={`review-status-${domId}`}
+                className="h-4 w-4"
+                value={option.value}
+                checked={status === option.value}
+                onChange={() => setStatus(option.value)}
+              />
+              <label htmlFor={`review-status-${option.value}-${domId}`} className="text-sm font-semibold text-primary">
+                {option.label}
+              </label>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-muted">
+          «Por jugar» no se elige aquí: es lo que muestra un juego mientras no tenga ninguna reseña.
+        </p>
+      </fieldset>
+
       <div className="flex items-center gap-2">
         <input
           id={`review-goty-${domId}`}
@@ -275,6 +313,7 @@ function SavedReview({
   return (
     <li className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-3">
       <div className="flex flex-wrap items-center gap-2">
+        <span className="tabler-badge tabler-badge-info">{reviewStatusLabel(review.status)}</span>
         {review.score !== null ? (
           <span className="tabler-badge tabler-badge-primary">
             Nota {review.score}

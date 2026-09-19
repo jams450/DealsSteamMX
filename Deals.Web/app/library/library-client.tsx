@@ -3,14 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import Link from "next/link";
 import type { ColumnDef, FilterFn, SortingFn } from "@tanstack/react-table";
-import { FileJson, Gamepad2, GitMerge, HardDriveDownload, Trophy, Upload } from "lucide-react";
+import { FileJson, Gamepad2, GitMerge, HardDriveDownload, Star, Trophy, Upload } from "lucide-react";
 import { DataGrid } from "@/components/data-grid/data-grid";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/ui/cn";
 import { storeLabel, toStoreKey, type StoreKey } from "@/lib/contracts/stores";
-import type { Review } from "@/lib/contracts/reviews";
+import { REVIEW_STATUSES, reviewStatusLabel, type Review, type ReviewStatus } from "@/lib/contracts/reviews";
+import { setFavorite } from "@/lib/api/favorites";
 import { getLibrary, importLibrary } from "./_lib/library-api";
 import { defaultReviewPlatform, ReviewDrawer, stateLabel } from "./_components/review-drawer";
 import {
@@ -240,41 +241,122 @@ const numericSort: SortingFn<LibraryGame> = (rowA, rowB, columnId) =>
 const titleSort: SortingFn<LibraryGame> = (rowA, rowB, columnId) =>
   String(rowA.getValue(columnId)).localeCompare(String(rowB.getValue(columnId)), "es-MX");
 
-// Filtro de reseña del toolbar. El DataGrid solo sabe filtrar columnas con un input de texto, así que un
-// booleano como «tiene reseña» no se puede resolver bien en la fila de filtros: se resuelve aquí.
-type ReviewFilter = "all" | "with" | "without";
+// Filtro de estado de juego del toolbar. El DataGrid solo sabe filtrar columnas con un input de texto, así
+// que un estado derivado no se puede resolver bien en la fila de filtros: se resuelve aquí, con el conteo
+// de cada opción para que el filtro sea también el reporte ("cuántos por año / por estado").
+type PlayStatusFilter = "all" | ReviewStatus | "backlog";
 
-const REVIEW_FILTERS: readonly { readonly value: ReviewFilter; readonly label: string }[] = [
-  { value: "all", label: "Todas" },
-  { value: "with", label: "Con reseña" },
-  { value: "without", label: "Sin reseña" }
+const PLAY_STATUS_FILTERS: readonly { readonly value: PlayStatusFilter; readonly label: string }[] = [
+  { value: "all", label: "Todos" },
+  { value: "backlog", label: "Por jugar" },
+  ...REVIEW_STATUSES.map((option) => ({ value: option.value as PlayStatusFilter, label: option.label }))
 ];
 
-function ReviewFilterToggle({ value, onChange }: { readonly value: ReviewFilter; readonly onChange: (next: ReviewFilter) => void }) {
+// `Sin año` es una opción real, no un vacío accidental: agrupa lo que no tiene ninguna reseña con fecha y
+// por eso no puede entrar en ningún reporte por año.
+export const NO_YEAR = "none";
+
+function FilterToggle<T extends string>({
+  id,
+  label,
+  options,
+  value,
+  counts,
+  totalCount,
+  onChange
+}: {
+  readonly id: string;
+  readonly label: string;
+  readonly options: readonly { readonly value: T; readonly label: string }[];
+  readonly value: T;
+  readonly counts: ReadonlyMap<T, number>;
+  readonly totalCount: number;
+  readonly onChange: (next: T) => void;
+}) {
   return (
-    <div
-      className="inline-flex items-center gap-1 border border-strong bg-[var(--color-surface-2)] p-0.5"
-      role="group"
-      aria-labelledby="library-review-filter-label"
-    >
-      {REVIEW_FILTERS.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          aria-pressed={value === option.value}
-          onClick={() => onChange(option.value)}
-          className={cn(
-            "h-9 px-3 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]",
-            value === option.value
-              ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
-              : "text-muted hover:bg-[var(--color-accent-soft)] hover:text-primary"
-          )}
-        >
-          {option.label}
-        </button>
-      ))}
+    <div className="space-y-1.5">
+      <p id={`${id}-label`} className="text-sm font-medium text-primary">
+        {label}
+      </p>
+      <div
+        className="flex flex-wrap items-center gap-1 border border-strong bg-[var(--color-surface-2)] p-0.5"
+        role="group"
+        aria-labelledby={`${id}-label`}
+      >
+        {options.map((option) => {
+          const count = option.value === "all" ? totalCount : (counts.get(option.value) ?? 0);
+          return (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={value === option.value}
+              onClick={() => onChange(option.value)}
+              className={cn(
+                "h-9 px-3 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]",
+                value === option.value
+                  ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
+                  : "text-muted hover:bg-[var(--color-accent-soft)] hover:text-primary"
+              )}
+            >
+              {option.label} ({count})
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
+}
+
+// Orden del ciclo de vida para la columna de estado: el índice es el valor que ordena.
+const PLAY_STATUS_ORDER: Readonly<Record<ReviewStatus | "backlog", number>> = {
+  backlog: 0,
+  dropped: 1,
+  finished: 2,
+  completed: 3
+};
+
+// Estrella de favorito de una fila. Es un interruptor propio del juego (no de la reseña), así que vive
+// junto a las acciones y no dentro del estado de juego.
+function FavoriteToggle({
+  game,
+  pending,
+  onToggle
+}: {
+  readonly game: LibraryGame;
+  readonly pending: boolean;
+  readonly onToggle: (game: LibraryGame) => void;
+}) {
+  if (game.gameId === null) {
+    return <span className="text-[11px] text-muted">Sin identificar en el catálogo</span>;
+  }
+
+  const label = game.isFavorite ? "Quitar de favoritos" : "Marcar como favorito";
+  return (
+    <Button
+      type="button"
+      variant={game.isFavorite ? "primary" : "secondary"}
+      className="h-9 whitespace-nowrap px-3 text-xs"
+      loading={pending}
+      aria-pressed={game.isFavorite}
+      aria-label={`${label}: ${game.title}`}
+      onClick={() => onToggle(game)}
+    >
+      <Star className={cn("h-3.5 w-3.5", game.isFavorite && "fill-current")} aria-hidden="true" />
+      Favorito
+    </Button>
+  );
+}
+
+// Estado de juego del grupo, en solo lectura. "Por jugar" no es una reseña: es su ausencia.
+const PLAY_STATUS_BADGES: Readonly<Record<ReviewStatus | "backlog", string>> = {
+  backlog: "tabler-badge tabler-badge-neutral",
+  finished: "tabler-badge tabler-badge-success",
+  completed: "tabler-badge tabler-badge-solid tabler-badge-primary",
+  dropped: "tabler-badge tabler-badge-warning"
+};
+
+function PlayStatusBadge({ game }: { readonly game: LibraryGame }) {
+  return <span className={PLAY_STATUS_BADGES[game.playStatus]}>{reviewStatusLabel(game.playStatus)}</span>;
 }
 
 export function LibraryClient() {
@@ -282,7 +364,12 @@ export function LibraryClient() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [storeFilter, setStoreFilter] = useState("");
-  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
+  const [playStatusFilter, setPlayStatusFilter] = useState<PlayStatusFilter>("all");
+  const [yearFilter, setYearFilter] = useState<string>("all");
+  // El favorito es del juego, no de la reseña: se cambia con el mismo `applyFavorite` que se usa para
+  // pintar el resultado, así que un juego en dos tiendas se marca en las dos filas a la vez.
+  const [favoritePendingId, setFavoritePendingId] = useState<number | null>(null);
+  const [favoriteError, setFavoriteError] = useState<string | null>(null);
   const [pendingEntries, setPendingEntries] = useState<unknown[] | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
@@ -321,6 +408,39 @@ export function LibraryClient() {
     );
   }
 
+  // El favorito vive en el juego canónico: se actualiza en todas las filas que compartan ese id, sin
+  // recargar la biblioteca ni perder el scroll. Optimista: si el servidor falla, se revierte.
+  function applyFavorite(gameId: number, favorite: boolean) {
+    setLibrary((current) =>
+      current === null
+        ? current
+        : { items: current.items.map((item) => (item.gameId === gameId ? { ...item, isFavorite: favorite } : item)) }
+    );
+  }
+
+  // `useCallback` porque las columnas del grid dependen de este handler: sin él, cada render del padre
+  // reconstruye todas las columnas.
+  const onToggleFavorite = useCallback(
+    async (game: LibraryGame) => {
+      const gameId = game.gameId;
+      if (gameId === null || favoritePendingId !== null) return;
+
+      const next = !game.isFavorite;
+      setFavoriteError(null);
+      setFavoritePendingId(gameId);
+      applyFavorite(gameId, next);
+      try {
+        await setFavorite({ gameId }, next);
+      } catch (cause) {
+        applyFavorite(gameId, !next);
+        setFavoriteError(cause instanceof Error ? cause.message : "No se pudo actualizar el favorito.");
+      } finally {
+        setFavoritePendingId(null);
+      }
+    },
+    [favoritePendingId]
+  );
+
   useEffect(() => {
     void loadLibrary();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -354,17 +474,69 @@ export function LibraryClient() {
     }
   }, [storeCounts, storeFilter]);
 
+  // Los conteos de estado y de año se calculan sobre lo ya filtrado por tienda: elegir una tienda
+  // reescribe los números que quedan, así que "cuántos por año" siempre cuadra con lo que se ve.
+  const storeFilteredGames = useMemo(
+    () => (storeFilter ? games.filter((game) => game.stores.includes(storeFilter)) : games),
+    [games, storeFilter]
+  );
+
+  const playStatusCounts = useMemo(() => {
+    const counts = new Map<PlayStatusFilter, number>();
+    for (const game of storeFilteredGames) {
+      counts.set(game.playStatus, (counts.get(game.playStatus) ?? 0) + 1);
+    }
+    return counts;
+  }, [storeFilteredGames]);
+
+  // Años presentes en el conjunto filtrado, del más nuevo al más viejo. Un juego rejugado cuenta en cada
+  // año en que lo jugó, así que la suma de los conteos puede superar el total de juegos.
+  const playedYearCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    let noYear = 0;
+    for (const game of storeFilteredGames) {
+      if (game.playedYears.length === 0) {
+        noYear += 1;
+        continue;
+      }
+      for (const year of game.playedYears) {
+        const key = String(year);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    }
+    if (noYear > 0) counts.set(NO_YEAR, noYear);
+    return counts;
+  }, [storeFilteredGames]);
+
+  const playedYearOptions = useMemo(
+    () =>
+      [...playedYearCounts.keys()]
+        .filter((value) => value !== NO_YEAR)
+        .sort((left, right) => Number(right) - Number(left))
+        .map((value) => ({ value, label: value })),
+    [playedYearCounts]
+  );
+
+  // Si el año elegido desaparece (lo cambia una reseña o el filtro de tienda), el filtro vuelve a «Todos»:
+  // un select con un valor que ya no existe dejaría la grilla vacía sin explicación.
+  useEffect(() => {
+    if (yearFilter !== "all" && !playedYearCounts.has(yearFilter)) {
+      setYearFilter("all");
+    }
+  }, [playedYearCounts, yearFilter]);
+
   // La paginación, el orden y el buscador global los resuelve el DataGrid en el navegador; aquí solo se
-  // aplican los dos filtros propios, así que el grid recibe ya la lista que debe paginar.
+  // aplican los tres filtros propios, así que el grid recibe ya la lista que debe paginar.
   const filteredGames = useMemo(
     () =>
-      games.filter((game) => {
-        if (storeFilter && !game.stores.includes(storeFilter)) return false;
-        if (reviewFilter === "with" && !game.hasReview) return false;
-        if (reviewFilter === "without" && game.hasReview) return false;
-        return true;
+      storeFilteredGames.filter((game) => {
+        if (playStatusFilter !== "all" && game.playStatus !== playStatusFilter) return false;
+        if (yearFilter === "all") return true;
+        return yearFilter === NO_YEAR
+          ? game.playedYears.length === 0
+          : game.playedYears.includes(Number(yearFilter));
       }),
-    [games, storeFilter, reviewFilter]
+    [storeFilteredGames, playStatusFilter, yearFilter]
   );
 
   const gamePassCount = useMemo(() => games.filter((game) => game.states.includes("subscription")).length, [games]);
@@ -406,16 +578,26 @@ export function LibraryClient() {
         cell: ({ row }) => <StateCell game={row.original} />
       },
       {
-        id: "hasReview",
-        accessorFn: (game) => (game.hasReview ? 1 : 0),
-        header: "Reseña",
+        id: "playStatus",
+        // El orden del header es el del ciclo de vida: por jugar, terminado, completado, dropeado.
+        accessorFn: (game) => PLAY_STATUS_ORDER[game.playStatus],
+        header: "Estado de juego",
         sortingFn: numericSort,
-        cell: ({ row }) =>
-          row.original.hasReview ? (
-            <span className="tabler-badge tabler-badge-success">Con reseña</span>
-          ) : (
-            <span className="tabler-badge tabler-badge-neutral">Sin reseña</span>
-          )
+        cell: ({ row }) => <PlayStatusBadge game={row.original} />
+      },
+      {
+        id: "favorite",
+        accessorFn: (game) => (game.isFavorite ? 1 : 0),
+        header: "Favorito",
+        sortingFn: numericSort,
+        enableSorting: false,
+        cell: ({ row }) => (
+          <FavoriteToggle
+            game={row.original}
+            pending={favoritePendingId === row.original.gameId}
+            onToggle={(game) => void onToggleFavorite(game)}
+          />
+        )
       },
       {
         id: "score",
@@ -431,16 +613,23 @@ export function LibraryClient() {
           )
       },
       {
-        id: "playedYear",
-        accessorFn: (game) => game.playedYear ?? undefined,
-        header: "Año jugado",
+        id: "playedYears",
+        // Ordena por el año más reciente: un juego rejugado vale por su última partida.
+        accessorFn: (game) => game.playedYears[0] ?? undefined,
+        header: "Años jugados",
         sortingFn: numericSort,
         sortUndefined: "last",
         cell: ({ row }) =>
-          row.original.playedYear === null ? (
+          row.original.playedYears.length === 0 ? (
             <span className="text-muted">—</span>
           ) : (
-            <span className="tabular-nums text-primary">{row.original.playedYear}</span>
+            <div className="flex flex-wrap items-center gap-1">
+              {row.original.playedYears.map((year) => (
+                <span key={year} className="tabler-badge tabler-badge-muted tabular-nums">
+                  {year}
+                </span>
+              ))}
+            </div>
           )
       },
       {
@@ -450,11 +639,15 @@ export function LibraryClient() {
         cell: ({ row }) => <ReviewAction game={row.original} onReview={onReview} />
       }
     ],
-    [onReview]
+    [favoritePendingId, onReview, onToggleFavorite]
   );
 
   function onStoreFilterChange(event: ChangeEvent<HTMLSelectElement>) {
     setStoreFilter(event.target.value);
+  }
+
+  function onYearFilterChange(event: ChangeEvent<HTMLSelectElement>) {
+    setYearFilter(event.target.value);
   }
 
   async function onFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -602,6 +795,8 @@ export function LibraryClient() {
           </p>
         </div>
 
+        {favoriteError ? <Alert variant="danger">{favoriteError}</Alert> : null}
+
         {loading ? (
           <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
             Cargando...
@@ -648,12 +843,28 @@ export function LibraryClient() {
                     ))}
                   </Select>
                 </div>
-                <div className="space-y-1.5">
-                  <p id="library-review-filter-label" className="text-sm font-medium text-primary">
-                    Filtrar por reseña
-                  </p>
-                  <ReviewFilterToggle value={reviewFilter} onChange={setReviewFilter} />
+                <div className="w-full sm:w-52">
+                  <Select id="library-year-filter" label="Filtrar por año jugado" value={yearFilter} onChange={onYearFilterChange}>
+                    <option value="all">Todos los años</option>
+                    {playedYearOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label} ({playedYearCounts.get(option.value) ?? 0})
+                      </option>
+                    ))}
+                    {playedYearCounts.has(NO_YEAR) ? (
+                      <option value={NO_YEAR}>Sin año ({playedYearCounts.get(NO_YEAR) ?? 0})</option>
+                    ) : null}
+                  </Select>
                 </div>
+                <FilterToggle
+                  id="library-play-status-filter"
+                  label="Filtrar por estado de juego"
+                  options={PLAY_STATUS_FILTERS}
+                  value={playStatusFilter}
+                  counts={playStatusCounts}
+                  totalCount={storeFilteredGames.length}
+                  onChange={setPlayStatusFilter}
+                />
               </div>
             }
             emptyMessage="Ningún juego coincide con los filtros o la búsqueda."

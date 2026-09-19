@@ -2,6 +2,25 @@ import { toStoreKey, type StoreKey } from "./stores.ts";
 
 type UnknownRecord = Record<string, unknown>;
 
+// Cómo terminó una partida. Es un valor guardado, obligatorio en cada reseña: el filtro de estado de la
+// biblioteca y el reporte por año lo leen. `backlog` ("por jugar") NO está aquí porque no se guarda: es la
+// ausencia de reseña, y quien lo necesita lo deriva con `playStatusOf`.
+export type ReviewStatus = "finished" | "completed" | "dropped";
+
+// Orden del formulario y de los filtros: de "lo terminé" a "lo dejé". Es el único lugar donde viven las
+// etiquetas visibles de un estado.
+export const REVIEW_STATUSES: readonly { readonly value: ReviewStatus; readonly label: string }[] = [
+  { value: "finished", label: "Terminado" },
+  { value: "completed", label: "Completado 100%" },
+  { value: "dropped", label: "Dropeado" }
+];
+
+export function reviewStatusLabel(status: ReviewStatus | "backlog"): string {
+  return status === "backlog"
+    ? "Por jugar"
+    : (REVIEW_STATUSES.find((option) => option.value === status)?.label ?? status);
+}
+
 // Reseña de un juego en una plataforma. `platform` reutiliza el vocabulario de `stores.ts`, así que la
 // reseña y la fila de biblioteca hablan la misma llave sin traducción. Los meses viajan como `YYYY-MM`
 // (mapean directo a `<input type="month">`) y `scoreLabel` la calcula el backend: el cliente nunca
@@ -15,6 +34,7 @@ export type Review = {
   readonly score: number | null;
   readonly scoreLabel: string | null;
   readonly isGoty: boolean;
+  readonly status: ReviewStatus;
   readonly body: string | null;
   readonly created: string | null;
   readonly updated: string | null;
@@ -28,6 +48,7 @@ export type ReviewCreateRequest = {
   readonly finishedMonth: string | null;
   readonly score: number | null;
   readonly isGoty: boolean;
+  readonly status: ReviewStatus;
   readonly body: string | null;
 };
 
@@ -54,6 +75,12 @@ function toText(value: unknown): string | null {
 // Identidad: solo un entero positivo. Un texto o un decimal no es un id.
 function toPositiveInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+// Estado guardado. Uno desconocido no se inventa ni se descarta la reseña entera: cae a `finished`, que es
+// el default de la columna, así que un payload viejo sin `status` sigue leyéndose como "terminado".
+function toReviewStatus(value: unknown): ReviewStatus {
+  return value === "completed" || value === "dropped" || value === "finished" ? value : "finished";
 }
 
 // La nota solo se acepta como entero 0..100. Un decimal, un texto o un rango fuera de la banda se
@@ -119,6 +146,7 @@ export function normalizeReview(value: unknown): Review | null {
     scoreLabel: toText(read(value, "scoreLabel")),
     // Solo el literal `true` marca GOTY: `"true"` o `1` se quedan en `false`.
     isGoty: read(value, "isGoty") === true,
+    status: toReviewStatus(read(value, "status")),
     body: toBody(read(value, "body")),
     created: toIsoDateTime(read(value, "created")),
     updated: toIsoDateTime(read(value, "updated"))
@@ -183,13 +211,19 @@ function parseWriteFields(record: UnknownRecord): ReviewUpdateRequest | null {
     isGoty = read(record, "isGoty") as boolean;
   }
 
+  // El estado es obligatorio al escribir: guardar una reseña sin saber si se terminó o se abandonó deja el
+  // filtro y el reporte a medias. Un valor fuera de la lista rechaza la petición entera.
+  const rawStatus = read(record, "status");
+  if (rawStatus !== "finished" && rawStatus !== "completed" && rawStatus !== "dropped") return null;
+  const status: ReviewStatus = rawStatus;
+
   let body: string | null = null;
   if (has(record, "body") && read(record, "body") !== null) {
     if (typeof read(record, "body") !== "string") return null;
     body = toBody(read(record, "body"));
   }
 
-  return { startedMonth, finishedMonth, score, isGoty, body };
+  return { startedMonth, finishedMonth, score, isGoty, status, body };
 }
 
 /** Alta validada de reseña, o `null` si la identidad o algún campo presente no cumple el contrato. */
@@ -214,6 +248,15 @@ export function parseReviewUpdateRequest(input: unknown): ReviewUpdateRequest | 
 function reviewStamp(review: Review): number {
   const parsed = Date.parse(review.updated ?? review.created ?? "");
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Estado de juego de la biblioteca: el de su reseña representativa, o `backlog` ("por jugar") cuando el
+ * juego no tiene ninguna. Derivado, nunca guardado, para que "por jugar" no pueda quedar como un estado
+ * escrito en una reseña.
+ */
+export function playStatusOf(review: Review | null): ReviewStatus | "backlog" {
+  return review === null ? "backlog" : review.status;
 }
 
 /**

@@ -7,7 +7,9 @@ import {
   normalizeReviewList,
   normalizeReviewListResponse,
   parseReviewCreateRequest,
-  parseReviewUpdateRequest
+  parseReviewUpdateRequest,
+  playStatusOf,
+  reviewStatusLabel
 } from "./reviews.ts";
 
 const valid = {
@@ -19,6 +21,7 @@ const valid = {
   score: 88,
   scoreLabel: "muy bueno",
   isGoty: true,
+  status: "completed",
   body: "  Me gustó mucho.  ",
   created: "2026-09-18T10:00:00Z",
   updated: null
@@ -51,6 +54,7 @@ test("normalizeReview: forma válida, campos opcionales y cuerpo recortado", () 
     score: 88,
     scoreLabel: "muy bueno",
     isGoty: true,
+    status: "completed",
     body: "Me gustó mucho.",
     created: "2026-09-18T10:00:00Z",
     updated: null
@@ -61,6 +65,7 @@ test("normalizeReview: forma válida, campos opcionales y cuerpo recortado", () 
   assert.equal(bare?.score, null);
   assert.equal(bare?.scoreLabel, null);
   assert.equal(bare?.isGoty, false);
+  assert.equal(bare?.status, "finished");
   assert.equal(bare?.body, null);
   assert.equal(bare?.created, null);
 });
@@ -128,44 +133,66 @@ test("parseReviewCreateRequest: exige identidad y rechaza campos presentes invá
   assert.equal(parseReviewCreateRequest({ gameId: 42, platform: "gog", startedMonth: "2026-13" }), null);
   assert.equal(parseReviewCreateRequest({ gameId: 42, platform: "gog", isGoty: "sí" }), null);
   assert.equal(parseReviewCreateRequest({ gameId: 42, platform: "gog", body: 12 }), null);
+  // El estado es obligatorio y solo los tres valores guardados son válidos: "por jugar" no se escribe.
+  assert.equal(parseReviewCreateRequest({ gameId: 42, platform: "gog" }), null);
+  assert.equal(parseReviewCreateRequest({ gameId: 42, platform: "gog", status: "backlog" }), null);
+  assert.equal(parseReviewCreateRequest({ gameId: 42, platform: "gog", status: "Finished" }), null);
+  assert.equal(parseReviewCreateRequest({ gameId: 42, platform: "gog", status: true }), null);
 
-  assert.deepEqual(parseReviewCreateRequest({ gameId: 42, platform: "epic games" }), {
+  assert.deepEqual(parseReviewCreateRequest({ gameId: 42, platform: "epic games", status: "finished" }), {
     gameId: 42,
     platform: "epic",
     startedMonth: null,
     finishedMonth: null,
     score: null,
     isGoty: false,
+    status: "finished",
     body: null
   });
-  assert.deepEqual(parseReviewCreateRequest({ gameId: 42, platform: "gog", score: 0, isGoty: false }), {
+  assert.deepEqual(parseReviewCreateRequest({ gameId: 42, platform: "gog", score: 0, isGoty: false, status: "dropped" }), {
     gameId: 42,
     platform: "gog",
     startedMonth: null,
     finishedMonth: null,
     score: 0,
     isGoty: false,
+    status: "dropped",
     body: null
   });
 });
 
 test("parseReviewUpdateRequest: no exige identidad y limpia campos con null", () => {
-  assert.deepEqual(parseReviewUpdateRequest({}), {
-    startedMonth: null,
-    finishedMonth: null,
-    score: null,
-    isGoty: false,
-    body: null
-  });
-  assert.deepEqual(parseReviewUpdateRequest({ score: 75, body: "  texto  " }), {
+  // Sin `status` la petición se rechaza: editar una reseña nunca debe perder el estado de la partida.
+  assert.equal(parseReviewUpdateRequest({}), null);
+  assert.deepEqual(parseReviewUpdateRequest({ score: 75, body: "  texto  ", status: "completed" }), {
     startedMonth: null,
     finishedMonth: null,
     score: 75,
     isGoty: false,
+    status: "completed",
     body: "texto"
   });
-  assert.equal(parseReviewUpdateRequest({ score: "75" }), null);
-  assert.equal(parseReviewUpdateRequest({ finishedMonth: "2026-1" }), null);
+  assert.equal(parseReviewUpdateRequest({ score: "75", status: "finished" }), null);
+  assert.equal(parseReviewUpdateRequest({ finishedMonth: "2026-1", status: "finished" }), null);
+  assert.equal(parseReviewUpdateRequest({ status: "nope" }), null);
+});
+
+test("normalizeReview: status desconocido cae a finished, nunca pierde la reseña", () => {
+  assert.equal(normalizeReview({ ...valid, status: "dropped" })?.status, "dropped");
+  assert.equal(normalizeReview({ ...valid, status: "completed" })?.status, "completed");
+  // Un payload viejo sin `status` (o con basura) se lee como terminado: es el default de la columna.
+  assert.equal(normalizeReview({ ...valid, status: undefined })?.status, "finished");
+  assert.equal(normalizeReview({ ...valid, status: "abandoned" })?.status, "finished");
+});
+
+test("playStatusOf: sin reseña es backlog; con reseña, su estado", () => {
+  const review = normalizeReview({ ...valid, status: "completed" });
+  assert.equal(playStatusOf(review), "completed");
+  assert.equal(playStatusOf(null), "backlog");
+  assert.equal(reviewStatusLabel("backlog"), "Por jugar");
+  assert.equal(reviewStatusLabel("completed"), "Completado 100%");
+  assert.equal(reviewStatusLabel("dropped"), "Dropeado");
+  assert.equal(reviewStatusLabel("finished"), "Terminado");
 });
 
 test("formatReviewMonth: mes legible y valores nulos sin lanzar", () => {

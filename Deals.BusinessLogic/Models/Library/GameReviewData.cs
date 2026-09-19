@@ -11,7 +11,8 @@ public sealed record GameReviewInput(
     string? FinishedMonth,
     short? Score,
     bool IsGoty,
-    string? Body);
+    string? Body,
+    string? Status);
 
 /// <summary>
 /// Input for updating one review. Where the review lives (<c>gameId</c>, <c>platform</c>) is immutable, so it
@@ -22,4 +23,5 @@ public sealed record GameReviewUpdate(
     string? FinishedMonth,
     short? Score,
     bool IsGoty,
-    string? Body);
+    string? Body,
+    string? Status);

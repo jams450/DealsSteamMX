@@ -2,14 +2,15 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ExternalLink, Gamepad2, Trophy } from "lucide-react";
+import { ExternalLink, Gamepad2, Star, Trophy } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/ui/cn";
 import type { SteamBundleTier, SteamGame, SteamGameBundle, SteamGameOffer } from "@/lib/contracts/steam";
 import { getSteamGame, refreshSteamGame } from "@/app/steam/_lib/steam-api";
+import { setFavorite } from "@/lib/api/favorites";
 import { storeLabel } from "@/lib/contracts/stores";
-import { formatReviewMonth } from "@/lib/contracts/reviews";
+import { formatReviewMonth, reviewStatusLabel } from "@/lib/contracts/reviews";
 import { formatCurrency } from "@/lib/format/currency";
 
 interface GameClientProps {
@@ -684,6 +685,8 @@ export function GameClient({ appId }: GameClientProps) {
   const [coverFailed, setCoverFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [favoritePending, setFavoritePending] = useState(false);
+  const [favoriteError, setFavoriteError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -713,6 +716,25 @@ export function GameClient({ appId }: GameClientProps) {
       setRefreshError(cause instanceof Error ? cause.message : "No se pudieron actualizar las ofertas.");
     } finally {
       setRefreshing(false);
+    }
+  }
+
+  // Favorito optimista: la estrella cambia al instante y se revierte si el servidor rechaza la marca.
+  // Nunca se pierde el detalle ya cargado: un fallo solo escribe el aviso.
+  async function toggleFavorite() {
+    if (game === null || favoritePending) return;
+
+    const next = !game.isFavorite;
+    setFavoriteError(null);
+    setFavoritePending(true);
+    setGame({ ...game, isFavorite: next });
+    try {
+      await setFavorite({ steamAppId: game.appId }, next);
+    } catch (cause) {
+      setGame((current) => (current === null ? current : { ...current, isFavorite: !next }));
+      setFavoriteError(cause instanceof Error ? cause.message : "No se pudo actualizar el favorito.");
+    } finally {
+      setFavoritePending(false);
     }
   }
 
@@ -822,9 +844,23 @@ export function GameClient({ appId }: GameClientProps) {
           <div className="min-w-0 space-y-3 md:col-span-8">
             <p className="text-xs font-semibold uppercase tracking-widest text-muted">Precio Steam · México</p>
             <h2 className="text-2xl font-semibold tracking-tight text-primary">{game.name}</h2>
-            <p className="text-sm text-secondary">
-              AppID {game.appId}{game.type ? ` · ${game.type}` : ""}
-            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="text-sm text-secondary">
+                AppID {game.appId}{game.type ? ` · ${game.type}` : ""}
+              </p>
+              <Button
+                type="button"
+                variant={game.isFavorite ? "primary" : "secondary"}
+                className="h-9 whitespace-nowrap px-3 text-xs"
+                loading={favoritePending}
+                aria-pressed={game.isFavorite}
+                onClick={() => void toggleFavorite()}
+              >
+                <Star className={cn("h-3.5 w-3.5", game.isFavorite && "fill-current")} aria-hidden="true" />
+                {game.isFavorite ? "Favorito" : "Marcar favorito"}
+              </Button>
+            </div>
+            {favoriteError ? <Alert variant="danger">{favoriteError}</Alert> : null}
             {hasOwnershipBadges ? (
               <div className="flex flex-wrap items-center gap-2">
                 {ownershipOwnedStores.map((store) => (
@@ -1155,6 +1191,7 @@ export function GameClient({ appId }: GameClientProps) {
                     <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">
                       {storeLabel(review.platform)}
                     </span>
+                    <span className="tabler-badge tabler-badge-neutral">{reviewStatusLabel(review.status)}</span>
                     {review.score !== null ? (
                       <span className="tabler-badge tabler-badge-info">
                         Nota {review.score}

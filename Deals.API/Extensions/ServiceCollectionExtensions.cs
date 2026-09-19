@@ -25,6 +25,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ILibraryPriceBindingService, LibraryPriceBindingService>();
         services.AddScoped<IGameOwnershipService, GameOwnershipService>();
         services.AddScoped<IReviewService, ReviewService>();
+        services.AddScoped<IFavoriteService, FavoriteService>();
         services.AddScoped<IRepository, Repository>();
         services.AddHttpClient<ISteamStoreClient, SteamStoreClient>((serviceProvider, client) =>
         {

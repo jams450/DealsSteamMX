@@ -5,7 +5,7 @@ Deals Steam MX starts as a reusable full-stack foundation: .NET 9 backend API + 
 ## Prerequisites
 
 - .NET SDK 9
-- Node 20+ and `pnpm`
+- Node 24+ and `pnpm` (the frontend image runs `node:24-alpine`)
 - PostgreSQL 15+ (or Docker for the containerized path)
 - Docker and Docker Compose (optional)
 
@@ -84,11 +84,21 @@ pnpm dev
 The API container needs an external Postgres and pre-existing network:
 
 ```bash
-docker network create shared-db-network
+docker network create server-data
 docker compose up -d --build
 ```
 
-Frontend: `http://localhost:3000`. API: `http://localhost:5000`. Containers: `dealext-frontend`, `dealext-api`.
+El contenedor del frontend instala con pnpm (`--frozen-lockfile`) sobre `node:24-alpine`, compila con
+`output: "standalone"` y en runtime solo lleva el servidor trazado: corre `node server.js` con el usuario
+`node`, sin pnpm ni `node_modules`. Para probar esa misma build en local:
+
+```bash
+cd Deals.Web && pnpm build && node .next/standalone/server.js   # PORT por defecto 3000
+```
+
+`pnpm start` sigue funcionando, pero Next avisa de que no es el camino recomendado con `output: standalone`.
+
+Frontend: `http://localhost:3010`. API: `http://localhost:5010`. Containers: `dealext-frontend`, `dealext-api`.
 
 ## First login
 

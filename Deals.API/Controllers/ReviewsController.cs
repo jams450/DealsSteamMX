@@ -54,7 +54,8 @@ public class ReviewsController : ControllerBase
                 request.FinishedMonth,
                 request.Score,
                 request.IsGoty,
-                request.Body),
+                request.Body,
+                request.Status),
             cancellationToken);
 
         return CreatedAtAction(nameof(Get), new { gameId = review.GameId }, ReviewResponse.From(review));
@@ -74,7 +75,8 @@ public class ReviewsController : ControllerBase
                 request.FinishedMonth,
                 request.Score,
                 request.IsGoty,
-                request.Body),
+                request.Body,
+                request.Status),
             cancellationToken);
 
         return review is null ? NotFound() : Ok(ReviewResponse.From(review));

@@ -28,6 +28,7 @@ public class AppDbContext : DbContext
     public DbSet<ExternalBundleGame> ExternalBundleGames { get; set; } = null!;
     public DbSet<FxRate> FxRates { get; set; } = null!;
     public DbSet<GameMerge> GameMerges => Set<GameMerge>();
+    public DbSet<UserGameFavorite> UserGameFavorites => Set<UserGameFavorite>();
     public DbSet<JobRun> JobRuns => Set<JobRun>();
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
@@ -105,6 +106,22 @@ public class AppDbContext : DbContext
             // the old one, so the index is not unique. Deliberately no FK to user_library: that row is an
             // import artifact whose unique key includes state, so a reimport recreates it.
             entity.HasIndex(e => new { e.UserId, e.GameId, e.Platform });
+            entity.HasIndex(e => e.GameId);
+            entity.HasOne<User>()
+                .WithMany()
+                .HasForeignKey(e => e.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<Game>()
+                .WithMany()
+                .HasForeignKey(e => e.GameId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<UserGameFavorite>(entity =>
+        {
+            // One row per (user, game): the composite key is the favorite itself. No FK to user_library:
+            // favoriting is not owning, and the library row is a reimportable artifact.
+            entity.HasKey(e => new { e.UserId, e.GameId });
             entity.HasIndex(e => e.GameId);
             entity.HasOne<User>()
                 .WithMany()

@@ -16,7 +16,6 @@ public class ReviewService : IReviewService
 {
     private const int MaxBodyLength = 4000;
     private const string MonthFormat = "yyyy-MM";
-    private const string SteamNamespace = "steam";
 
     private readonly IRepository _repository;
 
@@ -77,14 +76,8 @@ public class ReviewService : IReviewService
             return [];
         }
 
-        var appIdText = appId.ToString(CultureInfo.InvariantCulture);
-
-        // Same appid -> ('steam', appid) resolution the ownership block uses.
-        var gameId = await (
-                from externalId in _repository.Get<GameExternalId>()
-                where externalId.NamespaceName == SteamNamespace && externalId.ExternalId == appIdText
-                select (long?)externalId.GameId)
-            .FirstOrDefaultAsync(cancellationToken);
+        // Same appid -> ('steam', appid) resolution the ownership block and the favorites use.
+        var gameId = await SteamAppIdResolver.ResolveGameIdAsync(_repository, appId, cancellationToken);
 
         return gameId is null
             ? []
@@ -102,6 +95,7 @@ public class ReviewService : IReviewService
         }
 
         var platform = ValidatePlatform(input.Platform);
+        var status = ValidateStatus(input.Status);
         var score = ValidateScore(input.Score);
         var started = ParseMonth(input.StartedMonth, nameof(input.StartedMonth));
         var finished = ParseMonth(input.FinishedMonth, nameof(input.FinishedMonth));
@@ -126,6 +120,7 @@ public class ReviewService : IReviewService
             FinishedMonth = finished,
             Score = score,
             IsGoty = input.IsGoty,
+            Status = status,
             Body = body
         };
 
@@ -143,6 +138,7 @@ public class ReviewService : IReviewService
             throw new ArgumentException("La reseña es obligatoria", nameof(input));
         }
 
+        var status = ValidateStatus(input.Status);
         var score = ValidateScore(input.Score);
         var started = ParseMonth(input.StartedMonth, nameof(input.StartedMonth));
         var finished = ParseMonth(input.FinishedMonth, nameof(input.FinishedMonth));
@@ -164,6 +160,7 @@ public class ReviewService : IReviewService
         review.FinishedMonth = finished;
         review.Score = score;
         review.IsGoty = input.IsGoty;
+        review.Status = status;
         review.Body = body;
 
         await _repository.SaveChangesAsync();
@@ -194,6 +191,22 @@ public class ReviewService : IReviewService
         if (!StoreKeys.IsKnown(trimmed))
         {
             throw new ArgumentException("La plataforma no es una tienda conocida", nameof(platform));
+        }
+
+        return trimmed;
+    }
+
+    // El estado es obligatorio: guardar una reseña sin saber si la partida se terminó o se abandonó deja el
+    // filtro de estado (y el reporte por año) a medias. "Por jugar" no es un valor válido aquí: es la
+    // ausencia de reseña.
+    private static string ValidateStatus(string? status)
+    {
+        var trimmed = status?.Trim() ?? string.Empty;
+        if (!ReviewStatuses.IsKnown(trimmed))
+        {
+            throw new ArgumentException(
+                $"status debe ser {ReviewStatuses.Finished}, {ReviewStatuses.Completed} o {ReviewStatuses.Dropped}",
+                nameof(status));
         }
 
         return trimmed;

@@ -256,6 +256,7 @@ CREATE TABLE game_reviews (
     finished_month DATE,
     score SMALLINT,                  -- 0..100
     is_goty BOOLEAN NOT NULL DEFAULT FALSE,
+    status VARCHAR(16) NOT NULL DEFAULT 'finished',  -- finished | completed | dropped (por jugar = sin reseña)
     body TEXT,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -265,6 +266,21 @@ CREATE TABLE game_reviews (
 
 CREATE INDEX idx_game_reviews_game ON game_reviews(game_id);
 CREATE INDEX idx_game_reviews_user_game_platform ON game_reviews(user_id, game_id, platform);
+
+-- Favoritos (SQL/migrations/2026-10-01_play_status_and_favorites.sql). Una fila presente = favorito; el
+-- `game_id` de una fusion se repunta, nunca se pierde. No es una columna de game_reviews porque un
+-- favorito es del juego, no de la partida: con varias reseñas no habría forma de saber cuál manda.
+CREATE TABLE user_game_favorites (
+    user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    game_id BIGINT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100),
+    updated_by VARCHAR(100),
+    PRIMARY KEY (user_id, game_id)
+);
+
+CREATE INDEX idx_user_game_favorites_game ON user_game_favorites(game_id);
 
 -- Manual canonical merge (log). Identity is repointed, never aliased: the absorbed games row is
 -- deleted after every referrer has moved. No FK on purpose: absorbed_game_id no longer exists and

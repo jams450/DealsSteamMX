@@ -45,6 +45,17 @@ public class GameReview : BaseModel
     [Column("is_goty")]
     public bool IsGoty { get; set; }
 
+    /// <summary>
+    /// How this playthrough ended: <c>finished</c>, <c>completed</c> or <c>dropped</c> (see
+    /// <c>ReviewStatuses</c>). Never empty: the column is NOT NULL with a <c>finished</c> default, so a
+    /// review written before the status existed reads as finished. Validated in the service, not by a
+    /// CHECK constraint.
+    /// </summary>
+    [Column("status")]
+    [Required]
+    [StringLength(16)]
+    public string Status { get; set; } = "finished";
+
     [Column("body")]
     public string? Body { get; set; }
 }

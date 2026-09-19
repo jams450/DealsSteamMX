@@ -507,9 +507,20 @@ ITAD store against a gg.deals row.
   (`LIBRARY_IMPORT_MAX_BYTES`) and checked in the browser first (valid JSON, non-empty array at the root)
   before the `POST`. The BFF re-checks the declared length and the real byte length, re-validates the root
   shape, and forwards the array untouched. The file is never stored and never re-read.
-- **Filter and list:** one native labelled `<select>` (`Todas las tiendas (N)`, then each store with its
-  count), and 100 rows at a time behind "Mostrar N más". Each row shows the title, the store, the state tag,
-  "Instalado" when the backend says so, `Alta <fecha>` (or "Sin fecha de alta"), and the price block.
+- **Filter and list:** one native labelled `<select>` for the store (`Todas las tiendas (N)`, then each store
+  with its count) and a second one for the played year (`Todos los años`, each year, and `Sin año` only when
+  something has no dated review), plus a button group `Filtro de estado de juego` with `Todos | Por jugar |
+  Terminado | Completado 100% | Dropeado` where **every option carries its count** (the group is the report:
+  "cuántos por estado"). 100 rows at a time behind "Mostrar N más". Each row shows the title, the store, the
+  state tag, "Instalado" when the backend says so, `Alta <fecha>` (or "Sin fecha de alta"), and the price block.
+- **Los conteos cuentan lo que se ve.** Tienda, estado y año se calculan sobre el conjunto ya filtrado por
+  tienda, así que elegir una tienda reescribe los números de los otros dos filtros y nunca aparece un
+  "12 juegos" que la grilla no pueda mostrar. Como un juego rejugado cuenta en cada año en que se jugó, la
+  suma de los conteos por año puede superar el total de juegos; por eso el filtro de estado usa el total como
+  referencia y el de año no.
+- **Un filtro con un valor que ya no existe vuelve a "Todos".** Si una recarga deja la tienda o el año
+  elegido sin filas, el filtro se resetea sola: un `<select>` con un valor ausente se pintaría vacío y la
+  lista quedaría filtrada sin explicación.
 - **Prices (`priceState`):** the row's right column renders `Alta` first and the price block under it, so the
   row keeps its two-line shape at 100 rows per view. `exact` and `title_candidate` render up to four values —
   `Oficial` and `Keys` are already MXN minor units (the backend converted them), `Base` and `Mín. histórico`
@@ -518,6 +529,17 @@ ITAD store against a gg.deals row.
   still used by `/wishlist`), so a missing amount reads "—" and no 0 is invented. A field whose amount or
   currency is null is omitted; if all four are missing the row shows one muted "Sin precio" and stays.
   `bindingSource` and `steamAppId` are normalized but never painted.
+- **Estado de juego (columna `Estado de juego`).** `Por jugar | Terminado | Completado 100% | Dropeado`,
+  derivado en el cliente con `playStatusOf`; el orden del encabezado es el del ciclo de vida
+  (`Por jugar < Dropeado < Terminado < Completado 100%`), no el alfabético. «Por jugar» **no es una reseña**:
+  es la ausencia de reseña, así que no se guarda en ninguna columna.
+- **Años jugados (columna `Años jugados`).** Un badge por año, del más nuevo al más viejo, con el año de
+  `finishedMonth ?? startedMonth` de **todas** las reseñas del juego; un juego rejugado muestra dos badges y
+  ordena por el más reciente. Sin años, un `—` muted. El servidor manda los años ya calculados
+  (`playedYears`), el cliente no deriva fechas.
+- **Favorito (columna `Favorito`).** El interruptor es del **juego**, no de la reseña: marcar una fila marca
+  todas las que comparten `gameId`, y por eso la columna no depende de la plataforma elegida. Una fila sin
+  `gameId` no ofrece el botón.
 - **Report:** the four counters as badges plus one muted badge per store. «Sin resolver» and «Fuente no
   soportada» only leave the muted tone when greater than zero, and the note states that a reimport neither
   duplicates nor deletes rows.
@@ -546,6 +568,10 @@ ITAD store against a gg.deals row.
 | `store` | normalized to lowercase (the filter and the counts group by it) and shown through a label map; an unknown store prints its own text |
 | store filter with no rows | "No hay juegos de <tienda> en la biblioteca." |
 | 0 items | "Tu biblioteca está vacía. Sube el JSON del export de Playnite para llenarla."; the filter is not rendered |
+| `playStatus === "backlog"` | `tabler-badge-neutral` "Por jugar"; es el estado de todo juego sin reseña y el único valor que no se puede guardar |
+| `playStatus` desconocido | cae a `backlog` por el mismo camino que una reseña ausente: nunca se inventa un estado |
+| `playedYears` con un año repetido o fuera de rango | el normalizador conserva solo años de cuatro dígitos, sin repetidos y ordenados del más nuevo al más viejo |
+| toggle de favorito | optimista: la estrella cambia al pulsar, el botón queda `loading`, y un fallo revierte **todas** las filas del juego y deja un `Alert variant="danger"`; nunca se recarga la lista |
 | first load in flight | bordered "Cargando..." block at the resolved size |
 | fetch failure | `Alert variant="danger"` plus "Reintentar"; the import card stays usable |
 | file rejected before upload | `Alert variant="danger"` with the reason (over 10 MiB, not JSON, root is not an array, empty array); the input is cleared |
@@ -640,6 +666,11 @@ de ahorro. Contrato en `lib/contracts/games-merge.ts`, cliente en
   `Editar esta reseña` y `Borrar`; `Nueva reseña` abre un formulario vacío sin tocar las anteriores. Guardar,
   editar o borrar mantiene el drawer abierto y actualiza en el sitio las filas que comparten
   `(gameId, platform)` con la reseña representativa que queda; no hay navegación ni recarga de la lista.
+- **El estado viaja en la reseña y es obligatorio.** La partida se marca con un radio `Terminado |
+  Completado 100% | Dropeado` (`REVIEW_STATUSES`); `Por jugar` no está en el grupo porque es la ausencia de
+  reseña. Crear y editar exigen el campo —editar nunca debe perder el estado de la partida— y una reseña
+  guardada antes de este cambio se lee como `finished` (el default de la columna). El detalle del juego pinta
+  el estado de cada reseña junto a la plataforma.
 - **GOTY es independiente de Game Pass.** El tag `GOTY` (tono success) es un logro de la reseña y nunca se
   mezcla con el tag de suscripción; un juego en Game Pass puede o no ser GOTY.
 - **Una fila sin `gameId` no se puede reseñar.** No se oculta ni se ofrece una acción rota: la fila muestra
@@ -648,8 +679,20 @@ de ahorro. Contrato en `lib/contracts/games-merge.ts`, cliente en
 - **El detalle del juego es de solo lectura.** Muestra las reseñas de todas las plataformas del juego
   canónico después de la comparación de precios, en una tarjeta discreta y visualmente secundaria, sin
   duplicar el editor. Si no hay reseñas, la tarjeta no existe.
-- **Campos aditivos.** `gameId` y `review` se suman a cada item de `GET /api/library`; `reviews` se suma al
-  payload del detalle. Los normalizadores toleran su ausencia (`null` / arreglo vacío) y nunca inventan una
+- **Campos aditivos.** `gameId`, `review`, `isFavorite` y `playedYears` se suman a cada item de
+  `GET /api/library`; `reviews` e `isFavorite` se suman al payload del detalle de Steam.
+
+### Favoritos
+
+- **Tabla propia del usuario, no una columna de la reseña.** El favorito vive en `user_game_favorites`
+  (`user_id, game_id`, PK compuesta) y no en `game_reviews`: con varias reseñas por juego no habría forma de
+  decir cuál manda. Desmarcar **borra la fila**, no escribe un `false`.
+- **La identidad viaja una sola vez.** `POST`/`DELETE /api/bff/favorites` aceptan `gameId` (la fila de
+  biblioteca, que ya tiene el id canónico) o `steamAppId` (el detalle de Steam, que no lo tiene a mano), nunca
+  los dos ni ninguno; `parseFavoriteTarget` lo rechaza antes de salir y el servidor responde 400. Un juego que
+  el catálogo todavía no reconoce no se puede marcar.
+- **Idempotente y optimista.** Marcar dos veces o desmarcar lo que no estaba no es un error, y la UI actualiza
+  el estado sin recargar: el fallo se ve como un aviso y una reversión, no como una lista recargada. Los normalizadores toleran su ausencia (`null` / arreglo vacío) y nunca inventan una
   reseña. La `review` de una fila —la más reciente del par— solo se pinta si su `gameId` y `platform`
   coinciden con la fila. La nota
   se acepta solo como entero 0–100 y el mes solo como `YYYY-MM`; cualquier otra forma degrada a `null`, y

@@ -276,6 +276,7 @@ CREATE TABLE game_reviews (
     finished_month DATE,
     score SMALLINT,                  -- 0..100
     is_goty BOOLEAN NOT NULL DEFAULT FALSE,
+    status VARCHAR(16) NOT NULL DEFAULT 'finished',  -- finished | completed | dropped
     body TEXT,                       -- opinión en texto
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -312,6 +313,32 @@ Decisiones:
 - **Sin UNIQUE a propósito.** Rejugar un juego es el motivo de la tabla: una partida, una reseña. Con
   `UNIQUE (user_id, game_id, platform)` la segunda reseña pisaba a la primera o se rechazaba.
   `game_review_id` es la identidad, y `platform` sigue siendo el vocabulario compartido de tienda.
+- **El estado de la partida vive en la reseña y es obligatorio** (`2026-10-01_play_status_and_favorites.sql`).
+  `finished | completed | dropped` son las tres formas en que una partida acaba; «por jugar» **no se guarda**,
+  es la ausencia de reseña y se deriva (`playStatusOf`). Sin `CHECK`, igual que el resto: el servicio valida
+  contra `ReviewStatuses.IsKnown`. Una reseña anterior a la migración queda `finished` por el `DEFAULT`.
+- **Los años jugados se derivan, no se guardan.** El año de una partida es `finished_month ?? started_month`,
+  y el juego tiene **todos** los años de **todas** sus reseñas: un juego rejugado aparece en cada año en que se
+  jugó y se filtra por el más reciente. Presupuesto de una columna por partida, no de un campo nuevo.
+
+### Favoritos
+
+Marca del usuario para un juego entero, independiente de las partidas:
+
+```sql
+-- SQL/migrations/2026-10-01_play_status_and_favorites.sql
+CREATE TABLE user_game_favorites (
+    user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    game_id BIGINT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, game_id)
+);
+```
+
+- **Tabla propia y no una columna de `game_reviews`.** Con varias reseñas por juego, «cuál manda» no tiene
+  respuesta: el favorito es del juego, no de la partida. Desmarcar borra la fila.
+- **La UI es optimista y la API idempotente**, y una fusión de duplicados repunta los favoritos del juego
+  absorbido antes de borrar la fila de `games` (si el destino ya estaba marcado, gana esa marca).
 - **La propiedad no se impone por FK.** Si una reseña debe exigir que poseas ese juego en esa plataforma,
   se comprueba en el servicio contra `user_library.state`. No se acopla la tabla a un artefacto de import.
 
@@ -411,6 +438,7 @@ fechadas de `PLAN_CATALOG.md` pierden el orden.
 | 2 | Un juego de Steam liga por appid; uno de GOG/Amazon liga por fusión y muestra el mismo precio que su detalle; un título ajeno al catálogo muestra "Sin precios vinculados" y **ningún** precio |
 | 3 | `pnpm build`; un juego en Steam y Amazon aparece **una sola vez** con las dos tiendas |
 | 4 | Reseñas múltiples: el mismo juego en dos tiendas admite dos reseñas y el mismo juego dos veces en la misma tienda también; el drawer edita la vieja y agrega otra sin perder ninguna; reimportar el export no las borra; un cambio de estado en `user_library` no las afecta |
+| 4b | Estado y favorito: crear una reseña exige estado y editar no lo pierde; «por jugar» es el estado de todo juego sin reseña; el filtro de año muestra el conteo por año (un juego rejugado cuenta en los dos) y el de estado cuadra con la grilla; marcar favorito en una fila lo marca en todas las tiendas del juego y sobrevive a una fusión de duplicados |
 
 Comandos del repositorio:
 

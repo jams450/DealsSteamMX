@@ -37,6 +37,9 @@ public sealed record LibraryImportResponse(
 /// is the caller's most recently written review for this exact <c>(gameId, platform)</c>, or null when
 /// there is none. A pair can hold several reviews (a replay is a new review): the row is a compact badge,
 /// so it carries the newest and the drawer fetches the full list from <c>/api/reviews</c>.
+/// <see cref="IsFavorite"/> is the user's mark on the canonical game (false for a row without identity) and
+/// <see cref="PlayedYears"/> are every year the pair was played, newest first, derived from <em>all</em> its
+/// reviews: the year filter and the per-year report read this, not only the newest review.
 /// </summary>
 public sealed record LibraryItemResponse(
     long UserLibraryId,
@@ -57,4 +60,6 @@ public sealed record LibraryItemResponse(
     string? BaseCurrency,
     long? GameId,
     ReviewResponse? Review,
-    string? ImageUrl);
+    string? ImageUrl,
+    bool IsFavorite,
+    IReadOnlyList<int> PlayedYears);

@@ -1,0 +1,15 @@
+# El contexto es ./Deals.Web y la imagen instala sus propias dependencias: el node_modules y el build del
+# host no deben viajar (pesan cientos de MB y traen binarios construidos para otra libc, que sobrescribirían
+# los del contenedor).
+node_modules
+.next
+out
+coverage
+*.tsbuildinfo
+
+# Secretos y basura local.
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
