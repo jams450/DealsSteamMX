@@ -1,6 +1,7 @@
 namespace Deals.API.Models.Library;
 
 using Deals.API.Models.Reviews;
+using Deals.BusinessLogic.Models.Library;
 
 /// <summary>
 /// One entry of a Playnite library export. Properties keep the exact JSON names the exporter emits;
@@ -63,3 +64,27 @@ public sealed record LibraryItemResponse(
     string? ImageUrl,
     bool IsFavorite,
     IReadOnlyList<int> PlayedYears);
+
+/// <summary>
+/// Body of a cover sync pass. <see cref="Limit"/> is optional: the service applies its own default and
+/// rejects a value outside 1..<c>LibraryCoverService.MaxLimit</c>.
+/// </summary>
+public sealed record LibraryCoverSyncRequest(int? Limit);
+
+/// <summary>
+/// Wire contract of a cover sync pass, mirroring <c>Deals.Web/lib/contracts/library-covers.ts</c>.
+/// </summary>
+public sealed record LibraryCoverSyncResponse(
+    int Missing,
+    int MissingWithoutSteamId,
+    int Updated,
+    int Failed,
+    int Remaining)
+{
+    public static LibraryCoverSyncResponse From(LibraryCoverSyncResult result) => new(
+        result.Missing,
+        result.MissingWithoutSteamId,
+        result.Updated,
+        result.Failed,
+        result.Remaining);
+}

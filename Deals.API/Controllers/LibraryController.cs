@@ -46,19 +46,22 @@ public class LibraryController : ControllerBase
     private readonly ILibraryPriceBindingService _libraryPriceBindingService;
     private readonly IReviewService _reviewService;
     private readonly IFavoriteService _favoriteService;
+    private readonly ILibraryCoverService _libraryCoverService;
 
     public LibraryController(
         IRepository repository,
         IGameIdentityResolver gameIdentityResolver,
         ILibraryPriceBindingService libraryPriceBindingService,
         IReviewService reviewService,
-        IFavoriteService favoriteService)
+        IFavoriteService favoriteService,
+        ILibraryCoverService libraryCoverService)
     {
         _repository = repository;
         _gameIdentityResolver = gameIdentityResolver;
         _libraryPriceBindingService = libraryPriceBindingService;
         _reviewService = reviewService;
         _favoriteService = favoriteService;
+        _libraryCoverService = libraryCoverService;
     }
 
     [HttpPost("import")]
@@ -196,6 +199,28 @@ public class LibraryController : ControllerBase
         }
 
         return Ok(new LibraryImportResponse(result.Imported, result.Updated, 0, unsupported, byStore));
+    }
+
+    /// <summary>
+    /// Fills missing covers from Steam for the games already identified by the catalog. One pass is bounded
+    /// by <paramref name="request"/>'s limit and writes nothing but <c>games.image_url</c>: rows the pass
+    /// cannot solve come back counted and are placed by hand from the grid.
+    /// </summary>
+    [HttpPost("covers/sync")]
+    public async Task<IActionResult> SyncCovers(
+        [FromBody] LibraryCoverSyncRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var limit = request?.Limit ?? LibraryCoverLimits.Default;
+        if (limit < 1 || limit > LibraryCoverLimits.Max)
+        {
+            throw new ArgumentException(
+                $"El límite debe estar entre 1 y {LibraryCoverLimits.Max} juegos",
+                nameof(request));
+        }
+
+        var result = await _libraryCoverService.SyncMissingCoversAsync(GetUserId(), limit, cancellationToken);
+        return Ok(LibraryCoverSyncResponse.From(result));
     }
 
     [HttpGet]

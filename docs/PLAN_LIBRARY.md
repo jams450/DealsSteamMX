@@ -321,6 +321,27 @@ Decisiones:
   y el juego tiene **todos** los años de **todas** sus reseñas: un juego rejugado aparece en cada año en que se
   jugó y se filtra por el más reciente. Presupuesto de una columna por partida, no de un campo nuevo.
 
+### Portadas desde Steam
+
+La portada de una fila de biblioteca es `games.image_url` (dato de catálogo, compartido por las plataformas
+del juego) y se guarda **solo como URL** de Steam, igual que la wishlist: no se descarga ni se reescala
+ninguna imagen. Hasta ahora esa columna solo la había llenado el backfill de `2026-09-27_games_backfill.sql`
+desde `steam_games`, así que la mayoría de los juegos estaban sin portada.
+
+Dos caminos, y ninguno toca identidad ni precios:
+
+| Camino | Ruta | Qué escribe | Reemplaza |
+|---|---|---|---|
+| Pasada automática | `POST /api/library/covers/sync` | `games.image_url` de los juegos de la biblioteca que el catálogo ya liga a un appid de Steam (`game_external_ids`, namespace `steam`) | Nunca: solo llena lo vacío |
+| Elección manual | `PUT /api/games/{gameId}/cover` `{ steamAppId }` | `games.image_url` del juego indicado, con el `header_image` de ese appid | Sí: la eligió el usuario |
+
+- **La pasada es acotada a propósito** (25 juegos por defecto, tope 100): cada juego cuesta una petición a
+  Steam, así que un clic no puede convertirse en 2.600 peticiones. El reporte dice `missing`,
+  `missingWithoutSteamId`, `updated`, `failed` y `remaining`; repetir el botón avanza.
+- **El cliente nunca manda una URL**, solo el appid: la fuente de la imagen la decide el servidor.
+- **Una fila sin `gameId` no tiene dónde guardar portada**, así que la grilla no le ofrece la acción.
+- Un appid retirado, sin `header_image` o una caída de Steam cuentan como `Failed` y no abortan la pasada.
+
 ### Favoritos
 
 Marca del usuario para un juego entero, independiente de las partidas:
@@ -438,6 +459,7 @@ fechadas de `PLAN_CATALOG.md` pierden el orden.
 | 2 | Un juego de Steam liga por appid; uno de GOG/Amazon liga por fusión y muestra el mismo precio que su detalle; un título ajeno al catálogo muestra "Sin precios vinculados" y **ningún** precio |
 | 3 | `pnpm build`; un juego en Steam y Amazon aparece **una sola vez** con las dos tiendas |
 | 4 | Reseñas múltiples: el mismo juego en dos tiendas admite dos reseñas y el mismo juego dos veces en la misma tienda también; el drawer edita la vieja y agrega otra sin perder ninguna; reimportar el export no las borra; un cambio de estado en `user_library` no las afecta |
+| 4c | Portadas: la pasada rellena solo lo vacío y reporta los juegos sin appid de Steam; el selector manual pone y reemplaza la portada desde un appid elegido; una fila sin `gameId` no ofrece la acción; repetir la pasada reduce `remaining` |
 | 4b | Estado y favorito: crear una reseña exige estado y editar no lo pierde; «por jugar» es el estado de todo juego sin reseña; el filtro de año muestra el conteo por año (un juego rejugado cuenta en los dos) y el de estado cuadra con la grilla; marcar favorito en una fila lo marca en todas las tiendas del juego y sobrevive a una fusión de duplicados |
 
 Comandos del repositorio:

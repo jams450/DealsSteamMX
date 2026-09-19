@@ -17,10 +17,26 @@ namespace Deals.API.Controllers;
 public class GamesController : ControllerBase
 {
     private readonly IGameMergeService _gameMergeService;
+    private readonly ILibraryCoverService _libraryCoverService;
 
-    public GamesController(IGameMergeService gameMergeService)
+    public GamesController(IGameMergeService gameMergeService, ILibraryCoverService libraryCoverService)
     {
         _gameMergeService = gameMergeService;
+        _libraryCoverService = libraryCoverService;
+    }
+
+    /// <summary>
+    /// Places the cover of a canonical game from a Steam appid the admin picked in a search. The stored URL
+    /// always comes from Steam, and this is the one path that replaces an existing cover.
+    /// </summary>
+    [HttpPut("{gameId:long}/cover")]
+    public async Task<IActionResult> SetCover(
+        long gameId,
+        [FromBody] GameCoverRequest request,
+        CancellationToken cancellationToken)
+    {
+        var imageUrl = await _libraryCoverService.SetCoverFromSteamAsync(gameId, request.SteamAppId, cancellationToken);
+        return Ok(new GameCoverResponse(imageUrl));
     }
 
     /// <summary>Duplicate candidates for the calling admin's own library. Suggestions only, read-only.</summary>

@@ -540,6 +540,14 @@ ITAD store against a gg.deals row.
 - **Favorito (columna `Favorito`).** El interruptor es del **juego**, no de la reseña: marcar una fila marca
   todas las que comparten `gameId`, y por eso la columna no depende de la plataforma elegida. Una fila sin
   `gameId` no ofrece el botón.
+- **Portadas (`Sincronizar con Steam` y `Portada` por fila).** La portada es del **juego canónico**
+  (`games.image_url`) y se guarda como **URL**, nunca como imagen. El botón del toolbar hace una pasada
+  acotada (25 juegos; el backend acepta 1–100) que rellena solo lo vacío y **nunca reemplaza** una portada
+  existente; el `Portada` de la fila abre el selector de Steam y esa elección sí reemplaza. Una fila sin
+  `gameId` no ofrece la acción: no hay dónde guardar la portada y el motivo ya lo dice la acción de reseña.
+  El selector busca por título (con el título precargado), lista los resultados de Steam y guarda la portada
+  del appid elegido. Después de elegir, la URL nueva se pinta en todas las filas del mismo juego sin
+  recargar; después de una pasada, la lista se recarga porque quien escribió fue el servidor.
 - **Report:** the four counters as badges plus one muted badge per store. «Sin resolver» and «Fuente no
   soportada» only leave the muted tone when greater than zero, and the note states that a reimport neither
   duplicates nor deletes rows.
@@ -572,6 +580,11 @@ ITAD store against a gg.deals row.
 | `playStatus` desconocido | cae a `backlog` por el mismo camino que una reseña ausente: nunca se inventa un estado |
 | `playedYears` con un año repetido o fuera de rango | el normalizador conserva solo años de cuatro dígitos, sin repetidos y ordenados del más nuevo al más viejo |
 | toggle de favorito | optimista: la estrella cambia al pulsar, el botón queda `loading`, y un fallo revierte **todas** las filas del juego y deja un `Alert variant="danger"`; nunca se recarga la lista |
+| fila sin `gameId` y sin portada | no se dibuja el botón de portada; la celda de acciones ya explica por qué la fila no es accionable |
+| pasada de portadas en curso | el botón del toolbar queda `loading` y no se puede repetir mientras corre |
+| pasada terminada | los cinco contadores como badges (`Puestas`, `Fallidas`, `Pendientes de otra pasada`, `Sin appid de Steam`, `Sin portada`); con `updated > 0` la biblioteca se recarga para traer las portadas guardadas |
+| pasada o elección con error | `Alert variant="danger"` con el mensaje del BFF; la grilla y el selector quedan utilizables |
+| portada de Steam remota | se pinta con `<img>` sin optimizador de Next, igual que el resto de la app: la URL es de un CDN ajeno |
 | first load in flight | bordered "Cargando..." block at the resolved size |
 | fetch failure | `Alert variant="danger"` plus "Reintentar"; the import card stays usable |
 | file rejected before upload | `Alert variant="danger"` with the reason (over 10 MiB, not JSON, root is not an array, empty array); the input is cleared |
@@ -681,6 +694,19 @@ de ahorro. Contrato en `lib/contracts/games-merge.ts`, cliente en
   duplicar el editor. Si no hay reseñas, la tarjeta no existe.
 - **Campos aditivos.** `gameId`, `review`, `isFavorite` y `playedYears` se suman a cada item de
   `GET /api/library`; `reviews` e `isFavorite` se suman al payload del detalle de Steam.
+
+### Portadas
+
+- **Solo se escribe `games.image_url`, y solo como URL.** Ni identidad, ni precios, ni filas de biblioteca:
+  una portada equivocada es un error cosmético que la siguiente elección arregla, y por eso ninguna
+  operación de portada reclama identidad ni puede crear un juego canónico. La URL la resuelve siempre el
+  servidor contra Steam (`header_image`): el cliente manda el appid, nunca una URL propia.
+- **Pasada acotada, no trabajo de fondo.** `POST /api/library/covers/sync` revisa hasta 25 juegos de la
+  biblioteca del que llama y devuelve cuántos quedan; repetir el botón avanza. Un appid retirado o una caída
+  de Steam se cuentan como `Failed` y no abortan la pasada.
+- **La elección manual es la única que reemplaza.** `PUT /api/games/{gameId}/cover` con `{ steamAppId }`.
+  Sirve para los juegos que el catálogo no liga a Steam, que la pasada automática reporta como
+  `Sin appid de Steam`.
 
 ### Favoritos
 

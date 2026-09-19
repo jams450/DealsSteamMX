@@ -12,8 +12,10 @@ import { cn } from "@/lib/ui/cn";
 import { storeLabel, toStoreKey, type StoreKey } from "@/lib/contracts/stores";
 import { REVIEW_STATUSES, reviewStatusLabel, type Review, type ReviewStatus } from "@/lib/contracts/reviews";
 import { setFavorite } from "@/lib/api/favorites";
-import { getLibrary, importLibrary } from "./_lib/library-api";
+import { getLibrary, importLibrary, syncLibraryCovers } from "./_lib/library-api";
 import { defaultReviewPlatform, ReviewDrawer, stateLabel } from "./_components/review-drawer";
+import { CoverPicker } from "./_components/cover-picker";
+import type { LibraryCoverSyncReport } from "@/lib/contracts/library-covers";
 import {
   groupLibraryItems,
   LIBRARY_IMPORT_MAX_BYTES,
@@ -307,6 +309,50 @@ function FilterToggle<T extends string>({
   );
 }
 
+// Acción de portada de una fila. Solo aparece cuando hay algo que hacer: sin identidad canónica no hay
+// dónde guardarla (el motivo ya lo dice la acción de reseña de la misma fila) y con portada puesta no hay
+// nada que buscar. El selector permite reemplazarla aunque exista, desde el mismo botón.
+function CoverAction({ game, onPickCover }: { readonly game: LibraryGame; readonly onPickCover: (game: LibraryGame) => void }) {
+  if (game.gameId === null) return null;
+
+  const label = game.imageUrl === null ? "Portada" : "Cambiar portada";
+  return (
+    <Button
+      type="button"
+      variant="secondary"
+      className="h-9 whitespace-nowrap px-3 text-xs"
+      aria-label={`${label}: ${game.title}`}
+      onClick={() => onPickCover(game)}
+    >
+      {label}
+    </Button>
+  );
+}
+
+// Reporte de una pasada de sincronización. Los números describen lo que hizo la pasada, no lo que falta en
+// total: "Sin appid" son los juegos que la pasada no puede resolver sola y que necesitan el selector.
+function CoverSyncReportBadges({ report }: { readonly report: LibraryCoverSyncReport }) {
+  return (
+    <div className="space-y-2" aria-live="polite">
+      <p className="text-sm font-semibold text-primary">Resultado de la sincronización de portadas</p>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="tabler-badge tabler-badge-success">Puestas {report.updated}</span>
+        <span className={cn("tabler-badge", report.failed > 0 ? "tabler-badge-warning" : "tabler-badge-muted")}>
+          Fallidas {report.failed}
+        </span>
+        <span className="tabler-badge tabler-badge-info">Pendientes de otra pasada {report.remaining}</span>
+        <span className="tabler-badge tabler-badge-muted">Sin appid de Steam {report.missingWithoutSteamId}</span>
+        <span className="tabler-badge tabler-badge-muted">Sin portada {report.missing}</span>
+      </div>
+      <p className="text-xs text-muted">
+        Cada pasada revisa hasta 25 juegos y solo rellena portadas que falten: nunca reemplaza una que ya
+        exista. «Sin appid de Steam» son los juegos que el catálogo no liga a Steam; para esos usa
+        «Portada» en la fila y elige el resultado a mano.
+      </p>
+    </div>
+  );
+}
+
 // Orden del ciclo de vida para la columna de estado: el índice es el valor que ordena.
 const PLAY_STATUS_ORDER: Readonly<Record<ReviewStatus | "backlog", number>> = {
   backlog: 0,
@@ -370,6 +416,12 @@ export function LibraryClient() {
   // pintar el resultado, así que un juego en dos tiendas se marca en las dos filas a la vez.
   const [favoritePendingId, setFavoritePendingId] = useState<number | null>(null);
   const [favoriteError, setFavoriteError] = useState<string | null>(null);
+  const [coverSyncing, setCoverSyncing] = useState(false);
+  const [coverReport, setCoverReport] = useState<LibraryCoverSyncReport | null>(null);
+  const [coverError, setCoverError] = useState<string | null>(null);
+  // Juego cuyo selector de portada está abierto. Solo se abre con identidad canónica, que es donde se
+  // guarda la portada.
+  const [coverGame, setCoverGame] = useState<LibraryGame | null>(null);
   const [pendingEntries, setPendingEntries] = useState<unknown[] | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
@@ -416,6 +468,33 @@ export function LibraryClient() {
         ? current
         : { items: current.items.map((item) => (item.gameId === gameId ? { ...item, isFavorite: favorite } : item)) }
     );
+  }
+
+  // La portada está en el juego canónico, así que el valor nuevo se pinta en todas las filas del grupo.
+  function applyCover(gameId: number, imageUrl: string) {
+    setLibrary((current) =>
+      current === null
+        ? current
+        : { items: current.items.map((item) => (item.gameId === gameId ? { ...item, imageUrl } : item)) }
+    );
+  }
+
+  // Una pasada escribe en el servidor, así que al terminar se recarga la biblioteca: es lo que trae las
+  // portadas nuevas a las filas y lo que deja el reporte fiel a lo guardado.
+  async function onSyncCovers() {
+    if (coverSyncing) return;
+
+    setCoverError(null);
+    setCoverSyncing(true);
+    try {
+      const report = await syncLibraryCovers();
+      setCoverReport(report);
+      if (report.updated > 0) await loadLibrary();
+    } catch (cause) {
+      setCoverError(cause instanceof Error ? cause.message : "No se pudieron sincronizar las portadas");
+    } finally {
+      setCoverSyncing(false);
+    }
   }
 
   // `useCallback` porque las columnas del grid dependen de este handler: sin él, cada render del padre
@@ -543,6 +622,7 @@ export function LibraryClient() {
   const gameCountLabel = games.length === 1 ? "1 juego" : `${games.length} juegos`;
 
   const onReview = useCallback((game: LibraryGame) => setDrawerGame(game), []);
+  const onPickCover = useCallback((game: LibraryGame) => setCoverGame(game), []);
 
   const columns = useMemo<ColumnDef<LibraryGame>[]>(
     () => [
@@ -636,10 +716,15 @@ export function LibraryClient() {
         id: "actions",
         header: "Acciones",
         enableSorting: false,
-        cell: ({ row }) => <ReviewAction game={row.original} onReview={onReview} />
+        cell: ({ row }) => (
+          <div className="flex flex-wrap items-center gap-2">
+            <ReviewAction game={row.original} onReview={onReview} />
+            <CoverAction game={row.original} onPickCover={onPickCover} />
+          </div>
+        )
       }
     ],
-    [favoritePendingId, onReview, onToggleFavorite]
+    [favoritePendingId, onPickCover, onReview, onToggleFavorite]
   );
 
   function onStoreFilterChange(event: ChangeEvent<HTMLSelectElement>) {
@@ -796,6 +881,8 @@ export function LibraryClient() {
         </div>
 
         {favoriteError ? <Alert variant="danger">{favoriteError}</Alert> : null}
+        {coverError ? <Alert variant="danger">{coverError}</Alert> : null}
+        {coverReport ? <CoverSyncReportBadges report={coverReport} /> : null}
 
         {loading ? (
           <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
@@ -865,12 +952,36 @@ export function LibraryClient() {
                   totalCount={storeFilteredGames.length}
                   onChange={setPlayStatusFilter}
                 />
+                <div className="space-y-1.5">
+                  <p className="text-sm font-medium text-primary">Portadas</p>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="h-9 whitespace-nowrap px-3 text-xs"
+                    loading={coverSyncing}
+                    onClick={() => void onSyncCovers()}
+                  >
+                    Sincronizar con Steam
+                  </Button>
+                </div>
               </div>
             }
             emptyMessage="Ningún juego coincide con los filtros o la búsqueda."
           />
         )}
       </section>
+
+      {coverGame !== null && coverGame.gameId !== null ? (
+        <CoverPicker
+          gameId={coverGame.gameId}
+          title={coverGame.title}
+          onClose={() => setCoverGame(null)}
+          onPicked={(gameId, imageUrl) => {
+            applyCover(gameId, imageUrl);
+            setCoverGame(null);
+          }}
+        />
+      ) : null}
 
       {drawerGame !== null ? (
         <ReviewDrawer
