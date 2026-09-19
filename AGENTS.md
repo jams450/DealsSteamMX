@@ -11,6 +11,7 @@ The current phase is the **price comparator**: direct Steam price + ITAD officia
 ## Reality check
 - `Deals.sln` contains only the 3 backend projects. `Deals.Web` is a separate pnpm project, not in the solution.
 - No EF migrations workflow. `SQL/schema.sql` is the schema source of truth, `SQL/migrations/` holds dated manual migrations.
+- `SQL/checks/*.sql` holds read-only invariants (every query must return 0 rows). Run them after any change that creates or reassigns canonical identity (library import, game merge).
 - No test projects exist in this repo.
 - Everything targets `net9.0`. Do not bump to .NET 10.
 - The old expense/Gastos naming is gone. Do not reintroduce it.

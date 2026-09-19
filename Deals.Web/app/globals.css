@@ -17,6 +17,15 @@
   --tabler-primary-hover: #1d4ed8;
   --tabler-danger: #dc2626;
   --tabler-success: #16a34a;
+  /* Verde Xbox/Game Pass. No es un estado semántico del sistema (success/warning/danger): es la marca
+     de la plataforma, así que vive como token propio en vez de reusar `--color-success`. Con `--color-success`
+     el badge de Game Pass y el de GOTY serían el mismo verde y la fila perdería la distinción. */
+  --tabler-xbox: #107c10;
+  /* Neutro frío: ausencia de un dato OPCIONAL (sin reseña, sin registro). No es un estado semántico de
+     salud — por eso no reusa muted (jerarquía de texto, gris), warning (dato incompleto que exige
+     atención) ni info (metadato de frescura). Con violeta desaturado queda claramente fuera del eje
+     verde/ámbar/azul sin llegar a leerse como un tono de alarma. */
+  --tabler-neutral: #6d5f96;
   --tabler-radius-sm: 0.5rem;
   --tabler-radius-md: 0.75rem;
   --tabler-radius-lg: 1rem;
@@ -50,6 +59,8 @@
   --color-accent-contrast: #ffffff;
 
   --color-success: var(--tabler-success);
+  --color-xbox: var(--tabler-xbox);
+  --color-neutral: var(--tabler-neutral);
   --color-warning: #d97706;
   --color-danger: var(--tabler-danger);
   --color-info: #0284c7;
@@ -104,6 +115,13 @@
   --tabler-primary-hover: #60a5fa;
   --tabler-danger: #fb7185;
   --tabler-success: #4ade80;
+  /* En oscuro `#107c10` no se lee como texto ni sostiene texto oscuro encima. Se sube la luminosidad con
+     el mismo criterio que success, pero CORRIENDO EL TONO: `#52b043` ronda los 112° de matiz contra los
+     ~142° de `--color-success`, así que el verde Xbox no se confunde con el verde GOTY ni a 10px. */
+  --tabler-xbox: #52b043;
+  /* Mismo violeta, subida la luminosidad para sostener texto sobre fondo oscuro (6.4:1 sobre la tarjeta,
+     4.6:1 ya compuesto con su propio tinte). Mantiene el matiz para que siga siendo el mismo tono. */
+  --tabler-neutral: #a294d0;
   --tabler-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
   --tabler-shadow-md: 0 4px 6px rgba(0, 0, 0, 0.3), 0 10px 15px rgba(0, 0, 0, 0.3);
 
@@ -134,6 +152,8 @@
   --color-accent-contrast: #ffffff;
 
   --color-success: var(--tabler-success);
+  --color-xbox: var(--tabler-xbox);
+  --color-neutral: var(--tabler-neutral);
   --color-warning: #fbbf24;
   --color-danger: var(--tabler-danger);
   --color-info: #38bdf8;
@@ -401,7 +421,10 @@ body {
     color: var(--tabler-text-soft);
   }
 
-  .tabler-badge-solid {
+  /* Dos clases a propósito: los tonos planos de más abajo (`.tabler-badge-primary`, etc.) tienen
+     especificidad (0,1,0) y aparecen DESPUÉS en el archivo, así que sin este (0,2,0) un badge sólido
+     terminaba con el texto del mismo color que su fondo: se veía como una pastilla lisa, sin texto. */
+  .tabler-badge.tabler-badge-solid {
     @apply border-transparent;
     color: var(--color-text-inverse);
   }
@@ -436,6 +459,23 @@ body {
     color: var(--color-info);
   }
 
+  /* Game Pass / Xbox. Mismo esqueleto que los demás tonos (borde + fondo tintado + texto del tono): un
+     badge nunca queda solo-texto. El verde sale de `--color-xbox`, no de un hex suelto, así que modo
+     claro y oscuro se resuelven en el token. */
+  .tabler-badge.tabler-badge-xbox:not(.tabler-badge-solid) {
+    border-color: color-mix(in srgb, var(--color-xbox) 50%, transparent);
+    background: color-mix(in srgb, var(--color-xbox) 20%, transparent);
+    color: var(--color-xbox);
+  }
+
+  /* Ausencia de dato opcional. Mismo esqueleto que los demás; el texto va en el tono puro, que compuesto
+     con su propio tinte da 4.1:1 en claro y 4.6:1 en oscuro (mismo orden que muted, sin competir). */
+  .tabler-badge.tabler-badge-neutral:not(.tabler-badge-solid) {
+    border-color: color-mix(in srgb, var(--color-neutral) 50%, transparent);
+    background: color-mix(in srgb, var(--color-neutral) 20%, transparent);
+    color: var(--color-neutral);
+  }
+
   .tabler-badge-warning.tabler-badge-solid {
     background: var(--color-warning);
   }
@@ -450,6 +490,15 @@ body {
 
   .tabler-badge-danger.tabler-badge-solid {
     background: var(--color-danger);
+  }
+
+  /* Sólido: el texto lo pone `.tabler-badge.tabler-badge-solid` (blanco en claro, oscuro en oscuro). */
+  .tabler-badge-xbox.tabler-badge-solid {
+    background: var(--color-xbox);
+  }
+
+  .tabler-badge-neutral.tabler-badge-solid {
+    background: var(--color-neutral);
   }
 
   .tabler-badge-muted.tabler-badge-solid {
@@ -480,8 +529,26 @@ body {
     color: var(--color-danger);
   }
 
+  /* Era el único tono sin borde ni fondo tintado (solo color), y por eso se veía plano al lado de sus
+     hermanos. Se le da el mismo esqueleto con porcentajes más bajos (40/12 contra 50/16-20) para que
+     siga leyéndose como «apagado/neutro» y no compita con success ni info. Vale para todos los `muted`
+     de la app, no solo para la biblioteca. */
   .tabler-badge-muted {
+    border-color: color-mix(in srgb, var(--color-text-muted) 40%, transparent);
+    background: color-mix(in srgb, var(--color-text-muted) 12%, transparent);
     color: var(--color-text-muted);
+  }
+
+  .tabler-badge-xbox {
+    border-color: color-mix(in srgb, var(--color-xbox) 50%, transparent);
+    background: color-mix(in srgb, var(--color-xbox) 16%, transparent);
+    color: var(--color-xbox);
+  }
+
+  .tabler-badge-neutral {
+    border-color: color-mix(in srgb, var(--color-neutral) 50%, transparent);
+    background: color-mix(in srgb, var(--color-neutral) 16%, transparent);
+    color: var(--color-neutral);
   }
 
   .tabler-page {

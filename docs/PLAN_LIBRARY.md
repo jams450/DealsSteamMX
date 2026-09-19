@@ -251,8 +251,11 @@ siguiente carga sin borrar ni reimportar nada.
 
 ## 9. Fase 4: reseñas por plataforma
 
-Segunda mitad de la parte biblioteca. Un juego se puede reseñar **una vez por plataforma**, que es
-exactamente el caso "lo tengo dos veces".
+Segunda mitad de la parte biblioteca. Un juego se puede reseñar **cuantas veces se juegue**: un final en
+2026 y otro en 2030 son dos reseñas y las dos se conservan. No hay clave única por
+`(user_id, game_id, platform)` — la quitó `2026-09-30_game_reviews_multiple.sql` — así que la identidad de
+una reseña es su `game_review_id`, y `(game_id, platform)` solo agrupa: la fila de biblioteca pinta la más
+reciente y el drawer lista todas.
 
 ### Por qué las reseñas no cuelgan de `user_library`
 
@@ -277,11 +280,11 @@ CREATE TABLE game_reviews (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     created_by VARCHAR(100),
-    updated_by VARCHAR(100),
-    CONSTRAINT uq_game_reviews UNIQUE (user_id, game_id, platform)
+    updated_by VARCHAR(100)
 );
 
 CREATE INDEX idx_game_reviews_game ON game_reviews(game_id);
+CREATE INDEX idx_game_reviews_user_game_platform ON game_reviews(user_id, game_id, platform);
 ```
 
 Decisiones:
@@ -306,6 +309,9 @@ Decisiones:
 - **Sin `CHECK` de rango**, coherente con el repo: `schema.sql` no tiene ni un solo `CHECK`. Las
   validaciones (`0 ≤ score ≤ 100`, `finished_month ≥ started_month`, día = 1) van al servicio. Si
   prefieres verdad en la base de datos, `CHECK (score BETWEEN 0 AND 100)` es barato, pero rompe el estilo.
+- **Sin UNIQUE a propósito.** Rejugar un juego es el motivo de la tabla: una partida, una reseña. Con
+  `UNIQUE (user_id, game_id, platform)` la segunda reseña pisaba a la primera o se rechazaba.
+  `game_review_id` es la identidad, y `platform` sigue siendo el vocabulario compartido de tienda.
 - **La propiedad no se impone por FK.** Si una reseña debe exigir que poseas ese juego en esa plataforma,
   se comprueba en el servicio contra `user_library.state`. No se acopla la tabla a un artefacto de import.
 
@@ -404,7 +410,7 @@ fechadas de `PLAN_CATALOG.md` pierden el orden.
 | 1 | Subir el export real: el conteo cuadra con Playnite y el reporte desglosa por tienda; reimportar no duplica ni borra nada |
 | 2 | Un juego de Steam liga por appid; uno de GOG/Amazon liga por fusión y muestra el mismo precio que su detalle; un título ajeno al catálogo muestra "Sin precios vinculados" y **ningún** precio |
 | 3 | `pnpm build`; un juego en Steam y Amazon aparece **una sola vez** con las dos tiendas |
-| 4 | Una reseña por plataforma: el mismo juego en dos tiendas admite dos reseñas y una sola por plataforma; reimportar el export no la borra; un cambio de estado en `user_library` no la afecta |
+| 4 | Reseñas múltiples: el mismo juego en dos tiendas admite dos reseñas y el mismo juego dos veces en la misma tienda también; el drawer edita la vieja y agrega otra sin perder ninguna; reimportar el export no las borra; un cambio de estado en `user_library` no las afecta |
 
 Comandos del repositorio:
 

@@ -3,21 +3,20 @@ using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Library;
 using Deals.Models.Entities;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
 
 namespace Deals.BusinessLogic.Services;
 
 /// <summary>
 /// Review CRUD with service-side validation (repo style: no CHECK constraints in SQL). The canonical
-/// catalog is a hard dependency: a game with no <c>games</c> row cannot be reviewed. The score label is
-/// computed on read by <see cref="ReviewScoreBands"/>, never persisted.
+/// catalog is a hard dependency: a game with no <c>games</c> row cannot be reviewed. A game may have any
+/// number of reviews per platform — a replay is a new review, not an edit of the old one. The score label
+/// is computed on read by <see cref="ReviewScoreBands"/>, never persisted.
 /// </summary>
 public class ReviewService : IReviewService
 {
     private const int MaxBodyLength = 4000;
     private const string MonthFormat = "yyyy-MM";
     private const string SteamNamespace = "steam";
-    private const string DuplicateMessage = "Ya existe una reseña para ese juego en esa plataforma";
 
     private readonly IRepository _repository;
 
@@ -38,7 +37,9 @@ public class ReviewService : IReviewService
 
         return await _repository.Get<GameReview>()
             .Where(review => review.UserId == userId && review.GameId == gameId)
-            .OrderBy(review => review.Platform)
+            .OrderByDescending(review => review.FinishedMonth)
+            .ThenByDescending(review => review.StartedMonth)
+            .ThenByDescending(review => review.GameReviewId)
             .ToListAsync(cancellationToken);
     }
 
@@ -114,17 +115,8 @@ public class ReviewService : IReviewService
             throw new ArgumentException("El juego no existe en el catálogo", nameof(input.GameId));
         }
 
-        var duplicate = await _repository.Get<GameReview>()
-            .AnyAsync(
-                review => review.UserId == userId &&
-                    review.GameId == input.GameId &&
-                    review.Platform == platform,
-                cancellationToken);
-        if (duplicate)
-        {
-            throw new ArgumentException(DuplicateMessage, nameof(input));
-        }
-
+        // No duplicate check and no unique constraint: repeating a game is the point, so a second review
+        // of the same (game, platform) is created, never merged into the first one.
         var review = new GameReview
         {
             UserId = userId,
@@ -137,15 +129,7 @@ public class ReviewService : IReviewService
             Body = body
         };
 
-        try
-        {
-            return await _repository.Save(review);
-        }
-        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
-        {
-            // The unique constraint is the backstop for a race between the check above and the insert.
-            throw new ArgumentException(DuplicateMessage, nameof(input));
-        }
+        return await _repository.Save(review);
     }
 
     public async Task<GameReview?> UpdateAsync(
@@ -269,7 +253,4 @@ public class ReviewService : IReviewService
 
         return trimmed;
     }
-
-    private static bool IsUniqueViolation(DbUpdateException exception) =>
-        exception.InnerException is PostgresException { SqlState: "23505" };
 }

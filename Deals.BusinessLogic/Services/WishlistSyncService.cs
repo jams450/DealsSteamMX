@@ -31,6 +31,10 @@ public sealed class WishlistSyncService(
     // The rest of the repo reads and writes the mx region snapshot; the wishlist enriches from the same one.
     private const string Region = "mx";
 
+    // Progress is persisted every this many games: the pass walks hundreds of appids over tens of minutes,
+    // and a single save at the end threw all of it away whenever the process was restarted mid-pass.
+    private const int SaveBatchSize = 25;
+
     public async Task<WishlistListSyncReport> SyncListAsync(CancellationToken cancellationToken)
     {
         // Tracked: the passed user rows carry wishlist_synced_at / wishlist_state, and the library rows
@@ -148,6 +152,7 @@ public sealed class WishlistSyncService(
         var pacing = TimeSpan.FromMilliseconds(3_600_000.0 / Math.Max(1, settings.MaxRefreshesPerHour));
         var refreshed = 0;
         var failed = 0;
+        var sinceSave = 0;
 
         // One refresh per app id: the detail snapshot is shared, so the same game on several users' lists
         // must not pay for the same provider calls twice.
@@ -190,6 +195,13 @@ public sealed class WishlistSyncService(
             }
 
             await Task.Delay(pacing, cancellationToken);
+
+            if (++sinceSave >= SaveBatchSize)
+            {
+                // Checkpoint: an interrupted pass resumes from what is already persisted.
+                await repository.SaveChangesAsync();
+                sinceSave = 0;
+            }
         }
 
         await repository.SaveChangesAsync();

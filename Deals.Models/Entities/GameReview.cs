@@ -5,10 +5,11 @@ using Deals.Models.Models;
 namespace Deals.Models.Entities;
 
 /// <summary>
-/// One per-platform review of a canonical game, owned by its author. Deliberately keyed by
-/// <c>(user_id, game_id, platform)</c> and NOT foreign-keyed to <see cref="UserLibrary"/>: a library row is
-/// an import artifact whose unique key includes <c>state</c>, so a reimport or a state change recreates it.
-/// <c>(game_id, platform)</c> is stable and survives both. The score label is computed, never persisted.
+/// One review of a canonical game, owned by its author. A game may carry any number of reviews on the
+/// same platform: a replay is a new review, not an edit of the older one. Deliberately NOT foreign-keyed to
+/// <see cref="UserLibrary"/>: a library row is an import artifact whose unique key includes <c>state</c>, so
+/// a reimport or a state change recreates it. <c>(game_id, platform)</c> is stable and survives both. The
+/// score label is computed, never persisted.
 /// </summary>
 [Table("game_reviews")]
 public class GameReview : BaseModel

@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Deals.API.Models.Wishlist;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Steam;
+using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -32,11 +33,13 @@ public class WishlistController : ControllerBase
 
     private readonly IRepository _repository;
     private readonly IWishlistSyncService _wishlistSyncService;
+    private readonly JobRunLog _jobRunLog;
 
-    public WishlistController(IRepository repository, IWishlistSyncService wishlistSyncService)
+    public WishlistController(IRepository repository, IWishlistSyncService wishlistSyncService, JobRunLog jobRunLog)
     {
         _repository = repository;
         _wishlistSyncService = wishlistSyncService;
+        _jobRunLog = jobRunLog;
     }
 
     [HttpGet]
@@ -96,7 +99,31 @@ public class WishlistController : ControllerBase
     {
         // List snapshot only. The per-game price refresh takes tens of minutes and lives in the
         // background job; letting it run here would hang the request.
-        var report = await _wishlistSyncService.SyncListAsync(cancellationToken);
+        // Recorded as a manual run so job_runs stays a truthful history, but excluded from the background
+        // job's gate: it does not do the expensive price pass, so it must not delay one.
+        var jobRunId = await _jobRunLog.StartAsync(JobRunLog.WishlistSync, JobRunLog.ManualTrigger, cancellationToken);
+
+        WishlistListSyncReport report;
+        try
+        {
+            report = await _wishlistSyncService.SyncListAsync(cancellationToken);
+        }
+        catch
+        {
+            await _jobRunLog.FinishAsync(jobRunId, JobRunStatuses.Failed, null, CancellationToken.None);
+            throw;
+        }
+
+        await _jobRunLog.FinishAsync(jobRunId, JobRunStatuses.Ok, new
+        {
+            report.State,
+            report.ItemCount,
+            report.Added,
+            report.Updated,
+            report.Removed,
+            report.FetchedFromSteam,
+            report.FetchFailed
+        }, CancellationToken.None);
 
         return Ok(new WishlistSyncResponse(
             report.State,

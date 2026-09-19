@@ -34,7 +34,9 @@ public sealed record LibraryImportResponse(
 /// binding: <c>PriceState</c> is <c>exact | title_candidate | none | subscription</c>, and the amounts
 /// are MXN minor units (null when there is no converted price). No field implies ownership.
 /// <see cref="GameId"/> is the canonical link (null when the row has no identity) and <see cref="Review"/>
-/// is the caller's review for this exact <c>(gameId, platform)</c>, or null when there is none.
+/// is the caller's most recently written review for this exact <c>(gameId, platform)</c>, or null when
+/// there is none. A pair can hold several reviews (a replay is a new review): the row is a compact badge,
+/// so it carries the newest and the drawer fetches the full list from <c>/api/reviews</c>.
 /// </summary>
 public sealed record LibraryItemResponse(
     long UserLibraryId,
@@ -54,4 +56,5 @@ public sealed record LibraryItemResponse(
     int? BasePriceMinor,
     string? BaseCurrency,
     long? GameId,
-    ReviewResponse? Review);
+    ReviewResponse? Review,
+    string? ImageUrl);

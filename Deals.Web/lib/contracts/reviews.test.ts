@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   formatReviewMonth,
+  newestReview,
   normalizeReview,
   normalizeReviewList,
   normalizeReviewListResponse,
@@ -171,4 +172,19 @@ test("formatReviewMonth: mes legible y valores nulos sin lanzar", () => {
   assert.equal(formatReviewMonth(null), null);
   assert.match(formatReviewMonth("2026-03") ?? "", /2026/);
   assert.equal(formatReviewMonth("no-es-un-mes"), null);
+});
+
+// Varias reseñas del mismo juego y plataforma son válidas: la grilla pinta la última escrita.
+test("newestReview: gana la escrita más recientemente, con los empates por reviewId", () => {
+  const first = { ...valid, reviewId: 7, updated: null, created: "2026-01-10T00:00:00Z" };
+  const replay = { ...valid, reviewId: 9, updated: "2030-06-01T00:00:00Z", created: "2026-01-10T00:00:00Z" };
+  assert.equal(newestReview([first, replay])?.reviewId, 9);
+  // Sin fechas, el id más alto representa al juego.
+  assert.equal(newestReview([{ ...first, created: null }, { ...replay, updated: null, created: null }])?.reviewId, 9);
+  // `updated` manda sobre `created`: una reseña vieja editada hoy es la última.
+  assert.equal(
+    newestReview([{ ...first, created: "2030-01-01T00:00:00Z" }, { ...replay, updated: null, created: "2026-01-10T00:00:00Z" }])?.reviewId,
+    7
+  );
+  assert.equal(newestReview([]), null);
 });

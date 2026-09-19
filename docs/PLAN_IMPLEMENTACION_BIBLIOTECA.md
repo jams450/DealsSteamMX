@@ -170,28 +170,30 @@ propiedad.
 
 ## 7. Fase 5: reseñas por plataforma
 
-**Entregable visible:** una reseña por juego y plataforma.
+**Entregable visible:** todas las reseñas de un juego, una por partida.
 
 ### Base de datos
 
-`2026-09-28_game_reviews.sql`:
+`2026-09-28_game_reviews.sql` (+ `2026-09-30_game_reviews_multiple.sql`):
 
 ```text
-(user_id, game_id, platform) UNIQUE
+(user_id, game_id, platform)  -- sin UNIQUE: un juego rejugado tiene una reseña por partida
 started_month, finished_month, score 0..100, is_goty, body
 ```
 
 ### Backend y frontend
 
 - Servicio con validación: score 0–100, fin ≥ inicio, fechas al día 1 del mes.
-- CRUD/BFF/UI de reseñas dentro de biblioteca/detalle canónico.
+- CRUD/BFF/UI de reseñas dentro de biblioteca/detalle canónico. El drawer del juego lista todas las
+  reseñas de la plataforma y permite editar una, borrar otra y agregar una nueva; la grilla pinta la más
+  reciente (`newestReview`).
 - `ReviewScoreBands.Label` es la única fuente de los rangos:
   malo, flojo, regular, bueno, muy bueno, obra maestra.
 
 ### Gate
 
 - Mismo juego en dos plataformas: dos reseñas.
-- Misma plataforma: una reseña.
+- Misma plataforma rejugada: dos reseñas, ambas visibles en el drawer, y se edita la vieja sin tocar la nueva.
 - Reimport y cambio `state` no borran ni rompen reseñas.
 
 **Fuera:** score de crítica/comunidad y duración IGDB/HLTB.

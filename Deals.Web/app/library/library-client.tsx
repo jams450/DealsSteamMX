@@ -1,40 +1,27 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { FileJson, HardDriveDownload, Trophy, Upload } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import Link from "next/link";
+import type { ColumnDef, FilterFn, SortingFn } from "@tanstack/react-table";
+import { FileJson, Gamepad2, GitMerge, HardDriveDownload, Trophy, Upload } from "lucide-react";
+import { DataGrid } from "@/components/data-grid/data-grid";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { PriceValue } from "@/components/ui/price-value";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/ui/cn";
 import { storeLabel, toStoreKey, type StoreKey } from "@/lib/contracts/stores";
-import { formatReviewMonth, type Review } from "@/lib/contracts/reviews";
+import type { Review } from "@/lib/contracts/reviews";
 import { getLibrary, importLibrary } from "./_lib/library-api";
-import { createReview, deleteReview, updateReview } from "./_lib/reviews-api";
+import { defaultReviewPlatform, ReviewDrawer, stateLabel } from "./_components/review-drawer";
 import {
+  groupLibraryItems,
   LIBRARY_IMPORT_MAX_BYTES,
+  type LibraryGame,
   type LibraryImportReport,
-  type LibraryItem,
   type LibraryResponse,
   type LibraryState,
   type LibraryStoreCount
 } from "./_lib/library-contract";
-
-// El backend guarda los timestamps en UTC y los manda normalizados a `...Z`; se formatean en UTC para
-// que un `Added` de Playnite no cambie de día por la zona del navegador.
-const dateFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium", timeZone: "UTC" });
-
-function formatDate(value: string | null) {
-  if (!value) return null;
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : dateFormatter.format(date);
-}
-
-// El nombre visible de cada tienda vive en `lib/contracts/stores.ts` y lo comparte con los badges de
-// posesión del detalle: una tienda fuera del catálogo se muestra con su propio texto, nunca se oculta.
-
-// Filas pintadas de golpe. La biblioteca real trae ~2.6k entradas: con paginación local la lista no se
-// vuelve pesada y el usuario nunca pierde la posición al cargar más.
-const PAGE_SIZE = 100;
 
 function readImportFile(file: File): Promise<unknown[]> {
   if (file.size > LIBRARY_IMPORT_MAX_BYTES) {
@@ -64,16 +51,50 @@ function readImportFile(file: File): Promise<unknown[]> {
   });
 }
 
-// Game Pass no es posesión: el tag es sólido y el más visible de la fila, y la fila nunca lleva lenguaje
-// de compra ni de precio.
+// 120x45 es el tamaño nativo de las portadas de Steam; 90x34 en móvil para que la fila siga cabiendo a
+// 360px. La portada es decorativa (`alt=""`) porque el nombre del juego va en su propia columna.
+function LibraryThumb({ src }: { readonly src: string | null }) {
+  const [failed, setFailed] = useState(false);
+  const image = src && !failed ? src : null;
+
+  return (
+    <span className="inline-flex h-[34px] w-[90px] shrink-0 items-center justify-center overflow-hidden rounded-[var(--radius-sm)] border border-default bg-[var(--color-surface-2)] sm:h-[45px] sm:w-[120px]">
+      {image ? (
+        <img
+          src={image}
+          alt=""
+          width={120}
+          height={45}
+          loading="lazy"
+          decoding="async"
+          onError={() => setFailed(true)}
+          className="h-full w-full object-cover"
+        />
+      ) : (
+        <Gamepad2 className="h-4 w-4 text-muted sm:h-5 sm:w-5" aria-hidden="true" />
+      )}
+    </span>
+  );
+}
+
+// Game Pass no es posesión: el tag es sólido y el más visible de la fila. El texto sale de `stateLabel`
+// para que la grilla y el drawer digan exactamente lo mismo.
+// El tono es el verde de Xbox (`tabler-badge-xbox`), no `success`: GOTY ya usa el verde semántico y dos
+// verdes iguales en la misma fila no distinguirían «suscripción» de «premio».
+//
+// Los tres estados forman una escala de ruido, no tres colores sueltos: Game Pass es el caso especial y
+// lleva el tono sólido (el más fuerte); «wished» es intención y lleva info; «owned» es el estado NORMAL
+// de una biblioteca y lleva el azul de acento, que es el color de estructura de la página. Si el caso
+// mayoritario (owned) fuese el más ruidoso, la fila gritaría en cada línea y lo especial dejaría de
+// distinguirse.
 function StateBadge({ state }: { readonly state: LibraryState }) {
   if (state === "subscription") {
-    return <span className="tabler-badge tabler-badge-solid tabler-badge-primary">Game Pass</span>;
+    return <span className="tabler-badge tabler-badge-solid tabler-badge-xbox">{stateLabel(state)}</span>;
   }
   return state === "wished" ? (
-    <span className="tabler-badge tabler-badge-info">Wishlist</span>
+    <span className="tabler-badge tabler-badge-info">{stateLabel(state)}</span>
   ) : (
-    <span className="tabler-badge tabler-badge-muted">En tu biblioteca</span>
+    <span className="tabler-badge tabler-badge-primary">{stateLabel(state)}</span>
   );
 }
 
@@ -81,315 +102,77 @@ function StoreBadge({ store }: { readonly store: string }) {
   return <span className="text-[10px] font-semibold uppercase tracking-widest text-muted">{storeLabel(store)}</span>;
 }
 
-// Los dos mínimos ya vienen convertidos por el backend: su moneda es siempre MXN y no se presenta como
-// aproximación porque no lo es.
-const MXN = "MXN";
+// Orden visual de los estados cuando un grupo mezcla varios. No se elige uno "principal" y se esconden
+// los demás: un juego comprado en Steam y además en Game Pass muestra los dos tags, con la suscripción
+// primero, para que la fila no afirme una compra donde solo hay suscripción (ni al revés). El grupo ya
+// trae estados únicos; esta lista solo decide el orden.
+const STATE_PRECEDENCE: readonly LibraryState[] = ["subscription", "owned", "wished"];
 
-// Precios de una fila ligada. Un importe sin su moneda no se pinta a medias: el campo se omite, y si no
-// queda ninguno la fila degrada a un único "Sin precio" en vez de desaparecer.
-function LibraryPrices({ item }: { readonly item: LibraryItem }) {
-  const fields = [
-    { label: "Oficial", amountMinor: item.bestOfficialMinor, currency: MXN },
-    { label: "Keys", amountMinor: item.bestKeyshopMinor, currency: MXN },
-    { label: "Base", amountMinor: item.basePriceMinor, currency: item.baseCurrency },
-    // El mínimo histórico se agrega solo sobre ofertas guardadas en MXN (HistoryLowCurrency == "MXN"),
-    // así que su importe siempre es pesos: no se pinta con la moneda del proveedor.
-    { label: "Mín. histórico", amountMinor: item.historyLowMinor, currency: MXN }
-  ].filter((field) => field.amountMinor !== null && field.currency !== null);
-
-  if (fields.length === 0) return <span className="text-xs text-muted">Sin precio</span>;
+function StateCell({ game }: { readonly game: LibraryGame }) {
+  const states = STATE_PRECEDENCE.filter((state) => game.states.includes(state));
 
   return (
-    <>
-      {fields.map((field) => (
-        <span key={field.label} className="inline-flex items-baseline gap-1 text-xs">
-          <span className="text-muted">{field.label}</span>
-          <PriceValue amountMinor={field.amountMinor} currency={field.currency} />
-        </span>
+    <div className="flex flex-wrap items-center gap-1">
+      {states.map((state) => (
+        <StateBadge key={state} state={state} />
       ))}
-    </>
-  );
-}
-
-// Estado de precio de la fila. Game Pass no lleva precio ni lenguaje de propiedad; `none` conserva la
-// nota explícita; un candidato por título añade la etiqueta que impide leerlo como identidad confirmada.
-function LibraryPriceState({ item }: { readonly item: LibraryItem }) {
-  if (item.state === "subscription" || item.priceState === "subscription") return null;
-  if (item.priceState === "none") return <p className="text-xs text-muted">Sin precios vinculados</p>;
-
-  return (
-    <>
-      {item.priceState === "title_candidate" ? (
-        <span className="tabler-badge tabler-badge-warning">Precio vinculado por título</span>
+      {game.isInstalled ? (
+        <span className="tabler-badge tabler-badge-info">
+          <HardDriveDownload className="h-3 w-3" aria-hidden="true" />
+          Instalado
+        </span>
       ) : null}
-      <LibraryPrices item={item} />
-    </>
-  );
-}
-
-// Reseña guardada, en solo lectura. La etiqueta de la nota llega del servidor: aquí no se calcula ni se
-// replica ningún rango.
-function ReviewSummary({ review }: { readonly review: Review }) {
-  const started = formatReviewMonth(review.startedMonth);
-  const finished = formatReviewMonth(review.finishedMonth);
-  const range =
-    started && finished ? `De ${started} a ${finished}` : started ? `Desde ${started}` : finished ? `Hasta ${finished}` : null;
-
-  return (
-    <div className="space-y-1">
-      <div className="flex flex-wrap items-center gap-2">
-        {review.score !== null ? (
-          <span className="tabler-badge tabler-badge-info">
-            Nota {review.score}
-            {review.scoreLabel ? ` · ${review.scoreLabel}` : ""}
-          </span>
-        ) : (
-          <span className="tabler-badge tabler-badge-muted">Sin nota</span>
-        )}
-        {review.isGoty ? (
-          <span className="tabler-badge tabler-badge-success">
-            <Trophy className="h-3 w-3" aria-hidden="true" />
-            GOTY
-          </span>
-        ) : null}
-        {range ? <span className="text-xs text-muted">{range}</span> : null}
-      </div>
-      {review.body ? <p className="whitespace-pre-wrap break-words text-sm text-secondary">{review.body}</p> : null}
     </div>
   );
 }
 
-// La nota escrita se valida acá (forma), no se etiqueta: el rango lo decide el servidor. `null` es "sin
-// nota" y `"invalid"` una entrada que no es entero 0-100.
-function readScoreInput(raw: string): number | null | "invalid" {
-  const text = raw.trim();
-  if (text === "") return null;
-  const value = Number(text);
-  return Number.isInteger(value) && value >= 0 && value <= 100 ? value : "invalid";
-}
-
-interface ReviewEditorProps {
-  readonly domId: number;
-  readonly gameId: number;
-  readonly platform: StoreKey;
-  readonly existing: Review | null;
-  readonly onSaved: (review: Review) => void;
-  readonly onCancel: () => void;
-}
-
-function ReviewEditor({ domId, gameId, platform, existing, onSaved, onCancel }: ReviewEditorProps) {
-  const [startedMonth, setStartedMonth] = useState(existing?.startedMonth ?? "");
-  const [finishedMonth, setFinishedMonth] = useState(existing?.finishedMonth ?? "");
-  const [score, setScore] = useState(existing?.score !== null && existing?.score !== undefined ? String(existing.score) : "");
-  const [isGoty, setIsGoty] = useState(existing?.isGoty ?? false);
-  const [body, setBody] = useState(existing?.body ?? "");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (saving) return;
-
-    const parsedScore = readScoreInput(score);
-    if (parsedScore === "invalid") {
-      setError("La nota debe ser un número entero entre 0 y 100.");
-      return;
-    }
-
-    const fields = {
-      startedMonth: startedMonth || null,
-      finishedMonth: finishedMonth || null,
-      score: parsedScore,
-      isGoty,
-      body: body.trim() ? body : null
-    };
-
-    setSaving(true);
-    setError(null);
-    try {
-      // El mismo formulario crea o edita: la reseña existente manda `reviewId`; una nueva manda su
-      // identidad `(gameId, platform)`.
-      const saved = existing
-        ? await updateReview(existing.reviewId, fields)
-        : await createReview({ gameId, platform, ...fields });
-      onSaved(saved);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "No se pudo guardar la reseña.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
+// Reseña de la última reseña del grupo, en solo lectura. La etiqueta de la nota llega del servidor:
+// aquí no se calcula ni se replica ningún rango.
+function ReviewBadges({ review }: { readonly review: Review }) {
   return (
-    <form
-      className="space-y-3 rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4"
-      onSubmit={(event) => void onSubmit(event)}
-    >
-      <p className="text-xs font-semibold uppercase tracking-widest text-muted">
-        {existing ? "Editar reseña" : "Nueva reseña"} · {storeLabel(platform)}
-      </p>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div>
-          <label htmlFor={`review-start-${domId}`} className="mb-1 block text-xs font-semibold uppercase tracking-widest text-muted">
-            Inicio
-          </label>
-          <input
-            id={`review-start-${domId}`}
-            type="month"
-            className="input-semantic h-10 w-full px-3 text-sm"
-            value={startedMonth}
-            onChange={(event) => setStartedMonth(event.target.value)}
-          />
-        </div>
-        <div>
-          <label htmlFor={`review-end-${domId}`} className="mb-1 block text-xs font-semibold uppercase tracking-widest text-muted">
-            Fin
-          </label>
-          <input
-            id={`review-end-${domId}`}
-            type="month"
-            className="input-semantic h-10 w-full px-3 text-sm"
-            value={finishedMonth}
-            onChange={(event) => setFinishedMonth(event.target.value)}
-          />
-        </div>
-      </div>
-
-      <div className="space-y-1">
-        <label htmlFor={`review-score-${domId}`} className="block text-xs font-semibold uppercase tracking-widest text-muted">
-          Nota (0-100)
-        </label>
-        <input
-          id={`review-score-${domId}`}
-          type="number"
-          inputMode="numeric"
-          min={0}
-          max={100}
-          step={1}
-          className="input-semantic h-10 w-24 px-3 text-sm"
-          value={score}
-          onChange={(event) => setScore(event.target.value)}
-        />
-        <p className="text-xs text-muted">La etiqueta de la nota (malo…obra maestra) la calcula el servidor al guardar.</p>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <input
-          id={`review-goty-${domId}`}
-          type="checkbox"
-          className="h-4 w-4"
-          checked={isGoty}
-          onChange={(event) => setIsGoty(event.target.checked)}
-        />
-        <label htmlFor={`review-goty-${domId}`} className="text-sm font-semibold text-primary">
-          GOTY
-        </label>
-      </div>
-
-      <div>
-        <label htmlFor={`review-body-${domId}`} className="mb-1 block text-xs font-semibold uppercase tracking-widest text-muted">
-          Reseña
-        </label>
-        <textarea
-          id={`review-body-${domId}`}
-          rows={3}
-          className="input-semantic w-full px-3 py-2 text-sm"
-          value={body}
-          onChange={(event) => setBody(event.target.value)}
-        />
-      </div>
-
-      {error ? <Alert variant="danger">{error}</Alert> : null}
-
-      <div className="flex flex-wrap items-center gap-2">
-        <Button type="submit" variant="primary" loading={saving} loadingText="Guardando...">
-          Guardar
-        </Button>
-        <Button type="button" variant="secondary" disabled={saving} onClick={onCancel}>
-          Cancelar
-        </Button>
-      </div>
-    </form>
-  );
-}
-
-interface ReviewBlockProps {
-  readonly item: LibraryItem;
-  readonly editing: boolean;
-  readonly onEdit: () => void;
-  readonly onCancel: () => void;
-  readonly onSaved: (review: Review) => void;
-  readonly onDeleted: (review: Review) => void;
-}
-
-// Una fila de biblioteca es un par `(juego, plataforma)`, que es exactamente una reseña. La fila sin
-// `gameId` no se oculta ni ofrece una acción rota: dice por qué todavía no se puede reseñar.
-function ReviewBlock({ item, editing, onEdit, onCancel, onSaved, onDeleted }: ReviewBlockProps) {
-  const gameId = item.gameId;
-  const platform = toStoreKey(item.store);
-  const review = item.review;
-  const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-
-  if (gameId === null) {
-    return (
-      <p className="text-xs text-muted">
-        Todavía no tiene identidad en el catálogo, así que no se puede reseñar. La reseña aparecerá aquí cuando
-        el catálogo lo reconozca.
-      </p>
-    );
-  }
-
-  if (platform === null) {
-    return (
-      <p className="text-xs text-muted">
-        {storeLabel(item.store)} no está en el vocabulario de plataformas, así que esta entrada no se puede reseñar.
-      </p>
-    );
-  }
-
-  if (editing) {
-    return (
-      <ReviewEditor domId={item.userLibraryId} gameId={gameId} platform={platform} existing={review} onSaved={onSaved} onCancel={onCancel} />
-    );
-  }
-
-  async function onDelete() {
-    if (!review || deleting) return;
-    setDeleting(true);
-    setDeleteError(null);
-    try {
-      await deleteReview(review.reviewId);
-      onDeleted(review);
-    } catch (cause) {
-      setDeleteError(cause instanceof Error ? cause.message : "No se pudo borrar la reseña.");
-    } finally {
-      setDeleting(false);
-    }
-  }
-
-  return (
-    <div className="space-y-2">
-      {review ? (
-        <>
-          <ReviewSummary review={review} />
-          <div className="flex flex-wrap items-center gap-2">
-            <Button type="button" variant="secondary" onClick={onEdit}>
-              Editar reseña
-            </Button>
-            <Button type="button" variant="danger" loading={deleting} loadingText="Borrando..." onClick={() => void onDelete()}>
-              Borrar
-            </Button>
-          </div>
-        </>
+    <div className="flex flex-wrap items-center gap-1">
+      {review.score !== null ? (
+        <span className="tabler-badge tabler-badge-info">
+          Nota {review.score}
+          {review.scoreLabel ? ` · ${review.scoreLabel}` : ""}
+        </span>
       ) : (
-        <Button type="button" variant="secondary" onClick={onEdit}>
-          Reseñar
-        </Button>
+        <span className="tabler-badge tabler-badge-neutral">Sin nota</span>
       )}
-      {deleteError ? <Alert variant="danger">{deleteError}</Alert> : null}
+      {review.isGoty ? (
+        <span className="tabler-badge tabler-badge-success">
+          <Trophy className="h-3 w-3" aria-hidden="true" />
+          GOTY
+        </span>
+      ) : null}
     </div>
+  );
+}
+
+// Acción de reseñar de una fila. Si el juego no se puede reseñar (sin identidad en el catálogo o sin
+// ninguna tienda del vocabulario) NO se ofrece un botón que falle: se escribe el motivo en su lugar.
+function ReviewAction({ game, onReview }: { readonly game: LibraryGame; readonly onReview: (game: LibraryGame) => void }) {
+  if (defaultReviewPlatform(game) === null) {
+    return (
+      <span className="text-[11px] text-muted">
+        {game.gameId === null ? "Sin identificar en el catálogo" : "Tienda fuera del vocabulario"}
+      </span>
+    );
+  }
+
+  // Con reseñas guardadas el botón abre la lista (editar una, borrar otra, agregar una nueva); sin
+  // ninguna abre el mismo drawer en modo alta.
+  const label = game.hasReview ? "Reseñas" : "Reseñar";
+  return (
+    <Button
+      type="button"
+      variant="secondary"
+      className="h-9 whitespace-nowrap px-3 text-xs"
+      aria-label={`${label}: ${game.title}`}
+      onClick={() => onReview(game)}
+    >
+      {label}
+    </Button>
   );
 }
 
@@ -425,20 +208,89 @@ function ImportReport({ report }: { readonly report: LibraryImportReport }) {
   );
 }
 
+// Búsqueda sin acentos ni mayúsculas: el export de Playnite trae títulos en varios idiomas y quien busca
+// no tiene por qué escribir la tilde exacta («pokemon» debe encontrar «Pokémon»). Se descompone el
+// carácter (NFD) y se quitan los diacríticos combinantes; no hay forma más corta en ES2017.
+function fold(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("es-MX");
+}
+
+// Buscador global: por título y por tienda. Es el filtro que el DataGrid aplica a la fila completa; se
+// ignoran `columnId` y el valor de cada columna porque lo que importa es el juego agrupado, no una celda.
+const libraryFilter: FilterFn<LibraryGame> = (row, _columnId, value) => {
+  const query = fold(String(value).trim());
+  if (query === "") return true;
+
+  const game = row.original;
+  if (fold(game.title).includes(query)) return true;
+  return game.stores.some((store) => fold(storeLabel(store)).includes(query));
+};
+
+// Un valor ausente se expresa como `undefined`, nunca `null`, y cada columna ordenable lleva
+// `sortUndefined: "last"`. El paquete resuelve ese caso con un `return` temprano ANTES de invertir por
+// dirección, así que los juegos sin nota o sin año quedan al final tanto en asc como en desc. El default
+// (`sortUndefined: 1`) sí se invierte: con él, ordenar descendente pondría arriba los vacíos como si
+// fueran los valores más altos.
+const numericSort: SortingFn<LibraryGame> = (rowA, rowB, columnId) =>
+  Number(rowA.getValue(columnId)) - Number(rowB.getValue(columnId));
+
+const titleSort: SortingFn<LibraryGame> = (rowA, rowB, columnId) =>
+  String(rowA.getValue(columnId)).localeCompare(String(rowB.getValue(columnId)), "es-MX");
+
+// Filtro de reseña del toolbar. El DataGrid solo sabe filtrar columnas con un input de texto, así que un
+// booleano como «tiene reseña» no se puede resolver bien en la fila de filtros: se resuelve aquí.
+type ReviewFilter = "all" | "with" | "without";
+
+const REVIEW_FILTERS: readonly { readonly value: ReviewFilter; readonly label: string }[] = [
+  { value: "all", label: "Todas" },
+  { value: "with", label: "Con reseña" },
+  { value: "without", label: "Sin reseña" }
+];
+
+function ReviewFilterToggle({ value, onChange }: { readonly value: ReviewFilter; readonly onChange: (next: ReviewFilter) => void }) {
+  return (
+    <div
+      className="inline-flex items-center gap-1 border border-strong bg-[var(--color-surface-2)] p-0.5"
+      role="group"
+      aria-labelledby="library-review-filter-label"
+    >
+      {REVIEW_FILTERS.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          aria-pressed={value === option.value}
+          onClick={() => onChange(option.value)}
+          className={cn(
+            "h-9 px-3 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]",
+            value === option.value
+              ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
+              : "text-muted hover:bg-[var(--color-accent-soft)] hover:text-primary"
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function LibraryClient() {
   const [library, setLibrary] = useState<LibraryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [storeFilter, setStoreFilter] = useState("");
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
   const [pendingEntries, setPendingEntries] = useState<unknown[] | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [report, setReport] = useState<LibraryImportReport | null>(null);
-  // Solo un editor de reseña abierto a la vez: el par `(juego, plataforma)` ya identifica la reseña y la
-  // fila solo aporta el asiento del formulario.
-  const [editingKey, setEditingKey] = useState<number | null>(null);
+  // La ficha de reseña se abre con el juego agrupado completo: el juego (no la fila) es lo que se
+  // reseña, y dentro el usuario elige la plataforma si hay más de una.
+  const [drawerGame, setDrawerGame] = useState<LibraryGame | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function loadLibrary() {
@@ -454,7 +306,9 @@ export function LibraryClient() {
   }
 
   // La reseña es por `(juego, plataforma)`, no por fila: después de guardar o borrar se actualiza en el
-  // sitio cada fila que comparta la misma identidad, sin recargar la biblioteca entera ni perder el scroll.
+  // sitio cada fila que comparta la misma identidad, sin recargar la biblioteca entera ni perder el
+  // scroll. La agrupación se recalcula sola porque `games` es un memo sobre `items`. Un juego puede tener
+  // varias reseñas en la misma plataforma: la fila guarda la más reciente, no todas.
   function applyReview(review: Review | null, gameId: number, platform: StoreKey) {
     setLibrary((current) =>
       current === null
@@ -474,15 +328,23 @@ export function LibraryClient() {
 
   const items = useMemo(() => library?.items ?? [], [library]);
 
+  // La grilla pinta juegos agrupados, no filas de tienda: un mismo título en Steam y en GOG es una sola
+  // fila con sus dos plataformas. `groupLibraryItems` es pura y ya ordena por título es-MX.
+  const games = useMemo(() => groupLibraryItems(items), [items]);
+
+  // Conteo por tienda sobre juegos agrupados: el número que se muestra en el filtro es el de juegos que
+  // están en esa tienda, así que un juego en dos tiendas suma en las dos y el total cuadra con «Todas».
   const storeCounts = useMemo<LibraryStoreCount[]>(() => {
     const counts = new Map<string, number>();
-    for (const item of items) {
-      counts.set(item.store, (counts.get(item.store) ?? 0) + 1);
+    for (const game of games) {
+      for (const store of game.stores) {
+        counts.set(store, (counts.get(store) ?? 0) + 1);
+      }
     }
     return [...counts.entries()]
       .map(([store, count]) => ({ store, count }))
       .sort((left, right) => right.count - left.count || left.store.localeCompare(right.store, "es-MX"));
-  }, [items]);
+  }, [games]);
 
   // Si una tienda desaparece al recargar, el filtro vuelve a «Todas»: un select con un valor que ya no
   // existe se pinta vacío y la lista quedaría filtrada sin explicación.
@@ -492,13 +354,107 @@ export function LibraryClient() {
     }
   }, [storeCounts, storeFilter]);
 
-  const gamePassCount = items.filter((item) => item.state === "subscription").length;
-  const filtered = storeFilter ? items.filter((item) => item.store === storeFilter) : items;
-  const visible = filtered.slice(0, visibleCount);
+  // La paginación, el orden y el buscador global los resuelve el DataGrid en el navegador; aquí solo se
+  // aplican los dos filtros propios, así que el grid recibe ya la lista que debe paginar.
+  const filteredGames = useMemo(
+    () =>
+      games.filter((game) => {
+        if (storeFilter && !game.stores.includes(storeFilter)) return false;
+        if (reviewFilter === "with" && !game.hasReview) return false;
+        if (reviewFilter === "without" && game.hasReview) return false;
+        return true;
+      }),
+    [games, storeFilter, reviewFilter]
+  );
+
+  const gamePassCount = useMemo(() => games.filter((game) => game.states.includes("subscription")).length, [games]);
+  const gameCountLabel = games.length === 1 ? "1 juego" : `${games.length} juegos`;
+
+  const onReview = useCallback((game: LibraryGame) => setDrawerGame(game), []);
+
+  const columns = useMemo<ColumnDef<LibraryGame>[]>(
+    () => [
+      {
+        id: "cover",
+        header: "Portada",
+        enableSorting: false,
+        cell: ({ row }) => <LibraryThumb src={row.original.imageUrl} />
+      },
+      {
+        id: "title",
+        accessorKey: "title",
+        header: "Juego",
+        sortingFn: titleSort,
+        cell: ({ row }) => <p className="min-w-48 text-sm font-semibold text-primary">{row.original.title}</p>
+      },
+      {
+        id: "stores",
+        header: "Tiendas",
+        enableSorting: false,
+        cell: ({ row }) => (
+          <div className="flex flex-wrap items-center gap-2">
+            {row.original.stores.map((store) => (
+              <StoreBadge key={store} store={store} />
+            ))}
+          </div>
+        )
+      },
+      {
+        id: "state",
+        header: "Estado",
+        enableSorting: false,
+        cell: ({ row }) => <StateCell game={row.original} />
+      },
+      {
+        id: "hasReview",
+        accessorFn: (game) => (game.hasReview ? 1 : 0),
+        header: "Reseña",
+        sortingFn: numericSort,
+        cell: ({ row }) =>
+          row.original.hasReview ? (
+            <span className="tabler-badge tabler-badge-success">Con reseña</span>
+          ) : (
+            <span className="tabler-badge tabler-badge-neutral">Sin reseña</span>
+          )
+      },
+      {
+        id: "score",
+        accessorFn: (game) => game.lastReview?.score ?? undefined,
+        header: "Última reseña",
+        sortingFn: numericSort,
+        sortUndefined: "last",
+        cell: ({ row }) =>
+          row.original.lastReview === null ? (
+            <span className="text-muted">—</span>
+          ) : (
+            <ReviewBadges review={row.original.lastReview} />
+          )
+      },
+      {
+        id: "playedYear",
+        accessorFn: (game) => game.playedYear ?? undefined,
+        header: "Año jugado",
+        sortingFn: numericSort,
+        sortUndefined: "last",
+        cell: ({ row }) =>
+          row.original.playedYear === null ? (
+            <span className="text-muted">—</span>
+          ) : (
+            <span className="tabular-nums text-primary">{row.original.playedYear}</span>
+          )
+      },
+      {
+        id: "actions",
+        header: "Acciones",
+        enableSorting: false,
+        cell: ({ row }) => <ReviewAction game={row.original} onReview={onReview} />
+      }
+    ],
+    [onReview]
+  );
 
   function onStoreFilterChange(event: ChangeEvent<HTMLSelectElement>) {
     setStoreFilter(event.target.value);
-    setVisibleCount(PAGE_SIZE);
   }
 
   async function onFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -606,53 +562,45 @@ export function LibraryClient() {
         <div className="space-y-1">
           <p className="text-xs font-semibold uppercase tracking-widest text-muted">Biblioteca</p>
           <h2 id="library-items-heading" className="text-xl font-semibold tracking-tight text-primary">
-            Juegos por tienda
+            Tus juegos
           </h2>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="tabler-badge tabler-badge-muted">
-              {items.length === 1 ? "1 juego" : `${items.length} juegos`}
-            </span>
-            <span className="tabler-badge tabler-badge-muted">
+            <span className="tabler-badge tabler-badge-primary">{gameCountLabel}</span>
+            <span className="tabler-badge tabler-badge-info">
               {storeCounts.length === 1 ? "1 tienda" : `${storeCounts.length} tiendas`}
             </span>
             {gamePassCount > 0 ? (
-              <span className="tabler-badge tabler-badge-solid tabler-badge-primary">{gamePassCount} en Game Pass</span>
+              <span className="tabler-badge tabler-badge-solid tabler-badge-xbox">{gamePassCount} en Game Pass</span>
             ) : null}
           </div>
           <p className="text-xs text-muted">
-            Los precios se muestran solo cuando hay un vínculo con el comparador: «Oficial» y «Keys» ya están
-            en MXN, y «Base» y «Mín. histórico» van en la moneda del proveedor, sin convertir. «Precio
-            vinculado por título» avisa que la coincidencia es por nombre y puede ser otra edición; «Sin
-            precios vinculados» solo significa que el título todavía no está en el catálogo. Los juegos de
-            Game Pass no muestran precio porque es una suscripción y puede terminar.
+            Cada fila es un juego, no una entrada de tienda: si el mismo título está en varias plataformas se
+            muestra una sola vez, con todas sus tiendas y sus estados. Cuando la fila mezcla estados (comprado
+            y además en Game Pass, por ejemplo) se pintan los dos, con la suscripción primero, para que no se
+            lea como compra donde solo hay suscripción. La lista se pagina, se ordena y se busca en tu
+            navegador; el menú «Columnas» permite ocultar las que no uses.
           </p>
           <p className="text-xs text-muted">
-            Cada fila también es una reseña: una por juego y plataforma. Usa «Reseñar» para poner una nota de
-            0 a 100, los meses de inicio y fin, la marca GOTY y el texto. La etiqueta de la nota
-            (malo…obra maestra) la calcula el servidor al guardar; aquí no se replica.
+            Las reseñas son por juego y plataforma, y puedes tener varias: cada vez que lo terminas agregas
+            una nueva sin perder las anteriores. «Reseñar» (o «Reseñas») abre la ficha lateral, donde está la
+            lista completa de la plataforma elegida —y el selector, si el juego está en varias tiendas
+            reseñables— para editar una vieja o crear otra. La nota va de 0 a 100 y su etiqueta
+            (malo…obra maestra) la calcula el servidor al guardar; aquí no se replica. Un juego que el catálogo
+            todavía no reconoce no se puede reseñar y la fila lo dice.
+          </p>
+          <p className="text-xs text-muted">
+            Cuando el mismo título aparece como dos juegos canónicos distintos, la biblioteca muestra una fila
+            por cada uno. Eso se corrige a mano en{" "}
+            <Link
+              href="/library/duplicates"
+              className="inline-flex items-center gap-1 font-semibold text-accent underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+            >
+              <GitMerge className="h-3.5 w-3.5" aria-hidden="true" />
+              Duplicados del catálogo
+            </Link>
+            , donde se elige el juego que sobrevive. La fusión es irreversible.
           </p>
         </div>
-
-        {items.length > 0 ? (
-          <div className="w-full sm:max-w-xs">
-            <label htmlFor="library-store-filter" className="mb-1 block text-xs font-semibold uppercase tracking-widest text-muted">
-              Filtrar por tienda
-            </label>
-            <select
-              id="library-store-filter"
-              className="input-semantic h-10 w-full px-3 text-sm"
-              value={storeFilter}
-              onChange={onStoreFilterChange}
-            >
-              <option value="">Todas las tiendas ({items.length})</option>
-              {storeCounts.map((entry) => (
-                <option key={entry.store} value={entry.store}>
-                  {storeLabel(entry.store)} ({entry.count})
-                </option>
-              ))}
-            </select>
-          </div>
-        ) : null}
 
         {loading ? (
           <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
@@ -669,75 +617,63 @@ export function LibraryClient() {
           <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
             Tu biblioteca está vacía. Sube el JSON del export de Playnite para llenarla.
           </p>
-        ) : filtered.length === 0 ? (
-          <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
-            No hay juegos de {storeLabel(storeFilter)} en la biblioteca.
-          </p>
         ) : (
-          <>
-            <p className="text-xs text-muted" aria-live="polite">
-              Mostrando {visible.length} de {filtered.length} {filtered.length === 1 ? "juego" : "juegos"}
-              {storeFilter ? ` de ${storeLabel(storeFilter)}` : ""}.
-            </p>
-            <ul className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)]">
-              {visible.map((item) => {
-                const added = formatDate(item.addedAt);
-                return (
-                  <li
-                    key={item.userLibraryId}
-                    className="flex flex-col gap-2 border-t border-default p-3 first:border-t-0"
+          <DataGrid
+            columns={columns}
+            rows={filteredGames}
+            density="compact"
+            stickyHeader
+            stickyActionsColumn
+            pageSizeOptions={[10, 25, 50, 100]}
+            pageSizeStorageKey="library.pageSize.v1"
+            enableColumnVisibility
+            columnVisibilityStorageKey="library.columns.v1"
+            enableGlobalFilter
+            globalFilterPlaceholder="Buscar por juego o tienda"
+            globalFilterFn={libraryFilter}
+            toolbar={
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="w-full sm:w-64">
+                  <Select
+                    id="library-store-filter"
+                    label="Filtrar por tienda"
+                    value={storeFilter}
+                    onChange={onStoreFilterChange}
                   >
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-semibold text-primary">{item.title}</p>
-                        <div className="mt-1 flex flex-wrap items-center gap-2">
-                          <StoreBadge store={item.store} />
-                          <StateBadge state={item.state} />
-                          {item.isInstalled ? (
-                            <span className="tabler-badge tabler-badge-info">
-                              <HardDriveDownload className="h-3 w-3" aria-hidden="true" />
-                              Instalado
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                      <div className="flex shrink-0 flex-col gap-1 sm:items-end">
-                        <p className="text-xs text-muted">{added ? `Alta ${added}` : "Sin fecha de alta"}</p>
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 sm:justify-end">
-                          <LibraryPriceState item={item} />
-                        </div>
-                      </div>
-                    </div>
-                    <ReviewBlock
-                      item={item}
-                      editing={editingKey === item.userLibraryId}
-                      onEdit={() => setEditingKey(item.userLibraryId)}
-                      onCancel={() => setEditingKey(null)}
-                      onSaved={(review) => {
-                        applyReview(review, review.gameId, review.platform);
-                        setEditingKey(null);
-                      }}
-                      onDeleted={(review) => {
-                        applyReview(null, review.gameId, review.platform);
-                        setEditingKey(null);
-                      }}
-                    />
-                  </li>
-                );
-              })}
-            </ul>
-            {visible.length < filtered.length ? (
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => setVisibleCount((current) => current + PAGE_SIZE)}
-              >
-                Mostrar {Math.min(PAGE_SIZE, filtered.length - visible.length)} más
-              </Button>
-            ) : null}
-          </>
+                    <option value="">Todas las tiendas ({games.length})</option>
+                    {storeCounts.map((entry) => (
+                      <option key={entry.store} value={entry.store}>
+                        {storeLabel(entry.store)} ({entry.count})
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <p id="library-review-filter-label" className="text-sm font-medium text-primary">
+                    Filtrar por reseña
+                  </p>
+                  <ReviewFilterToggle value={reviewFilter} onChange={setReviewFilter} />
+                </div>
+              </div>
+            }
+            emptyMessage="Ningún juego coincide con los filtros o la búsqueda."
+          />
         )}
       </section>
+
+      {drawerGame !== null ? (
+        <ReviewDrawer
+          key={drawerGame.key}
+          game={drawerGame}
+          onClose={() => setDrawerGame(null)}
+          onReviewsChanged={(gameId, platform, review) => {
+            // La grilla guarda una sola reseña por fila: el drawer manda la representativa (la más
+            // reciente que queda) y aquí se pinta, sin recargar la biblioteca.
+            applyReview(review, gameId, platform);
+            setDrawerGame(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

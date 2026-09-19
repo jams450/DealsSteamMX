@@ -1134,7 +1134,7 @@ export function GameClient({ appId }: GameClientProps) {
               Tus reseñas de este juego
             </h2>
             <p className="text-xs text-muted">
-              Una reseña por plataforma. Se crean y se editan en la biblioteca; aquí solo se leen.
+              De la más reciente a la más antigua. Se crean y se editan en la biblioteca; aquí solo se leen.
             </p>
           </div>
           <ul className="space-y-3">

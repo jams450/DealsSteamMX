@@ -27,6 +27,8 @@ public class AppDbContext : DbContext
     public DbSet<ExternalBundle> ExternalBundles { get; set; } = null!;
     public DbSet<ExternalBundleGame> ExternalBundleGames { get; set; } = null!;
     public DbSet<FxRate> FxRates { get; set; } = null!;
+    public DbSet<GameMerge> GameMerges => Set<GameMerge>();
+    public DbSet<JobRun> JobRuns => Set<JobRun>();
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
@@ -99,9 +101,10 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<GameReview>(entity =>
         {
-            // One review per (user, game, platform). Deliberately no FK to user_library: that row is an
+            // Any number of reviews per (user, game, platform): a replay is a new review, never an edit of
+            // the old one, so the index is not unique. Deliberately no FK to user_library: that row is an
             // import artifact whose unique key includes state, so a reimport recreates it.
-            entity.HasIndex(e => new { e.UserId, e.GameId, e.Platform }).IsUnique();
+            entity.HasIndex(e => new { e.UserId, e.GameId, e.Platform });
             entity.HasIndex(e => e.GameId);
             entity.HasOne<User>()
                 .WithMany()
@@ -188,6 +191,22 @@ public class AppDbContext : DbContext
         modelBuilder.Entity<FxRate>(entity =>
         {
             entity.HasKey(e => new { e.Base, e.Quote, e.RateDate });
+        });
+
+        modelBuilder.Entity<JobRun>(entity =>
+        {
+            // Event log: no audit columns. The gate filters by (job, started_at), so the index leads with job.
+            entity.HasKey(e => e.JobRunId);
+            entity.Property(e => e.Details).HasColumnType("jsonb");
+            entity.HasIndex(e => new { e.Job, e.StartedAt });
+        });
+
+        modelBuilder.Entity<GameMerge>(entity =>
+        {
+            // Event log: no audit columns and no FK to games, because the absorbed row is deleted.
+            entity.HasKey(e => e.GameMergeId);
+            entity.Property(e => e.AbsorbedSnapshot).HasColumnType("jsonb");
+            entity.HasIndex(e => e.SurvivorGameId);
         });
 
     }

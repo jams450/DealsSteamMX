@@ -38,7 +38,10 @@ public sealed record ReviewResponse(
         value?.ToString("yyyy-MM", CultureInfo.InvariantCulture);
 }
 
-/// <summary>Create payload. Identity is the (<see cref="GameId"/>, <see cref="Platform"/>) pair.</summary>
+/// <summary>
+/// Create payload. The (<see cref="GameId"/>, <see cref="Platform"/>) pair says where the review lands;
+/// it is not an identity: the same pair can already have reviews and this one is added next to them.
+/// </summary>
 public sealed record ReviewCreateRequest(
     long GameId,
     string? Platform,
@@ -48,7 +51,7 @@ public sealed record ReviewCreateRequest(
     bool IsGoty,
     string? Body);
 
-/// <summary>Update payload: identity is immutable and therefore absent.</summary>
+/// <summary>Update payload: where the review lives is immutable and therefore absent.</summary>
 public sealed record ReviewUpdateRequest(
     string? StartedMonth,
     string? FinishedMonth,

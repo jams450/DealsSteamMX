@@ -113,7 +113,7 @@ public class LibraryPriceBindingService : ILibraryPriceBindingService
         }
 
         // Step 4 (batch): every unresolved candidate title is normalized and matched in one set-based query
-        // against canonical games that own an exact ('steam', appid). Matches are applied after steps 2-3.
+        // against canonical games that own an exact ('steam', appid). Matches are applied after steps 2a-2b.
         var unresolved = candidates
             .Where(row => !resolutions.ContainsKey(row.UserLibraryId))
             .ToList();
@@ -155,14 +155,8 @@ public class LibraryPriceBindingService : ILibraryPriceBindingService
             }
         }
 
-        // One region-scoped steam_games query covers the direct appids, the game-id appids, the title
-        // candidates and the ITAD uuids (step 3). No per-row lookup.
-        var itadUuids = unresolved
-            .Where(row => !string.IsNullOrWhiteSpace(row.ItadGameId))
-            .Select(row => row.ItadGameId!.Trim())
-            .Distinct()
-            .ToList();
-
+        // One region-scoped steam_games query covers the direct appids, the game-id appids and the title
+        // candidates. No per-row lookup.
         var appIdsToLoad = new HashSet<int>();
         foreach (var resolution in resolutions.Values)
         {
@@ -172,12 +166,10 @@ public class LibraryPriceBindingService : ILibraryPriceBindingService
         appIdsToLoad.UnionWith(titleCandidateAppIds);
 
         var appIdToGame = new Dictionary<int, SteamGame>();
-        var appIdByItadUuid = new Dictionary<string, int>(StringComparer.Ordinal);
-        if (appIdsToLoad.Count > 0 || itadUuids.Count > 0)
+        if (appIdsToLoad.Count > 0)
         {
             var snapshots = await _repository.Get<SteamGame>()
-                .Where(game => game.Region == Region &&
-                    (appIdsToLoad.Contains(game.AppId) || itadUuids.Contains(game.ItadGameId!)))
+                .Where(game => game.Region == Region && appIdsToLoad.Contains(game.AppId))
                 .ToListAsync(cancellationToken);
 
             foreach (var snapshot in snapshots)
@@ -186,26 +178,6 @@ public class LibraryPriceBindingService : ILibraryPriceBindingService
                 {
                     appIdToGame[snapshot.AppId] = snapshot;
                 }
-
-                if (!string.IsNullOrWhiteSpace(snapshot.ItadGameId) &&
-                    !appIdByItadUuid.ContainsKey(snapshot.ItadGameId))
-                {
-                    appIdByItadUuid[snapshot.ItadGameId] = snapshot.AppId;
-                }
-            }
-        }
-
-        // Step 3: exact ITAD uuid reached through a region-scoped Steam snapshot.
-        foreach (var row in unresolved)
-        {
-            if (resolutions.ContainsKey(row.UserLibraryId) || string.IsNullOrWhiteSpace(row.ItadGameId))
-            {
-                continue;
-            }
-
-            if (appIdByItadUuid.TryGetValue(row.ItadGameId.Trim(), out var itadAppId))
-            {
-                resolutions[row.UserLibraryId] = new Resolution(itadAppId, LibraryBindingSources.Itad, IsTitleCandidate: false);
             }
         }
 

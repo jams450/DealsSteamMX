@@ -21,6 +21,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<ISteamGameService, SteamGameService>();
         services.AddScoped<IGameIdentityResolver, GameIdentityResolver>();
+        services.AddScoped<IGameMergeService, GameMergeService>();
         services.AddScoped<ILibraryPriceBindingService, LibraryPriceBindingService>();
         services.AddScoped<IGameOwnershipService, GameOwnershipService>();
         services.AddScoped<IReviewService, ReviewService>();
@@ -168,6 +169,9 @@ public static class ServiceCollectionExtensions
                 options => options.MaxRefreshesPerHour > 0,
                 "Wishlist:MaxRefreshesPerHour must be greater than zero.")
             .Validate(
+                options => options.MinHoursBetweenRuns >= 0,
+                "Wishlist:MinHoursBetweenRuns must not be negative.")
+            .Validate(
                 options => options.TimeoutSeconds > 0,
                 "Wishlist:TimeoutSeconds must be greater than zero.")
             .ValidateOnStart();
@@ -192,6 +196,7 @@ public static class ServiceCollectionExtensions
         });
 
         services.AddScoped<IWishlistSyncService, WishlistSyncService>();
+        services.AddScoped<JobRunLog>();
         services.AddHostedService<WishlistSyncJob>();
 
         return services;

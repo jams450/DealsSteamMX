@@ -125,7 +125,8 @@ export function normalizeReview(value: unknown): Review | null {
   };
 }
 
-// Tope defensivo: un juego no tiene más reseñas que plataformas conocidas.
+// Tope defensivo: un juego puede tener muchas reseñas (una por partida) y el bucle no debe crecer sin
+// límite con un payload abusivo.
 const MAX_REVIEWS = 500;
 
 /**
@@ -206,6 +207,29 @@ export function parseReviewCreateRequest(input: unknown): ReviewCreateRequest | 
 /** Edición validada de reseña (sin identidad), o `null` si algún campo presente no cumple el contrato. */
 export function parseReviewUpdateRequest(input: unknown): ReviewUpdateRequest | null {
   return isRecord(input) ? parseWriteFields(input) : null;
+}
+
+// Marca temporal de una reseña: `updated` manda sobre `created`. Una fecha ausente o ilegible cuenta como
+// la más antigua posible, nunca descarta la reseña.
+function reviewStamp(review: Review): number {
+  const parsed = Date.parse(review.updated ?? review.created ?? "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * La reseña que representa a un juego: la última escrita. Un juego puede tener varias reseñas de la misma
+ * plataforma (una por partida) y la grilla solo pinta una etiqueta, así que necesita una elegida. Los
+ * empates se rompen por `reviewId` para que la elección sea determinista; una lista vacía no tiene
+ * representante.
+ */
+export function newestReview(reviews: readonly Review[]): Review | null {
+  return reviews.reduce<Review | null>((best, candidate) => {
+    if (best === null) return candidate;
+    const candidateStamp = reviewStamp(candidate);
+    const bestStamp = reviewStamp(best);
+    if (candidateStamp > bestStamp) return candidate;
+    return candidateStamp === bestStamp && candidate.reviewId > best.reviewId ? candidate : best;
+  }, null);
 }
 
 // Mes `YYYY-MM` legible ("mar 2026"). Es la única forma en que la UI muestra un mes de reseña.

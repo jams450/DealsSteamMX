@@ -112,6 +112,12 @@ public class LibraryController : ControllerBase
         var userId = GetUserId();
         var result = await _repository.ExecuteInTransactionAsync(async () =>
         {
+            // Serializa la creación/reasignación de identidad canónica contra la fusión manual de juegos:
+            // el resolver inserta game_external_ids y borra filas games huérfanas, así que una fusión
+            // concurrente podría dejar un game_id colgando. ponytail: lock global; si algún día hay imports
+            // concurrentes multi-usuario, fragmentar por usuario (la creación de identidad seguiría necesitando el global).
+            await _repository.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(hashtext('dealext.game_identity'))");
+
             var userExists = await _repository.Get<User>()
                 .AnyAsync(candidate => candidate.UserId == userId, cancellationToken);
             if (!userExists)
@@ -212,17 +218,32 @@ public class LibraryController : ControllerBase
 
         // One extra query for the whole page: the caller's reviews for every canonical game present.
         // No per-row lookup. Keyed by (gameId, platform) because a review lives on that pair, not on the
-        // mutable user_library row.
+        // mutable user_library row, and a pair may hold several reviews (replays): the library row shows
+        // the most recently written one, and the review drawer lists all of them.
         var gameIds = rows
             .Where(entry => entry.GameId is > 0)
             .Select(entry => entry.GameId!.Value)
             .Distinct()
             .ToList();
+        // Cover art is a display-only extra: one batch query for the same canonical games. No writes.
+        var imageByGameId = gameIds.Count == 0
+            ? new Dictionary<long, string?>()
+            : await _repository.Get<Game>()
+                .Where(game => gameIds.Contains(game.GameId))
+                .Select(game => new { game.GameId, game.ImageUrl })
+                .ToDictionaryAsync(game => game.GameId, game => game.ImageUrl, cancellationToken);
+
         var reviewsByGameAndPlatform = new Dictionary<(long GameId, string Platform), GameReview>();
         var reviews = await _reviewService.GetForGamesAsync(userId, gameIds, cancellationToken);
         foreach (var review in reviews)
         {
-            reviewsByGameAndPlatform.TryAdd((review.GameId, review.Platform), review);
+            var key = (review.GameId, review.Platform);
+            if (reviewsByGameAndPlatform.TryGetValue(key, out var current) && IsAtLeastAsNew(current, review))
+            {
+                continue;
+            }
+
+            reviewsByGameAndPlatform[key] = review;
         }
 
         var items = rows
@@ -255,11 +276,23 @@ public class LibraryController : ControllerBase
                     binding.BasePriceMinor,
                     binding.BaseCurrency,
                     entry.GameId,
-                    review is null ? null : ReviewResponse.From(review));
+                    review is null ? null : ReviewResponse.From(review),
+                    entry.GameId is > 0 && imageByGameId.TryGetValue(entry.GameId.Value, out var imageUrl)
+                        ? imageUrl
+                        : null);
             })
             .ToList();
 
         return Ok(items);
+    }
+
+    /// <summary>True when <paramref name="current"/> was written at or after <paramref name="candidate"/>.</summary>
+    private static bool IsAtLeastAsNew(GameReview current, GameReview candidate)
+    {
+        var currentStamp = current.Updated ?? current.Created ?? DateTime.MinValue;
+        var candidateStamp = candidate.Updated ?? candidate.Created ?? DateTime.MinValue;
+        return currentStamp > candidateStamp ||
+            (currentStamp == candidateStamp && current.GameReviewId >= candidate.GameReviewId);
     }
 
     private static string RequireText(string? value, string field) =>

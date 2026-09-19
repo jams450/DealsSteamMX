@@ -244,8 +244,9 @@ CREATE INDEX idx_user_library_game ON user_library(game_id);
 
 -- Per-platform reviews (docs/PLAN_LIBRARY.md §9). Deliberately NOT foreign-keyed to user_library: that
 -- row is an import artifact whose unique key includes state, so a reimport or a state change recreates
--- it. (game_id, platform) is stable. The score label is computed, never persisted, and there are no
--- CHECK constraints (validation lives in ReviewService), matching the rest of the schema.
+-- it. (game_id, platform) is stable. There is NO unique key: a game played twice has two reviews and
+-- both survive. The score label is computed, never persisted, and there are no CHECK constraints
+-- (validation lives in ReviewService), matching the rest of the schema.
 CREATE TABLE game_reviews (
     game_review_id BIGSERIAL PRIMARY KEY,
     user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -259,8 +260,44 @@ CREATE TABLE game_reviews (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     created_by VARCHAR(100),
-    updated_by VARCHAR(100),
-    CONSTRAINT uq_game_reviews UNIQUE (user_id, game_id, platform)
+    updated_by VARCHAR(100)
 );
 
 CREATE INDEX idx_game_reviews_game ON game_reviews(game_id);
+CREATE INDEX idx_game_reviews_user_game_platform ON game_reviews(user_id, game_id, platform);
+
+-- Manual canonical merge (log). Identity is repointed, never aliased: the absorbed games row is
+-- deleted after every referrer has moved. No FK on purpose: absorbed_game_id no longer exists and
+-- the log must survive its own subject. Undo is deferred to v1.1; this log is the only record of
+-- what moved, so it ships in v1.
+CREATE TABLE IF NOT EXISTS public.game_merges (
+    game_merge_id      BIGSERIAL PRIMARY KEY,
+    survivor_game_id   BIGINT NOT NULL,
+    absorbed_game_id   BIGINT NOT NULL,
+    absorbed_snapshot  JSONB  NOT NULL,
+    moved_external_ids INT NOT NULL,
+    moved_steam_games  INT NOT NULL,
+    moved_library_rows INT NOT NULL,
+    dropped_reviews    INT NOT NULL,
+    merged_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    merged_by          VARCHAR(100)
+);
+
+CREATE INDEX IF NOT EXISTS idx_game_merges_survivor ON public.game_merges(survivor_game_id);
+
+-- Execution log of the periodic HostedServices (see SQL/migrations/2026-10-01_job_runs.sql). Event log:
+-- no audit columns, the row's whole audit is started_at/finished_at. One row per cycle, whatever its
+-- outcome, so a job can ask "did I already run in the last N hours?" instead of replaying a full pass on
+-- every process start. trigger distinguishes 'startup' recovery passes, 'scheduled' slot runs and
+-- 'manual' admin-triggered runs; details holds counters as JSONB, never secrets.
+CREATE TABLE IF NOT EXISTS public.job_runs (
+    job_run_id  BIGSERIAL PRIMARY KEY,
+    job         VARCHAR(64) NOT NULL,
+    trigger     VARCHAR(16) NOT NULL,
+    status      VARCHAR(16) NOT NULL,
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at TIMESTAMPTZ NULL,
+    details     JSONB NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_runs_job_started ON public.job_runs(job, started_at DESC);

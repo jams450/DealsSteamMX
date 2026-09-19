@@ -555,22 +555,91 @@ ITAD store against a gg.deals row.
 | `byStore` unusable | the breakdown is omitted; the four counters and the import result still render |
 | always | never rendered: raw JSON, the uploaded file, `storeGameId`, BFF routes or credentials |
 
+### Duplicados del catálogo (`/library/duplicates`)
+
+Herramienta de mantenimiento admin-only, no una vista de producto: tabla densa, decisiones explícitas y
+una operación **irreversible** (el juego absorbido se borra). No usa `DataGrid` —cada fila es un grupo con
+unidad propia, no una página de datos— y no participa del comparador, `selectBestPrice` ni ninguna cuenta
+de ahorro. Contrato en `lib/contracts/games-merge.ts`, cliente en
+`app/library/duplicates/_lib/games-merge-api.ts`, BFF `GET /api/bff/games/merge-suggestions` y
+`POST /api/bff/games/[id]/merge`, ambos `AdminWithId`.
+
+- Rendered inside `ProductShell` (`wide`, `title="Duplicados del catálogo"`). The server page calls
+  `requireAdminSession()`, so the route is admin-only like `/library`; the global matcher already protects
+  it and `route-policy.ts` is untouched. `productNavItems` gains the explicit `Duplicados` entry pointing
+  at `/library/duplicates`; `/library` keeps its own active state because `isRouteActive` no longer treats
+  a route with a nested nav entry as active for its children.
+- La lista llega como un arreglo crudo de grupos (el BFF lo reenvía tal cual). El normalizador descarta
+  grupos malformados y **cualquier grupo con menos de dos miembros válidos**, y una respuesta que no es
+  arreglo es `null` → 502, nunca "no hay duplicados".
+- Un grupo es `foldedTitle` + sus miembros con el **título real**, las tiendas con su `storeGameId` y los
+  appids Steam. Las tiendas se pintan con `storeLabel`/`toStoreKey` (`lib/contracts/stores.ts`), el mismo
+  vocabulario de la biblioteca; una tienda fuera del catálogo conserva su texto.
+- **Elección de superviviente:** la primera columna de cada tabla de grupo es un `radio` por miembro, con
+  `name` único por grupo (`survivor-<índice>`) y `aria-label` "Elegir «<título>» como el juego que
+  sobrevive". El estado es un mapa `índice de grupo → gameId` (los grupos no traen id propio). Sin
+  selección, el botón de acción dice "Elige el juego que sobrevive" y queda deshabilitado; con selección
+  enumera los absorbidos en el texto de apoyo. Los radios se deshabilitan mientras hay una fusión en
+  curso o el grupo está bloqueado.
+- **Confirmación:** un `alertdialog` con los títulos reales, la lista de absorbidos con sus `gameId` y la
+  frase "La fusión no se puede deshacer." Escape cancela (más click en el scrim), el foco inicial va al
+  botón de confirmar y al cerrar vuelve al elemento que abrió el diálogo.
+- **Fusión rechazada (409):** no es un error de red y no pasa por `parseApiError`. El 200 y el 409 se
+  normalizan con el mismo `normalizeMergeResult`, que decide la rama por el booleano `applied`; el único
+  motivo de rechazo es la identidad de Steam ambigua entre los dos juegos. El cuerpo no lleva una lista que
+  resolver: el panel de error muestra `blockReason` y nada se reintenta en automático.
+- **Las reseñas nunca se descartan.** `game_reviews` no tiene clave única por `(usuario, juego, plataforma)`,
+  así que una reseña de cada lado simplemente convive en el superviviente. La fusión no pide decidir nada
+  sobre reseñas ni las borra.
+- **Fusión por secuencia:** el botón de grupo fusiona el resto de miembros en el superviviente con un
+  `POST` por absorbido. La secuencia se detiene en el primer rechazo y, si un `POST` falla de otra forma, el
+  panel de error **informa lo que sí se aplicó** en vez de fingir un rollback que no existe. Los grupos no
+  se fusionan en una sola llamada porque el contrato es de a uno.
+- Tras una fusión completa la lista se recarga; con una fusión parcial (un absorbed aplicado y luego
+  error/pendiente) no se recarga, para no perder el contexto de lo que falta.
+- `blocked: true` en el grupo **o** en cualquier miembro deshabilita la acción, marca el grupo con un badge
+  de advertencia y escribe el motivo (`blockReason` del miembro; el grupo no trae texto propio). La UI
+  nunca ofrece fusionar un grupo bloqueado.
+- **Resultado:** el panel de resultado enumera cada absorbed con los contadores que el backend sí informó
+  (un contador ausente se lee como "no informado", nunca como 0), con `role="status"` para el anuncio.
+
+| Condition | Treatment |
+|---|---|
+| first load in flight | `app-card p-4 text-sm text-muted` "Cargando..." |
+| fetch failure | `Alert variant="danger"` plus "Reintentar" |
+| response shape invalid (not an array, or every group dropped) | the BFF answers 502; a broken shape is never read as "no duplicates" |
+| 0 groups | "No hay grupos de duplicados pendientes." plus the explanation of what the catalog checked |
+| group with ≥1 `blocked` member or `blocked: true` | warning badge "Bloqueado", the member's `blockReason` in text, every radio and the merge button disabled |
+| member not blocked | muted "Disponible" badge; a member with no store refs or appids reads "—" in that cell |
+| no survivor chosen | the merge button is disabled and reads "Elige el juego que sobrevive" |
+| survivor chosen | the button names the count and the survivor; the helper line lists the absorbed titles |
+| confirm dialog open | `alertdialog`, focus on "Sí, fusionar", Escape/scrim cancels, focus returns to the trigger |
+| merge in flight | radios disabled, the group button `disabled`, the panel says "Fusionando en «<superviviente>»..." with `aria-live="polite"` |
+| 409 (rejected merge) | the error panel shows `blockReason`; nothing is retried automatically and no review list is offered |
+| merge applied for one member, another fails | the error panel keeps the applied list (what moved, per member) and does not claim a rollback |
+| all merges applied | success panel, then the list is re-fetched; a done panel keeps the per-member counters |
+| any count absent in the merge response | reads "sin contadores informados" for that member; a 0 is never invented |
+| always | no raw JSON, no BFF paths, no env values, no credentials; the survivor and absorbed titles are the real ones from the payload |
+
 ### Reseñas por plataforma
 
-- Una reseña por `(juego, plataforma)`: `platform` usa el vocabulario de `lib/contracts/stores.ts`, la misma
-  llave de `user_library.store`, así que la reseña y la fila de biblioteca se cruzan sin traducción. El
-  contrato vive en `lib/contracts/reviews.ts`; los meses viajan como `YYYY-MM` (mapean directo a
-  `<input type="month">`), la nota es un entero 0–100 y `scoreLabel` llega calculada por el backend.
+- **Varias reseñas por `(juego, plataforma)`.** Un juego rejugado tiene una reseña por partida y todas
+  conviven: no hay clave única ni comprobación de duplicado en el servicio. `platform` usa el vocabulario de
+  `lib/contracts/stores.ts`, la misma llave de `user_library.store`, así que la reseña y la fila de
+  biblioteca se cruzan sin traducción. El contrato vive en `lib/contracts/reviews.ts`; los meses viajan como
+  `YYYY-MM` (mapean directo a `<input type="month">`), la nota es un entero 0–100 y `scoreLabel` llega
+  calculada por el backend.
 - **`scoreLabel` es solo de presentación y la calcula el servidor.** La UI no replica los umbrales de
   `ReviewScoreBands.Label`, no los conoce y no muestra una previsualización de la etiqueta mientras se
   escribe: la etiqueta aparece recién con la respuesta de la API después de guardar. Regla arquitectónica
   explícita.
-- **Un solo editor, en `/library`.** Cada fila de biblioteca es un par `(juego, plataforma)`, que es
-  exactamente una reseña. La fila muestra la reseña inline (nota + etiqueta, GOTY, rango de meses y texto)
-  y permite crear, editar y borrar con los mismos `Button`, badges, `Alert` e `input-semantic` del resto de
-  la biblioteca; el formulario usa `<input type="month">` para ambos meses, un número 0–100, una casilla
-  GOTY y un `textarea`. Al guardar o borrar, la reseña se actualiza en el sitio en todas las filas que
-  compartan `(gameId, platform)`; no hay navegación ni recarga de la lista.
+- **Un solo editor, en el drawer de `/library`.** La grilla pinta una sola etiqueta por fila —la reseña
+  más reciente de ese `(juego, plataforma)`, elegida con `newestReview`— y `Reseñas` / `Reseñar` abre el
+  drawer del juego. El drawer pide la lista completa a `GET /api/bff/reviews` (la fila de biblioteca solo
+  trae la última) y lista **todas** las reseñas de la plataforma elegida, cada una con sus propios
+  `Editar esta reseña` y `Borrar`; `Nueva reseña` abre un formulario vacío sin tocar las anteriores. Guardar,
+  editar o borrar mantiene el drawer abierto y actualiza en el sitio las filas que comparten
+  `(gameId, platform)` con la reseña representativa que queda; no hay navegación ni recarga de la lista.
 - **GOTY es independiente de Game Pass.** El tag `GOTY` (tono success) es un logro de la reseña y nunca se
   mezcla con el tag de suscripción; un juego en Game Pass puede o no ser GOTY.
 - **Una fila sin `gameId` no se puede reseñar.** No se oculta ni se ofrece una acción rota: la fila muestra
@@ -581,7 +650,8 @@ ITAD store against a gg.deals row.
   duplicar el editor. Si no hay reseñas, la tarjeta no existe.
 - **Campos aditivos.** `gameId` y `review` se suman a cada item de `GET /api/library`; `reviews` se suma al
   payload del detalle. Los normalizadores toleran su ausencia (`null` / arreglo vacío) y nunca inventan una
-  reseña. La `review` de una fila solo se pinta si su `gameId` y `platform` coinciden con la fila. La nota
+  reseña. La `review` de una fila —la más reciente del par— solo se pinta si su `gameId` y `platform`
+  coinciden con la fila. La nota
   se acepta solo como entero 0–100 y el mes solo como `YYYY-MM`; cualquier otra forma degrada a `null`, y
   `isGoty` solo es verdadero con el literal `true`.
 

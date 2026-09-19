@@ -4,20 +4,21 @@ using Deals.Models.Entities;
 namespace Deals.BusinessLogic.Interfaces;
 
 /// <summary>
-/// Per-platform reviews of a canonical game, owned by their author. Validation lives here and throws
-/// <see cref="ArgumentException"/> (mapped to 400 by the global handler); a review that belongs to
-/// another user is reported as not found, never forbidden. Ownership of the game is deliberately not
-/// required: the plan does not FK reviews to the import artifact, and a user may review a game they
-/// played elsewhere.
+/// Per-platform reviews of a canonical game, owned by their author. A game may carry any number of
+/// reviews on the same platform: a replay adds a review, it never overwrites the older one. Validation
+/// lives here and throws <see cref="ArgumentException"/> (mapped to 400 by the global handler); a review
+/// that belongs to another user is reported as not found, never forbidden. Ownership of the game is
+/// deliberately not required: the plan does not FK reviews to the import artifact, and a user may review
+/// a game they played elsewhere.
 /// </summary>
 public interface IReviewService
 {
-    /// <summary>Every review of one canonical game for one user, ordered by platform.</summary>
+    /// <summary>Every review of one canonical game for one user, newest run first.</summary>
     Task<IReadOnlyList<GameReview>> GetForGameAsync(int userId, long gameId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Reviews of a page of canonical games in ONE query, for the library list. Callers key the result by
-    /// <c>(gameId, platform)</c>.
+    /// Reviews of a page of canonical games in ONE query, for the library list. Several rows may share a
+    /// <c>(gameId, platform)</c>: callers keep the most recent one per pair.
     /// </summary>
     Task<IReadOnlyList<GameReview>> GetForGamesAsync(
         int userId,

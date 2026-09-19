@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  groupLibraryItems,
   normalizeLibraryImportResponse,
   normalizeLibraryResponse,
   type LibraryItem
 } from "./library-contract.ts";
+import type { Review } from "../../../lib/contracts/reviews.ts";
 
 const owned = {
   userLibraryId: 7,
@@ -178,4 +180,167 @@ test("reseñas: la reseña solo se acepta si coincide con el (gameId, platform) 
 
   const [otherPlatform] = items({ items: [{ ...owned, gameId: 100, review: { ...review, platform: "epic" } }] }) as LibraryItem[];
   assert.equal(otherPlatform?.review, null);
+});
+
+// --- Portada (imageUrl) ---
+
+test("imageUrl: solo se acepta https absoluto", () => {
+  const [ok] = items({ items: [{ ...owned, imageUrl: "https://images.example.com/cover.jpg" }] }) as LibraryItem[];
+  assert.equal(ok?.imageUrl, "https://images.example.com/cover.jpg");
+
+  const [http] = items({ items: [{ ...owned, imageUrl: "http://images.example.com/cover.jpg" }] }) as LibraryItem[];
+  assert.equal(http?.imageUrl, null);
+
+  const [empty] = items({ items: [{ ...owned, imageUrl: "   " }] }) as LibraryItem[];
+  assert.equal(empty?.imageUrl, null);
+
+  const [notString] = items({ items: [{ ...owned, imageUrl: 42 }] }) as LibraryItem[];
+  assert.equal(notString?.imageUrl, null);
+
+  const [invalid] = items({ items: [{ ...owned, imageUrl: "no-es-una-url" }] }) as LibraryItem[];
+  assert.equal(invalid?.imageUrl, null);
+});
+
+test("imageUrl: una suscripción sí conserva portada", () => {
+  const [item] = items({
+    items: [{ ...owned, state: "subscription", store: "Xbox", imageUrl: "https://images.example.com/gp.jpg" }]
+  }) as LibraryItem[];
+  assert.equal(item?.state, "subscription");
+  assert.equal(item?.imageUrl, "https://images.example.com/gp.jpg");
+});
+
+// --- Agrupación por juego (Fase 6) ---
+
+function row(overrides: Partial<LibraryItem> & { readonly userLibraryId: number }): LibraryItem {
+  return {
+    store: "gog",
+    storeGameId: "1",
+    title: "Juego",
+    imageUrl: null,
+    state: "owned",
+    isInstalled: false,
+    addedAt: null,
+    importedAt: null,
+    priceState: "none",
+    bindingSource: null,
+    steamAppId: null,
+    gameId: null,
+    review: null,
+    bestOfficialMinor: null,
+    bestKeyshopMinor: null,
+    historyLowMinor: null,
+    basePriceMinor: null,
+    baseCurrency: null,
+    ...overrides
+  };
+}
+
+function reviewFor(overrides: Partial<Review> = {}): Review {
+  return {
+    reviewId: 1,
+    gameId: 100,
+    platform: "gog",
+    startedMonth: null,
+    finishedMonth: null,
+    score: null,
+    scoreLabel: null,
+    isGoty: false,
+    body: null,
+    created: null,
+    updated: null,
+    ...overrides
+  };
+}
+
+test("agrupación: el mismo gameId produce un grupo con dos plataformas", () => {
+  const groups = groupLibraryItems([
+    row({ userLibraryId: 1, gameId: 100, title: "Portal 2", store: "gog", imageUrl: "https://a/1.jpg", review: reviewFor() }),
+    row({ userLibraryId: 2, gameId: 100, title: "Portal 2", store: "steam", state: "subscription", isInstalled: true })
+  ]);
+
+  assert.equal(groups.length, 1);
+  const [game] = groups;
+  assert.equal(game?.key, "game:100");
+  assert.equal(game?.platforms.length, 2);
+  assert.deepEqual(game?.stores, ["gog", "steam"]);
+  assert.deepEqual(game?.states, ["owned", "subscription"]);
+  assert.equal(game?.imageUrl, "https://a/1.jpg");
+  assert.equal(game?.hasReview, true);
+  assert.equal(game?.isInstalled, true);
+});
+
+test("agrupación: dos filas sin gameId son dos grupos distintos y no se fusionan", () => {
+  const groups = groupLibraryItems([
+    row({ userLibraryId: 7, title: "Mismo título" }),
+    row({ userLibraryId: 8, title: "Mismo título" })
+  ]);
+
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups.map((game) => game.key).sort(), ["row:7", "row:8"]);
+  assert.ok(groups.every((game) => game.gameId === null && game.platforms.length === 1));
+});
+
+test("agrupación: lastReview usa el updated mayor; sin updated cae a created", () => {
+  const older = reviewFor({ reviewId: 1, updated: "2026-01-01T00:00:00Z" });
+  const newer = reviewFor({ reviewId: 2, platform: "steam", created: "2026-06-01T00:00:00Z", updated: null });
+
+  const [bothUpdated] = groupLibraryItems([
+    row({ userLibraryId: 1, gameId: 100, review: older }),
+    row({ userLibraryId: 2, gameId: 100, store: "steam", review: newer })
+  ]);
+  assert.equal(bothUpdated?.lastReview?.reviewId, 2);
+
+  const [fallback] = groupLibraryItems([
+    row({ userLibraryId: 1, gameId: 100, review: reviewFor({ reviewId: 3, created: "2025-01-01T00:00:00Z" }) }),
+    row({
+      userLibraryId: 2,
+      gameId: 100,
+      store: "steam",
+      review: reviewFor({ reviewId: 4, platform: "steam", updated: "2026-06-01T00:00:00Z" })
+    })
+  ]);
+  assert.equal(fallback?.lastReview?.reviewId, 4);
+});
+
+test("agrupación: playedYear sale de finishedMonth y cae a startedMonth", () => {
+  const [finished] = groupLibraryItems([
+    row({ userLibraryId: 1, gameId: 100, review: reviewFor({ finishedMonth: "2025-11", startedMonth: "2024-03" }) })
+  ]);
+  assert.equal(finished?.playedYear, 2025);
+
+  const [started] = groupLibraryItems([
+    row({ userLibraryId: 1, gameId: 100, review: reviewFor({ finishedMonth: null, startedMonth: "2024-03" }) })
+  ]);
+  assert.equal(started?.playedYear, 2024);
+
+  const [noMonths] = groupLibraryItems([row({ userLibraryId: 1, gameId: 100, review: reviewFor() })]);
+  assert.equal(noMonths?.playedYear, null);
+
+  const [malformed] = groupLibraryItems([
+    row({
+      userLibraryId: 1,
+      gameId: 100,
+      review: reviewFor({ finishedMonth: "2026-1" as unknown as string, startedMonth: null })
+    })
+  ]);
+  assert.equal(malformed?.playedYear, null);
+});
+
+test("agrupación: sin reseñas hasReview y playedYear son null/false", () => {
+  const [game] = groupLibraryItems([
+    row({ userLibraryId: 1, gameId: 100, isInstalled: false }),
+    row({ userLibraryId: 2, gameId: 100, store: "steam" })
+  ]);
+  assert.equal(game?.hasReview, false);
+  assert.equal(game?.lastReview, null);
+  assert.equal(game?.playedYear, null);
+  assert.equal(game?.isInstalled, false);
+});
+
+test("agrupación: isInstalled es true si cualquier plataforma lo está", () => {
+  const [game] = groupLibraryItems([
+    row({ userLibraryId: 1, gameId: 100, isInstalled: false }),
+    row({ userLibraryId: 2, gameId: 100, store: "steam", isInstalled: true })
+  ]);
+  assert.equal(game?.isInstalled, true);
 });

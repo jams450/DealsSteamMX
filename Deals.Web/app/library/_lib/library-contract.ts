@@ -30,6 +30,9 @@ export type LibraryItem = {
   // Identidad de tienda: solo se usa como dato de la fila (nunca se pinta en la UI).
   readonly storeGameId: string;
   readonly title: string;
+  // Portada del juego. A diferencia del precio, una suscripción sí puede tener imagen: el arte no
+  // afirma posesión, así que no se anula por `state`.
+  readonly imageUrl: string | null;
   readonly state: LibraryState;
   readonly isInstalled: boolean;
   readonly addedAt: string | null;
@@ -41,8 +44,9 @@ export type LibraryItem = {
   // Identidad canónica del juego: es la llave para reseñar. `null` significa que el catálogo todavía no
   // lo reconoce, así que la fila no se puede reseñar (no se ofrece una acción rota).
   readonly gameId: number | null;
-  // Reseña del usuario para este `(gameId, platform)`, si existe. Se pinta solo cuando coincide con la
-  // fila; ver `normalizeLibraryItem`.
+  // La reseña más reciente del usuario para este `(gameId, platform)`, si existe. Un juego puede tener
+  // varias reseñas en la misma plataforma (una por partida); la fila trae la última y el drawer la lista
+  // completa. Se pinta solo cuando coincide con la fila; ver `normalizeLibraryItem`.
   readonly review: Review | null;
   // Los dos mínimos ya vienen convertidos a MXN por el backend; el precio base y el mínimo histórico
   // llegan en la moneda del proveedor (`baseCurrency`) y no se convierten en el navegador.
@@ -56,6 +60,130 @@ export type LibraryItem = {
 export type LibraryResponse = {
   readonly items: readonly LibraryItem[];
 };
+
+// Una plataforma dentro de un juego agrupado: los datos de la fila que sí cambian por tienda.
+export type LibraryPlatform = {
+  readonly store: string;
+  readonly storeGameId: string;
+  readonly userLibraryId: number;
+  readonly state: LibraryState;
+  readonly isInstalled: boolean;
+  readonly addedAt: string | null;
+  readonly review: Review | null;
+};
+
+// Un juego de la biblioteca con todas sus plataformas fusionadas. `key` es la identidad de la fila
+// pintada: `game:<id>` cuando el catálogo lo reconoce, `row:<userLibraryId>` cuando no.
+export type LibraryGame = {
+  readonly key: string;
+  readonly gameId: number | null;
+  readonly title: string;
+  readonly imageUrl: string | null;
+  readonly platforms: readonly LibraryPlatform[];
+  readonly stores: readonly string[];
+  readonly states: readonly LibraryState[];
+  readonly isInstalled: boolean;
+  readonly hasReview: boolean;
+  readonly lastReview: Review | null;
+  readonly playedYear: number | null;
+  readonly item: LibraryItem;
+};
+
+// Marca temporal de una reseña, para elegir la más reciente. `updated` manda; si falta, `created`. Una
+// fecha ilegible devuelve `null` (más antigua que cualquiera con fecha válida).
+function reviewTimestamp(review: Review): number | null {
+  const parsed = Date.parse(review.updated ?? review.created ?? "");
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+// Año en que se jugó, derivado del mes de la reseña. `finishedMonth` gana sobre `startedMonth`; el
+// formato es `YYYY-MM` estricto, cualquier otra cosa es `null` (nunca se adivina desde `addedAt`).
+const REVIEW_YEAR = /^(\d{4})-\d{2}$/;
+
+function reviewPlayedYear(review: Review | null): number | null {
+  if (review === null) return null;
+  const month = review.finishedMonth ?? review.startedMonth;
+  const match = month === null ? null : REVIEW_YEAR.exec(month);
+  return match === null ? null : Number(match[1]);
+}
+
+/**
+ * Agrupa las filas de la biblioteca por juego. Las filas con `gameId` se fusionan por ese id; una fila
+ * sin identidad canónica es su propio grupo (nunca se fusiona por título: el título no es una llave).
+ * Función pura: no muta la entrada ni lee el reloj.
+ */
+export function groupLibraryItems(items: readonly LibraryItem[]): LibraryGame[] {
+  const groups = new Map<string, LibraryItem[]>();
+
+  for (const item of items) {
+    const key = item.gameId === null ? `row:${item.userLibraryId}` : `game:${item.gameId}`;
+    const bucket = groups.get(key);
+    if (bucket === undefined) groups.set(key, [item]);
+    else bucket.push(item);
+  }
+
+  const result: LibraryGame[] = [];
+  for (const [key, rows] of groups) {
+    const first = rows[0];
+    if (first === undefined) continue;
+
+    const stores: string[] = [];
+    const states: LibraryState[] = [];
+    const platforms: LibraryPlatform[] = [];
+    let imageUrl: string | null = null;
+    let isInstalled = false;
+    let lastReview: Review | null = null;
+    let lastMark: number | null = null;
+
+    for (const row of rows) {
+      if (!stores.includes(row.store)) stores.push(row.store);
+      if (!states.includes(row.state)) states.push(row.state);
+      if (imageUrl === null && row.imageUrl !== null) imageUrl = row.imageUrl;
+      if (row.isInstalled) isInstalled = true;
+
+      if (row.review !== null) {
+        const mark = reviewTimestamp(row.review);
+        // Un empate conserva la primera en orden de entrada; solo una marca estrictamente mayor gana.
+        const better =
+          lastReview === null ||
+          (mark !== null && (lastMark === null || mark > lastMark));
+        if (better) {
+          lastReview = row.review;
+          lastMark = mark;
+        }
+      }
+
+      platforms.push({
+        store: row.store,
+        storeGameId: row.storeGameId,
+        userLibraryId: row.userLibraryId,
+        state: row.state,
+        isInstalled: row.isInstalled,
+        addedAt: row.addedAt,
+        review: row.review
+      });
+    }
+
+    result.push({
+      key,
+      gameId: first.gameId,
+      title: first.title,
+      imageUrl,
+      platforms,
+      stores,
+      states,
+      isInstalled,
+      hasReview: lastReview !== null,
+      lastReview,
+      playedYear: reviewPlayedYear(lastReview),
+      item: first
+    });
+  }
+
+  return result.sort(
+    (left, right) => left.title.localeCompare(right.title, "es-MX") || left.key.localeCompare(right.key)
+  );
+}
 
 export type LibraryStoreCount = {
   readonly store: string;
@@ -154,6 +282,17 @@ function toCurrencyCode(value: unknown): string | null {
   return text !== undefined && /^[A-Z]{3}$/.test(text) ? text : null;
 }
 
+// Imagen de portada: solo https absoluto. Cualquier otra cosa se descarta antes de llegar a un `src`.
+function toHttpsUrl(value: unknown): string | null {
+  const text = toText(value);
+  if (text === null) return null;
+  try {
+    return new URL(text).protocol === "https:" ? text : null;
+  } catch {
+    return null;
+  }
+}
+
 const MAX_TITLE_LENGTH = 256;
 const MAX_STORE_GAME_ID_LENGTH = 128;
 // Tope defensivo del render: el export real trae ~2.6k filas. ponytail: trunca en silencio; subirlo si
@@ -192,6 +331,7 @@ function normalizeLibraryItem(value: unknown): LibraryItem | null {
     store,
     storeGameId,
     title,
+    imageUrl: toHttpsUrl(read(value, "imageUrl")),
     state,
     // Solo un `true` literal marca instalado: cualquier otra cosa se queda en `false`, así que el
     // indicador nunca puede aparecer por un dato dudoso.

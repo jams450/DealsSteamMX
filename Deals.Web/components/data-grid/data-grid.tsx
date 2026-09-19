@@ -281,6 +281,11 @@ export function DataGrid<TData>({
 
   const selectedPageSize = table.getState().pagination.pageSize;
 
+  // El paginador existe solo en modo cliente con más de una página (o cuando se ofrece "Todos"). Se
+  // calcula una vez porque lo consultan dos ramas del render: la tabla, para pegarse a él, y el propio
+  // paginador, para decidir si se pinta.
+  const showPaginator = !resolvedManualPagination && (table.getPageCount() > 1 || allowAllPageSize);
+
   return (
       <div className="space-y-2">
       {allowDensityToggle && !density ? (
@@ -390,7 +395,24 @@ export function DataGrid<TData>({
         </div>
       ) : null}
 
-      <div className="table-shell max-w-full overflow-x-auto overscroll-x-contain rounded-xl border border-strong bg-[var(--table-surface-bg)] shadow-[var(--shadow-sm)]">
+      {/* La raíz usa `space-y-2`, que Tailwind v4 compila a `:where(& > :not(:last-child))`: el
+          `:where()` deja la regla con especificidad CERO, así que cualquier utilidad (un `mb-0`) la gana.
+          Por eso el hueco de 8px del `table-shell` se cierra desde la clase y no desde el CSS del helper.
+
+          Ese hueco rompía la tarjeta: el paginador está autoría-do para pegarse debajo de la tabla
+          (`rounded-b-xl` + `border-x border-b`, sin borde superior ni esquinas arriba). Cuando existe, la
+          tabla cede su radio inferior (`rounded-b-none`) y su margen (`mb-0`) para que las dos piezas lean
+          como un solo bloque. Sin paginador no hace falta nada de eso: la tabla es el último hijo y ya
+          conserva su `rounded-xl` completo.
+
+          La sombra inferior del `table-shell` no asoma por la costura: el paginador es opaco y va después
+          en el DOM, así que la tapa. */}
+      <div
+        className={cn(
+          "table-shell max-w-full overflow-x-auto overscroll-x-contain rounded-xl border border-strong bg-[var(--table-surface-bg)] shadow-[var(--shadow-sm)]",
+          showPaginator && "mb-0 rounded-b-none"
+        )}
+      >
         <table className="w-full min-w-full">
           <thead className="table-head bg-[var(--table-head-bg)]">
             {table.getHeaderGroups().map((headerGroup) => (
@@ -522,7 +544,7 @@ export function DataGrid<TData>({
         </table>
       </div>
 
-      {!resolvedManualPagination && (table.getPageCount() > 1 || allowAllPageSize) ? (
+      {showPaginator ? (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-b-xl border-x border-b border-strong bg-[var(--table-surface-bg)] px-2 py-1.5">
           <div className="flex items-center gap-2">
             <span className="text-[11px] text-muted">Filas</span>
