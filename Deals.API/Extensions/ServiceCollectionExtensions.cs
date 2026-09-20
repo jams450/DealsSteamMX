@@ -113,6 +113,45 @@ public static class ServiceCollectionExtensions
             client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.TimeoutSeconds, 1, 60));
         });
 
+        services.AddOptions<EpicOptions>()
+            .Validate(
+                options => IsHttps(options.BaseUrl),
+                "Epic:BaseUrl must be an absolute HTTPS URL.")
+            .Validate(
+                options => options.Country?.Length == 2 && options.Country.All(char.IsAsciiLetterUpper),
+                "Epic:Country must be a two-letter uppercase country code.")
+            .Validate(
+                options => !string.IsNullOrWhiteSpace(options.Locale) && options.Locale.Length <= 16,
+                "Epic:Locale must be a non-empty store locale.")
+            .Validate(
+                options => !string.IsNullOrWhiteSpace(options.UserAgent) && options.UserAgent.Length <= 256,
+                "Epic:UserAgent must be configured: the store answers 403 without one.")
+            .ValidateOnStart();
+
+        services.AddSingleton(serviceProvider =>
+        {
+            var options = serviceProvider.GetRequiredService<IOptions<EpicOptions>>().Value;
+            return new EpicStoreClientSettings(options.Country, options.Locale);
+        });
+
+        // Typed registration plus an explicit interface mapping, so a second store provider can be added by
+        // repeating these two lines instead of silently replacing this one: registering "IStorePriceProvider"
+        // directly would make the last store win for every single-provider consumer.
+        services.AddHttpClient<EpicStoreClient>((serviceProvider, client) =>
+        {
+            var options = serviceProvider.GetRequiredService<IOptions<EpicOptions>>().Value;
+            if (!IsHttps(options.BaseUrl))
+            {
+                throw new InvalidOperationException("Epic:BaseUrl must be an absolute HTTPS URL.");
+            }
+
+            client.BaseAddress = new Uri(options.BaseUrl);
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.TimeoutSeconds, 1, 60));
+            // Not cosmetic: the store answers 403 when no User-Agent is sent.
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(options.UserAgent);
+        });
+        services.AddScoped<IStorePriceProvider>(serviceProvider => serviceProvider.GetRequiredService<EpicStoreClient>());
+
         services.AddOptions<FxOptions>()
             .Validate(
                 options => IsHttps(options.BaseUrl),

@@ -14,4 +14,11 @@ public interface IItadClient
     /// part of the offer comparison.
     /// </summary>
     Task<IReadOnlyList<ItadBundle>> GetBundlesAsync(IReadOnlyCollection<string> itadIds, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Follows one ITAD deal link to the store page it redirects to and returns the final URL, or null for
+    /// a blank input. This is how a store id is obtained without a title search: the redirect target is the
+    /// store's own page, whose path carries the store's id verbatim.
+    /// </summary>
+    Task<string?> ResolveDealUrlAsync(string dealUrl, CancellationToken cancellationToken);
 }

@@ -127,7 +127,9 @@ Resumen:
 2. Cargar `ITAD__ApiKey` y `FX__BanxicoToken` en el entorno **antes** de recrear el contenedor `api` (fail-fast).
 3. Recrear `api`.
 
-**Pendiente inmediato:** todo el trabajo de ITAD y FX está **staged y sin commitear**. Commitearlo antes de añadir cualquier migración nueva, para no perder el orden de las fechas.
+**Estado (verificado en `HEAD`):** el trabajo de ITAD y FX ya está commiteado (`05fff68`, `80b7e5f`),
+incluidas `2026-09-17_itad_offers.sql` y `2026-09-18_fx_rates.sql`. El aviso anterior de "staged y sin
+commitear" quedó obsoleto.
 
 ## 6. Riesgos
 

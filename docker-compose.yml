@@ -50,6 +50,11 @@ services:
       - FX__BaseCurrency=${FX__BaseCurrency}
       - FX__QuoteCurrency=${FX__QuoteCurrency}
       - FX__TimeoutSeconds=${FX__TimeoutSeconds}
+      - Epic__BaseUrl=${Epic__BaseUrl}
+      - Epic__Country=${Epic__Country}
+      - Epic__Locale=${Epic__Locale}
+      - Epic__UserAgent=${Epic__UserAgent}
+      - Epic__TimeoutSeconds=${Epic__TimeoutSeconds}
     networks:
       - dealext-network
       - server-data

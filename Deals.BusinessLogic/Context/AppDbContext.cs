@@ -188,8 +188,12 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<GameOffer>(entity =>
         {
+            // Both keys coexist during the transition (docs/PLAN_MULTISTORE.md §5). The canonical one is
+            // the future key; the Steam one is still the only thing deduping rows whose game_id is NULL.
             entity.HasIndex(e => new { e.SteamGameId, e.Source, e.OfferKey }).IsUnique();
+            entity.HasIndex(e => new { e.GameId, e.Region, e.Source, e.OfferKey }).IsUnique();
             entity.HasIndex(e => e.SteamGameId);
+            entity.HasIndex(e => new { e.GameId, e.Region });
         });
 
         modelBuilder.Entity<SteamPriceObservation>(entity =>

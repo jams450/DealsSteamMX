@@ -8,6 +8,12 @@ public static class GameExternalIdNamespaces
 {
     public const string Steam = "steam";
     public const string Itad = "itad";
+
+    /// <summary>
+    /// Epic Games Store. The id is the store's own URL slug (<c>/p/&lt;slug&gt;</c>), which ITAD also accepts
+    /// for shop 16 and which the store resolves back to a single offer.
+    /// </summary>
+    public const string Epic = "epic";
 }
 
 /// <summary>One exact external identifier: a namespace plus its immutable id.</summary>

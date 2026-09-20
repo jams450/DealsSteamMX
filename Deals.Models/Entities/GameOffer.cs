@@ -5,7 +5,7 @@ using Deals.Models.Models;
 namespace Deals.Models.Entities;
 
 /// <summary>
-/// Current offer snapshot for a game, keyed by (game, source, offer_key). Not history.
+/// Current offer snapshot for a game, keyed by (game, region, source, offer_key). Not history.
 /// The original price columns are the source of truth; the MXN columns are derived and nullable.
 /// </summary>
 [Table("game_offers")]
@@ -17,6 +17,23 @@ public class GameOffer : BaseModel
 
     [Column("steam_game_id")]
     public int SteamGameId { get; set; }
+
+    /// <summary>
+    /// Canonical anchor (docs/PLAN_MULTISTORE.md §5), derived from <see cref="SteamGameId"/>. Nullable
+    /// because <see cref="SteamGame.GameId"/> is nullable by design: NULL here means the game has no
+    /// canonical identity yet, exactly like <c>user_library.game_id</c>.
+    /// </summary>
+    [Column("game_id")]
+    public long? GameId { get; set; }
+
+    /// <summary>
+    /// Country the offer was priced for. Never null: the price depends on it and it is part of the
+    /// unique key, so a NULL region would let two rows exist for the same (game, source, offer key).
+    /// </summary>
+    [Column("region")]
+    [Required]
+    [StringLength(2)]
+    public string Region { get; set; } = string.Empty;
 
     [Column("source")]
     [Required]

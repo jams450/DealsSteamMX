@@ -687,6 +687,49 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
         return games;
     }
 
+    public async Task<string?> ResolveDealUrlAsync(string dealUrl, CancellationToken cancellationToken)
+    {
+        var start = TryReadRedirectorUrl(dealUrl);
+        if (start is null)
+        {
+            return null;
+        }
+
+        using var lease = await governor.AcquireAsync(cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Get, start);
+
+        // ResponseHeadersRead: only the redirect chain and the final URL matter, so no body is ever
+        // buffered. The final URI is read from the request the client ended up sending. The final status is
+        // deliberately not checked: the last hop is the store page, whose own bot protection answers 403 to
+        // any non-browser client, and the store URL is exactly what was wanted. A chain that dies earlier
+        // ends on a non-store host, which the caller's own parser rejects. A transport failure still throws,
+        // so the caller degrades by keeping the persisted snapshot instead of purging it.
+        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+        return response.RequestMessage?.RequestUri?.AbsoluteUri;
+    }
+
+    /// <summary>
+    /// Only an ITAD link is followed. The input comes from a provider payload, so allowing any host here
+    /// would turn this method into a general-purpose fetcher for whatever a payload names.
+    /// </summary>
+    private static Uri? TryReadRedirectorUrl(string? dealUrl)
+    {
+        if (string.IsNullOrWhiteSpace(dealUrl) ||
+            !Uri.TryCreate(dealUrl.Trim(), UriKind.Absolute, out var uri) ||
+            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var host = uri.Host;
+        return string.Equals(host, "itad.link", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".isthereanydeal.com", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(host, "isthereanydeal.com", StringComparison.OrdinalIgnoreCase)
+            ? uri
+            : null;
+    }
+
     private async Task<HttpResponseMessage> PostWithRetryAsync(
         string path,
         string payload,

@@ -79,6 +79,7 @@ CREATE TABLE steam_games (
     itad_game_id VARCHAR(36),
     offers_refreshed_at TIMESTAMPTZ,
     ggdeals_refreshed_at TIMESTAMPTZ,
+    epic_refreshed_at TIMESTAMPTZ,
     bundles_refreshed_at TIMESTAMPTZ,
     region VARCHAR(2) NOT NULL,
     observed_at TIMESTAMPTZ NOT NULL,
@@ -106,14 +107,18 @@ CREATE TABLE steam_price_observations (
 CREATE INDEX idx_steam_price_observations_game_observed
     ON steam_price_observations(steam_game_id, observed_at);
 
--- Provider-neutral current offer snapshot per (game, source, offer_key). Not history:
+-- Provider-neutral current offer snapshot per (game, region, source, offer_key). Not history:
 -- append-only price history stays in steam_price_observations. MXN columns are derived;
 -- the original price columns are never overwritten.
+-- game_id is the canonical anchor (docs/PLAN_MULTISTORE.md §5) and region is the country the offer was
+-- priced for. Both are backfilled from steam_games. steam_game_id stays NOT NULL until a provider can
+-- write an offer for a game that has no Steam row.
 -- history_low_all_minor / history_low_currency are provider-neutral: ITAD fills them from
 -- historyLow.all, gg.deals from historicalRetail / historicalKeyshops.
 CREATE TABLE game_offers (
     game_offer_id BIGSERIAL PRIMARY KEY,
     steam_game_id INT NOT NULL REFERENCES steam_games(steam_game_id) ON DELETE CASCADE,
+    region VARCHAR(2) NOT NULL,
     source VARCHAR(16) NOT NULL,
     offer_key VARCHAR(128) NOT NULL,
     shop_id VARCHAR(32),
@@ -143,6 +148,11 @@ CREATE TABLE game_offers (
 );
 
 CREATE INDEX idx_game_offers_game ON game_offers(steam_game_id);
+
+-- idx_game_offers_game_region and uq_game_offers_canonical are created further down, after the
+-- canonical anchor column is added (game_offers is declared before games). uq_game_offers is kept while
+-- game_id can still be NULL (steam_games.game_id is nullable by design): it is the only thing deduping
+-- those rows.
 
 -- Canonical external bundle snapshot, keyed by (source, bundle_key) and shared by every game it was
 -- seen in. Not an offer: bundles never take part in the price comparison and are never written to
@@ -238,9 +248,18 @@ CREATE INDEX idx_game_external_ids_game ON game_external_ids(game_id);
 -- column is ever made NOT NULL.
 ALTER TABLE steam_games ADD COLUMN game_id BIGINT NULL REFERENCES games(game_id);
 ALTER TABLE user_library ADD COLUMN game_id BIGINT NULL REFERENCES games(game_id);
+-- game_offers is declared before games, so the canonical anchor is added here instead of inline at
+-- CREATE TABLE, exactly like steam_games.game_id and user_library.game_id.
+ALTER TABLE game_offers ADD COLUMN game_id BIGINT NULL REFERENCES games(game_id);
 
 CREATE INDEX idx_steam_games_game ON steam_games(game_id);
 CREATE INDEX idx_user_library_game ON user_library(game_id);
+
+CREATE INDEX idx_game_offers_game_region ON game_offers(game_id, region);
+
+-- The future key: one offer per (canonical game, country, source, shop). Drop uq_game_offers when
+-- SELECT count(*) FROM game_offers WHERE game_id IS NULL returns 0.
+CREATE UNIQUE INDEX uq_game_offers_canonical ON game_offers(game_id, region, source, offer_key);
 
 -- Per-platform reviews (docs/PLAN_LIBRARY.md §9). Deliberately NOT foreign-keyed to user_library: that
 -- row is an import artifact whose unique key includes state, so a reimport or a state change recreates

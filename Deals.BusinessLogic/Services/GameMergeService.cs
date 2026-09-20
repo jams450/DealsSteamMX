@@ -219,6 +219,16 @@ public sealed class GameMergeService : IGameMergeService
                 survivorGameId,
                 absorbedGameId);
 
+            // Offers move with the game because game_offers.game_id is a NO ACTION FK: leaving them behind
+            // would make the DELETE below raise 23503. No collision handling is needed while every offer
+            // hangs off a steam_game_id and step 3 allows at most one Steam appid per game, so the
+            // survivor cannot already own the absorbed game's (region, source, offer key). The phase that
+            // writes Steam-less offers has to add it, exactly as favorites do it a few lines below.
+            await _repository.ExecuteSqlRawAsync(
+                "UPDATE public.game_offers SET game_id = {0}, updated_at = NOW() WHERE game_id = {1}",
+                survivorGameId,
+                absorbedGameId);
+
             var movedLibraryRows = await _repository.ExecuteSqlRawAsync(
                 "UPDATE public.user_library SET game_id = {0}, updated_at = NOW() WHERE game_id = {1}",
                 survivorGameId,

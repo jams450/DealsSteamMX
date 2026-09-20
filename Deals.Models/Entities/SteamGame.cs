@@ -60,6 +60,13 @@ public class SteamGame : BaseModel
     public DateTime? GgDealsRefreshedAt { get; set; }
 
     /// <summary>
+    /// Last time the Epic Games Store price of this game was refreshed. Independent of the other provider
+    /// timestamps: a failed Epic call must not mark the ITAD or gg.deals snapshot as fresh.
+    /// </summary>
+    [Column("epic_refreshed_at", TypeName = "timestamp with time zone")]
+    public DateTime? EpicRefreshedAt { get; set; }
+
+    /// <summary>
     /// Last time the external bundles of this game were refreshed. Independent of the offer timestamps:
     /// a bundle refresh failure must not mark the offers stale, nor the other way around.
     /// </summary>

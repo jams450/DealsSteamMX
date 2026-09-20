@@ -20,7 +20,10 @@ WORKDIR /src/Deals.API
 RUN dotnet publish -c Release -o /app/publish
 
 # Stage 2: Runtime
-FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
+# azurelinux3.0 y no bookworm: el WAF de store.epicgames.com responde 403 al ClientHello de
+# OpenSSL 3.0.x, que es el que trae bookworm (libssl3 3.0.19). Medido: azurelinux3.0 (3.3.7) -> 200.
+# No lo devuelvas a aspnet:9.0 sin volver a medir con docs/PLAN_MULTISTORE.md §2.1.
+FROM mcr.microsoft.com/dotnet/aspnet:9.0-azurelinux3.0 AS runtime
 WORKDIR /app
 COPY --from=build /app/publish .
 
