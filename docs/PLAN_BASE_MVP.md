@@ -2,7 +2,7 @@
 
 Estado: aprobado.
 
-Fase actual completada: el **comparador de precios** —Steam directo + ofertas oficiales/autorizadas de ITAD + agregado de keyshops de gg.deals + conversión FX a MXN— está implementado y pendiente de commit/despliegue/validación runtime. Los **bundles externos** no forman parte de esta fase: son una fase futura y separada, documentada en `PLAN_BUNDLES.md`. No deben tratarse como alcance incompleto del comparador.
+Fase actual completada: el **comparador de precios** —Steam directo + ofertas oficiales/autorizadas de ITAD + agregado de keyshops de gg.deals + conversión FX a MXN— está implementado, commiteado (`865ec95`, `e31eab4`, en `origin/main`) y verificado en producción: la ficha muestra el precio regional de Epic y el de Microsoft en MXN nativo. Los **bundles externos** no forman parte de esta fase: son una fase futura y separada, documentada en `PLAN_BUNDLES.md`. No deben tratarse como alcance incompleto del comparador.
 
 Este documento es la referencia para agentes y personas que trabajen en el repositorio. Leer también `AGENTS.md` antes de modificar código.
 
@@ -362,7 +362,7 @@ Una ruta nueva queda protegida por defecto: el matcher global de `Deals.Web/midd
 
 ## 13. Fases de implementación
 
-Estas son las fases del comparador de precios: la fase actual completada (implementada y pendiente de commit/despliegue/validación runtime). Los bundles externos no pertenecen a ninguna de ellas → `PLAN_BUNDLES.md`.
+Estas son las fases del comparador de precios: la fase actual completada (implementada, commiteada y verificada en producción). Los bundles externos no pertenecen a ninguna de ellas → `PLAN_BUNDLES.md`.
 
 ### Fase 0: Base
 

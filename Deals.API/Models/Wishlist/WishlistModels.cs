@@ -8,6 +8,11 @@ namespace Deals.API.Models.Wishlist;
 /// <see cref="HistoryLowMinor"/>/<see cref="HistoryLowCurrency"/> are ITAD's all-time low;
 /// <see cref="BestOfficialMinor"/> and <see cref="BestKeyshopMinor"/> are the cheapest current MXN price
 /// of a legitimate shop and of a keyshop respectively (null when there is no converted price).
+/// <see cref="BestOfficialMinor"/> spans every source, the direct Steam snapshot included: it is the
+/// minimum among ITAD, Epic, Microsoft and Steam.
+/// The five <c>*SyncedAt</c> fields are the per-provider refresh stamps the snapshot already carries, one
+/// per source, so the row can say which store is in sync and when it last was. They are not derived from
+/// each other: a provider that failed keeps its old stamp while the others advance.
 /// </summary>
 public sealed record WishlistItemResponse(
     int AppId,
@@ -17,6 +22,11 @@ public sealed record WishlistItemResponse(
     DateTime? AddedAt,
     string? ItadGameId,
     DateTime? RefreshedAt,
+    DateTime? SteamSyncedAt,
+    DateTime? ItadSyncedAt,
+    DateTime? GgDealsSyncedAt,
+    DateTime? EpicSyncedAt,
+    DateTime? MicrosoftSyncedAt,
     int? BasePriceMinor,
     string? BaseCurrency,
     int? HistoryLowMinor,

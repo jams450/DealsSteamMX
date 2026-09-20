@@ -1,6 +1,6 @@
 # DealExt: plan de catálogo canónico de juegos
 
-Estado: propuesto, pendiente de aprobación. Solo análisis y plan.
+Estado: **fases 1 y 2 implementadas** — `games` + `game_external_ids` con su backfill (`SQL/migrations/2026-09-26_games_canonical.sql`, `2026-09-27_games_backfill.sql`) y resolución en los sitios de inserción: comparador, biblioteca, wishlist y reseñas. Análisis y plan para lo que queda: las fuentes futuras de §6 (IGDB como espinazo, HowLongToBeat).
 
 Alcance: crear una **identidad de juego compartida por todo** —comparador, wishlist, biblioteca y reseñas—
 para que la misma ficha de juego se lea en un solo sitio, y para que añadir fuentes futuras
@@ -193,8 +193,8 @@ Reglas del backfill:
 - `steam_games.game_id` se puede endurecer a `NOT NULL` cuando un `count(*) where game_id is null` dé cero.
   **`user_library.game_id` nunca: `NULL` significa "sin resolver", no "error".**
 
-**Orden obligatorio:** commitear primero el trabajo de ITAD y FX que sigue staged sin commitear, o las
-fechas de `SQL/migrations/` pierden su orden.
+**Orden obligatorio:** el trabajo de ITAD y FX se commiteó primero (`865ec95`), así que las migraciones fechadas de este documento conservaron su orden. Se deja escrito porque la razón sigue siendo válida para cualquier trabajo futuro que introduzca migraciones
+fechadas de `SQL/migrations/` pierden su orden.
 
 ## 6. Fuentes futuras: IGDB como espinazo, HLTB como dato opcional
 

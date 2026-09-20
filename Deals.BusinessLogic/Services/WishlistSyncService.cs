@@ -108,12 +108,18 @@ public sealed class WishlistSyncService(
     {
         // Filter against steam_games first: a fresh provider snapshot does not need to walk the 600 wished
         // rows every night. Missing rows remain eligible so the pass can seed them through GetByAppIdAsync.
+        // Every provider window is listed, not just ITAD and gg.deals: the direct stores have their own
+        // stamps and a degraded one does not advance, so a game whose Epic or Microsoft phase failed must
+        // stay a candidate. Without them here, a failed store call would not be retried until the *ITAD*
+        // window expired, which is a different provider's clock.
         var now = DateTime.UtcNow;
         var refreshCutoff = now.AddDays(-settings.RefreshAfterDays);
         var candidateGames = await repository.Get<SteamGame>()
             .Where(game => game.Region == Region &&
                 (game.OffersRefreshedAt == null || game.OffersRefreshedAt < refreshCutoff ||
-                 game.GgDealsRefreshedAt == null || game.GgDealsRefreshedAt < refreshCutoff))
+                 game.GgDealsRefreshedAt == null || game.GgDealsRefreshedAt < refreshCutoff ||
+                 game.EpicRefreshedAt == null || game.EpicRefreshedAt < refreshCutoff ||
+                 game.MicrosoftRefreshedAt == null || game.MicrosoftRefreshedAt < refreshCutoff))
             .Select(game => new { game.AppId, game.OffersRefreshedAt, game.GgDealsRefreshedAt })
             .ToListAsync(cancellationToken);
         var candidateAppIds = candidateGames.Select(game => game.AppId).ToHashSet();

@@ -12,6 +12,7 @@ import { setFavorite } from "@/lib/api/favorites";
 import { storeLabel } from "@/lib/contracts/stores";
 import { formatReviewMonth, reviewStatusLabel } from "@/lib/contracts/reviews";
 import { formatCurrency } from "@/lib/format/currency";
+import { pickPricedBundleTier } from "./_lib/bundle-card";
 
 interface GameClientProps {
   readonly appId: number;
@@ -163,6 +164,27 @@ function tierComparisonView(tier: SteamBundleTier): TierComparisonView | null {
   };
 }
 
+/**
+ * El bundle más barato con precio que incluye este juego, ya listo para pintar. La elección del tier vive
+ * en `_lib/bundle-card.ts` para poder comprobarla: aquí solo queda el formato.
+ *
+ * El precio del bundle **no es el precio del juego**, y por eso la tarjeta no lleva la marca de «más barato
+ * que Steam»: un bundle puede costar menos que el juego suelto y traer otros juegos. Es información, no una
+ * oferta del juego.
+ */
+function bundleSummary(bundles: readonly SteamGameBundle[]) {
+  const lowest = pickPricedBundleTier(bundles, COMPARISON_CURRENCY);
+  if (lowest === null) return null;
+
+  return {
+    title: lowest.bundle.title,
+    href: safeDealUrl(lowest.bundle.dealUrl ?? lowest.bundle.pageUrl),
+    priceDisplay: lowest.priceMinor === 0 ? "Gratis" : formatMinor(lowest.priceMinor, lowest.currency),
+    currency: lowest.currency,
+    bundleCount: bundles.length
+  };
+}
+
 // Única base comparable entre tiendas: el snapshot en MXN. La moneda original nunca se compara.
 const COMPARISON_CURRENCY = "MXN";
 
@@ -241,60 +263,54 @@ function historicalLowCandidates(game: SteamGame, offers: readonly SteamGameOffe
   ];
 }
 
-interface BestPrice {
-  readonly kind: "steam" | "offer";
-  readonly label: string;
-  readonly url: string | null;
-  readonly mxnMinor: number;
-  readonly approximate: boolean;
-  readonly better: boolean;
-  readonly note: string | null;
+/** El precio directo de Steam, solo si la ficha está en MXN: es la referencia contra la que se compara. */
+function steamComparablePrice(game: SteamGame): number | null {
+  return game.currency?.toUpperCase() === COMPARISON_CURRENCY ? game.currentPriceMinor : null;
 }
 
 /**
- * Mejor precio comparable **de un solo grupo de proveedor**: el precio directo de Steam (solo si la
- * moneda de la ficha es MXN) contra las ofertas comparables de ese grupo. Empate: gana Steam; entre
- * tiendas, orden léxico por tienda y offerKey.
- * Una estimación por tipo de cambio nunca se marca como mejor: no se presenta como si superara a un
- * precio regional, aunque su número en MXN sea menor.
+ * Mejor precio comparable **de un solo grupo de proveedor**, y de ese grupo únicamente: la oferta comparable
+ * más barata. Empate: orden léxico por tienda y offerKey, para que la misma ficha elija siempre la misma fila.
+ *
+ * El precio directo de Steam **no entra aquí**. Entrar era el origen de dos tarjetas mentirosas: una con el
+ * nombre de la tienda y el precio y el enlace de Steam (primero cuando el grupo estaba vacío, después cuando
+ * Steam ganaba la comparación). Steam ya es el titular de la página, y la marca de la tarjeta dice si esta
+ * tienda le gana; cuál de las dos es más barata es exactamente lo que informa la marca, no lo que decide el
+ * número que se pinta.
  */
-function selectBestPrice(game: SteamGame, offers: readonly SteamGameOffer[]): BestPrice | null {
-  const steamPrice = game.currency?.toUpperCase() === COMPARISON_CURRENCY ? game.currentPriceMinor : null;
-  const cheapest = cheapestTies(offers)
-    .slice()
-    .sort(
-      (a, b) =>
-        a.offer.shopName.localeCompare(b.offer.shopName, "es-MX") ||
-        a.offer.offerKey.localeCompare(b.offer.offerKey, "es-MX")
-    )[0] ?? null;
+function bestGroupOffer(offers: readonly SteamGameOffer[]): ComparableOffer | null {
+  return (
+    cheapestTies(offers)
+      .slice()
+      .sort(
+        (a, b) =>
+          a.offer.shopName.localeCompare(b.offer.shopName, "es-MX") ||
+          a.offer.offerKey.localeCompare(b.offer.offerKey, "es-MX")
+      )[0] ?? null
+  );
+}
 
-  if (steamPrice === null && cheapest === null) return null;
-
-  if (steamPrice !== null && (cheapest === null || steamPrice <= cheapest.mxnMinor)) {
-    return {
-      kind: "steam",
-      label: "Steam · precio directo",
-      url: steamStoreUrl(game.appId),
-      mxnMinor: steamPrice,
-      approximate: false,
-      better: false,
-      note: null
-    };
+// Fase 6: el vocabulario de procedencia del precio se dice en la fila. Un precio regional es el precio de
+// la tienda en pesos; un estimado es una conversión, y va en tono discreto porque no es comparable de
+// igual a igual. `unconverted` no lleva badge aquí: su celda de MXN ya dice «Sin conversión».
+function PricingBadge({ pricingType }: { readonly pricingType: SteamGameOffer["pricingType"] }) {
+  if (pricingType === "regional") {
+    return <span className="tabler-badge tabler-badge-success">Precio regional MX</span>;
   }
+  if (pricingType === "fx_estimate") {
+    return <span className="tabler-badge tabler-badge-muted">Estimado</span>;
+  }
+  return null;
+}
 
-  if (cheapest === null) return null;
+/** Una búsqueda, no la ficha del juego: Ubisoft no publica un id por título que se pueda construir. La URL
+ * está medida — `/ofertas/search?lang=es_MX&q=` responde 200 sin redirección, y `/es-mx/search` responde 302
+ * al home, así que no es inventable. El `™` se quita del término porque es ruido para el buscador de la
+ * tienda; sin él la consulta es la que un usuario escribiría. */
+const UBISOFT_SEARCH_BASE = "https://store.ubisoft.com/ofertas/search?lang=es_MX&q=";
 
-  const approximate = cheapest.offer.pricingType === "fx_estimate";
-
-  return {
-    kind: "offer",
-    label: cheapest.offer.shopName,
-    url: safeDealUrl(cheapest.offer.dealUrl),
-    mxnMinor: cheapest.mxnMinor,
-    approximate,
-    better: !approximate && (steamPrice === null || cheapest.mxnMinor < steamPrice),
-    note: offerMxnCell(cheapest.offer).note
-  };
+function ubisoftSearchUrl(title: string) {
+  return `${UBISOFT_SEARCH_BASE}${encodeURIComponent(title.replace(/[™®]/g, "").trim())}`;
 }
 
 interface NameBadgesProps {
@@ -403,6 +419,7 @@ function AggregateOfferList({ id, heading, gameName, offers, cheapest }: Aggrega
                   {offer.classification === "keyshop" ? (
                     <span className="tabler-badge tabler-badge-muted">Keyshop</span>
                   ) : null}
+                  <PricingBadge pricingType={offer.pricingType} />
                   {isCheapest ? (
                     <span className="tabler-badge tabler-badge-success">
                       Más barato
@@ -499,6 +516,7 @@ function OfferGroup({ id, heading, gameName, offers, cheapest }: OfferGroupProps
                       ) : offer.classification === "keyshop" ? (
                         <span className="tabler-badge tabler-badge-muted">Keyshop</span>
                       ) : null}
+                      <PricingBadge pricingType={offer.pricingType} />
                       {isCheapest ? (
                         <span className="tabler-badge tabler-badge-success">
                           Más barato
@@ -808,16 +826,38 @@ export function GameClient({ appId }: GameClientProps) {
     ? historyCandidates.reduce((lowest, candidate) => candidate.mxnMinor < lowest.mxnMinor ? candidate : lowest)
     : null;
 
-  // Un mismo ganador (Steam) puede salir en los dos grupos: se muestra una sola vez.
-  const winnerKeys = new Set<string>();
-  const bestPrices = groups.flatMap((group) => {
-    const best = selectBestPrice(game, group.offers);
+  // Una tarjeta por proveedor **con** ofertas comparables, con el precio de ese proveedor. El número de
+  // tarjetas refleja entonces qué tiendas tienen dato, y no quién gana cada comparación: con el resumen
+  // anterior, un grupo donde Steam ganaba dejaba fuera el precio de su tienda y el conteo cambiaba de un
+  // juego a otro sin que el lector pudiera saber por qué.
+  const steamPrice = steamComparablePrice(game);
+  const candidates = groups.flatMap((group) => {
+    const best = bestGroupOffer(group.offers);
     if (best === null) return [];
-    const key = `${best.kind}|${best.label}|${best.mxnMinor}|${best.url ?? ""}`;
-    if (winnerKeys.has(key)) return [];
-    winnerKeys.add(key);
-    return [{ group, best }];
+    return [{
+      group,
+      best,
+      approximate: best.offer.pricingType === "fx_estimate",
+      mxnMinor: best.mxnMinor
+    }];
   });
+  // El verde es el precio más bajo **de todas las tarjetas**, y la etiqueta dice contra qué gana.
+  //
+  // Las estimaciones compiten por él. Excluirlas parecía más prudente y produjo un error peor: en Floppy
+  // Knights el verde quedó en Epic a 71.99 mientras gg.deals mostraba 16.56 e ITAD 20.69 — los dos estimados,
+  // y los dos más bajos. Un verde sobre una tarjeta más cara que otra de la misma pantalla se lee como que
+  // el resumen no sabe sumar. La imprecisión de una conversión ya viaja en la `≈` del propio precio y el tipo
+  // de tienda en el badge de la fila; el puesto del más barato es un hecho del número que se pinta.
+  //
+  // Steam no compite por el verde: su precio es el titular de la ficha y el árbitro de la etiqueta.
+  const lowestMxn = candidates.length > 0 ? Math.min(...candidates.map((card) => card.mxnMinor)) : null;
+  const bestPrices = candidates.map((card) => ({
+    ...card,
+    cheapest: lowestMxn !== null && card.mxnMinor === lowestMxn,
+    // Sin precio de Steam en MXN no se puede afirmar que le gane a Steam; la etiqueta lo dice sin mentir.
+    beatsSteam: steamPrice !== null && card.mxnMinor < steamPrice
+  }));
+  const bundleCard = bundleSummary(game.bundles);
 
   return (
     <div className="space-y-4">
@@ -917,40 +957,82 @@ export function GameClient({ appId }: GameClientProps) {
 
         <div className="space-y-3 border-t border-default pt-4">
           <h3 className="text-xs font-semibold uppercase tracking-widest text-muted">Mejor precio comparable</h3>
-          {bestPrices.length > 0 ? (
+          {bestPrices.length > 0 || bundleCard !== null ? (
             <div className="grid gap-3 md:grid-cols-2">
-              {bestPrices.map(({ group, best }) => (
-                <article key={`${group.id}-${best.kind}-${best.mxnMinor}`} className="app-card space-y-1 p-4">
+              {bestPrices.map(({ group, best, approximate, cheapest, beatsSteam }) => (
+                <article key={`${group.id}-${best.offer.offerKey}-${best.mxnMinor}`} className="app-card space-y-1 p-4">
                   <p className="text-xs font-semibold uppercase tracking-widest text-muted">{group.heading}</p>
-                  <p className={cn("deal-price text-2xl", best.better ? "text-success" : "text-primary")}>
-                    {best.approximate ? "≈ " : ""}
+                  <p className={cn("deal-price text-2xl", cheapest ? "text-success" : "text-primary")}>
+                    {approximate ? "≈ " : ""}
                     {formatComparablePrice(best.mxnMinor)}
                   </p>
-                  {best.url ? (
+                  {cheapest ? (
+                    // En su propio bloque: la etiqueta es un `span` en línea y sin esto quedaba pegada al
+                    // enlace, que es el siguiente hermano.
+                    <div>
+                      <span className="tabler-badge tabler-badge-success">
+                        {beatsSteam ? "Más barato que Steam" : "El más barato de las tiendas"}
+                      </span>
+                    </div>
+                  ) : null}
+                  {safeDealUrl(best.offer.dealUrl) ? (
                     <a
-                      href={best.url}
+                      href={safeDealUrl(best.offer.dealUrl) ?? undefined}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
                     >
-                      {best.label}
+                      {best.offer.shopName}
                       <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
                       <span className="sr-only">(se abre en una pestaña nueva)</span>
                     </a>
                   ) : (
-                    <span className="text-sm font-semibold text-secondary">{best.label}</span>
+                    <span className="text-sm font-semibold text-secondary">{best.offer.shopName}</span>
                   )}
-                  {best.note ? <p className="text-xs text-muted">{best.note}</p> : null}
+                  {offerMxnCell(best.offer).note ? (
+                    <p className="text-xs text-muted">{offerMxnCell(best.offer).note}</p>
+                  ) : null}
                 </article>
               ))}
+              {bundleCard ? (
+                <article className="app-card space-y-1 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted">Bundle</p>
+                  <p className="deal-price text-2xl text-primary">{bundleCard.priceDisplay}</p>
+                  <span className="tabler-badge tabler-badge-info">Incluye este juego</span>
+                  {bundleCard.href ? (
+                    <a
+                      href={bundleCard.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+                    >
+                      {bundleCard.title}
+                      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span className="sr-only">(se abre en una pestaña nueva)</span>
+                    </a>
+                  ) : (
+                    <span className="text-sm font-semibold text-secondary">{bundleCard.title}</span>
+                  )}
+                  {bundleCard.currency.toUpperCase() !== COMPARISON_CURRENCY ? (
+                    <p className="text-xs text-muted">{`Precio en ${bundleCard.currency}, sin convertir.`}</p>
+                  ) : null}
+                  {bundleCard.bundleCount > 1 ? (
+                    <p className="text-xs text-muted">
+                      {`${bundleCard.bundleCount} bundles incluyen este juego: están abajo, en «Bundles encontrados».`}
+                    </p>
+                  ) : null}
+                </article>
+              ) : null}
             </div>
           ) : (
             <p className="text-sm text-muted">Sin precio comparable en MXN por ahora.</p>
           )}
           <p className="text-xs text-muted">
-            Compara solo precios en MXN, por proveedor y por separado: el precio directo de Steam y las
-            ofertas comparables de ese mismo proveedor. Una estimación por tipo de cambio no se presenta
-            como mejor que un precio regional.
+            Cada tarjeta es el mejor precio en MXN de ese proveedor, y en verde queda el más bajo de todos:
+            la etiqueta dice si le gana al precio directo de Steam o si es el más barato sin llegar a
+            ganarle. El `≈` de un precio convertido y el tipo de tienda de la fila ya dicen de dónde sale
+            cada cifra. La tarjeta de bundle dice que este juego viene dentro de uno y cuánto cuesta el
+            bundle: ese importe no es el precio del juego y no entra en la comparación.
           </p>
         </div>
 
@@ -976,6 +1058,19 @@ export function GameClient({ appId }: GameClientProps) {
             className="btn-secondary-semantic inline-flex h-10 items-center gap-2 px-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
           >
             Ver en Steam
+            <ExternalLink className="h-4 w-4" aria-hidden="true" />
+            <span className="sr-only">(se abre en una pestaña nueva)</span>
+          </a>
+          {/* Ubisoft no tiene cliente de precio ni id construible: lo único honesto es un enlace de búsqueda
+              por título, y se llama «buscar» porque eso es lo que hace. Dice «Ubisoft Store» en el texto
+              visible, así que no se confunde con una oferta de la comparación. */}
+          <a
+            href={ubisoftSearchUrl(game.name)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn-secondary-semantic inline-flex h-10 items-center gap-2 px-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+          >
+            Buscar en Ubisoft Store
             <ExternalLink className="h-4 w-4" aria-hidden="true" />
             <span className="sr-only">(se abre en una pestaña nueva)</span>
           </a>

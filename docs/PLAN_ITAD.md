@@ -1,6 +1,6 @@
 # DealExt: plan de integración ITAD
 
-Estado: **comparador de precios implementado y pendiente de commit/despliegue/validación runtime**. Incluye el cliente y la persistencia de ITAD (fases 1–4): identidad, ofertas por tienda, FX USD→MXN, BFF y UI. El trabajo amplio sigue sin commitear. La fase 5 (alertas/Telegram) está pendiente y los bundles externos quedan diferidos → `PLAN_BUNDLES.md`.
+Estado: **comparador de precios implementado, commiteado y verificado en producción**. Incluye el cliente y la persistencia de ITAD (fases 1–4): identidad, ofertas por tienda, FX USD→MXN, BFF y UI. El trabajo está en `origin/main` (`865ec95`, `e31eab4`), no staged. La fase 5 (alertas/Telegram) está pendiente y los bundles externos quedan diferidos → `PLAN_BUNDLES.md`.
 
 Este documento refleja el estado real del código, no el plan original. Lo implementado está verificado por lectura cruzada entre entidades, DDL, servicios y consumidores.
 
@@ -75,16 +75,89 @@ Shop IDs confirmados en `/service/shops/v1?country=MX`: Steam `61`, GOG `35`, Ep
 
 Hallazgos de la auditoría. Son trabajo real, no ideas.
 
-### 3.1 La clasificación `authorized` es código muerto
+### 3.0 Las tiendas oficiales de ITAD (lista verificada)
 
-Las ofertas se piden con `shops=<allowlist oficial>`, así que ITAD **nunca** devuelve una tienda fuera del allowlist. La rama `IsOfficial=false → "authorized"` no puede alcanzarse nunca, y la UI filtra además por `classification === "official"`.
+Lista de tiendas que ITAD marca como **oficiales**, con el volumen que declara cada una. Los números son
+el argumento de por qué faltan precios en tiendas que sí venden el juego: `deals` es cuántas ofertas
+**de esa tienda** rastrea ITAD en total, no cuántos juegos existen ahí.
 
-Decisión requerida (una de las dos, no ambas):
+| id | Tienda | deals | games | ¿en el allowlist? |
+|---|---|---|---|---|
+| 2 | AllYouPlay | 766 | 5726 | — |
+| 4 | Blizzard | 8 | 789 | — |
+| 13 | DLGamer | 753 | 4726 | — |
+| 15 | Dreamgame | 1337 | 1948 | — |
+| 52 | EA Store | 138 | 597 | — |
+| **16** | **Epic Game Store** | 1146 | 14972 | **sí** (y constante de identidad) |
+| **6** | **Fanatical** | 10088 | 16075 | **sí** |
+| 17 | FireFlower | 0 | 253 | — |
+| 75 | Fortuna Digital | 367 | 450 | — |
+| **20** | **GameBillet** | 6618 | 7047 | **sí** |
+| 24 | GamersGate | 1978 | 10326 | — |
+| 25 | Gamesload | 719 | 1663 | — |
+| 27 | GamesPlanet DE | 7124 | 7978 | — |
+| 28 | GamesPlanet FR | 7150 | 8010 | — |
+| 26 | GamesPlanet UK | 7111 | 8003 | — |
+| 29 | GamesPlanet US | 7625 | 8519 | — |
+| **35** | **GOG** | 7301 | 12503 | **sí** |
+| **36** | **GreenManGaming** | 3970 | 12599 | **sí** |
+| 37 | Humble Store | 1654 | 13270 | — |
+| 42 | IndieGala Store | 1456 | 8800 | — |
+| 65 | JoyBuggy | 0 | 0 | — |
+| 47 | MacGameStore | 672 | 4767 | — |
+| **48** | **Microsoft Store** | **407** | 6279 | **sí** (y constante de identidad) |
+| 77 | Muve | 0 | 0 | — |
+| 49 | Newegg | 653 | 4807 | — |
+| **50** | **Nuuvem** | 594 | 3060 | **sí** |
+| 73 | PlanetPlay | 507 | 4498 | — |
+| 74 | PlayerLand | 1542 | 2038 | — |
+| 70 | Playsum | 1387 | 3864 | — |
+| **61** | **Steam** | 37441 | 310373 | **sí** (y constante de identidad) |
+| **62** | **Ubisoft Store** | 410 | 784 | **sí** (y constante de identidad) |
+| **64** | **WinGameStore** | 3016 | 6600 | **sí** |
+| 78 | Zapagames | 346 | 1782 | — |
+| 72 | ZOOM Platform | 0 | 938 | — |
 
-- **A (recomendada, coincide con lo pedido):** dejar solo tiendas oficiales. Eliminar la rama `authorized` y la constante asociada. Menos código, sin comportamiento inalcanzable.
-- **B:** quitar el parámetro `shops=` de la consulta para que ITAD devuelva todas sus tiendas y la allowlist pase a clasificar de verdad. Da más ofertas, requiere reactivar la banda "autorizadas" en la UI.
+Lectura de los números, que es lo que importa:
 
-Abrir a autorizadas después es barato en ambos casos: no hay cambio de esquema, solo quitar `shops=`.
+- **Microsoft Store tiene 407 ofertas en total.** Con esa cobertura, que un juego que la tienda vende a MXN
+  249 no aparezca es lo normal, no la excepción: medido con `Graveyard Keeper` (appid 599140), ITAD no tiene
+  deal de la shop `48` **en ningún país** (probado US, DE, GB y BR) y el buscador de la tienda tampoco lo
+  indexa. Sin enlace que seguir y sin resultado que aceptar, no hay precio de Microsoft. El límite es del
+  proveedor, no del código.
+- La allowlist actual (`61,35,16,62,48,6,36,20,50,64`) son **10 de las 34** oficiales y todas están en esta
+  lista ✓. Las otras 24 no llegan nunca porque `shops=` las excluye de la petición: no se clasifican mal, no
+  se piden. Ampliarla da más ofertas por juego y no toca ninguna decisión de identidad.
+- Tiendas con `deals: 0` (FireFlower, JoyBuggy, Muve, ZOOM): están listadas pero no rastrean nada. Meterlas
+  en el allowlist no cambiaría ninguna respuesta.
+
+### 3.1 La clasificación `authorized` — **cerrada: era media verdad**
+
+Estado: **decidido y aplicado**. La medición en código corrigió el diagnóstico que este documento tenía
+escrito, y por eso la decisión no es la A ni la B que figuraban abajo.
+
+Lo que decía el documento: «la rama `IsOfficial=false → "authorized"` no puede alcanzarse nunca». Es cierto
+para ITAD y **falso para la constante**: el agregado de gg.deals la usa a propósito
+(`SteamGameService.ApplyGgDealsPrice`), porque ese bucket suma tiendas oficiales y autorizadas sin decir cuál y
+etiquetarlo `official` sería mentir, así que `authorized` es su única etiqueta honesta. La UI no le pinta badge.
+
+Lo que se cerró, entonces, es la parte que sí estaba muerta:
+
+| Pieza | Acción |
+|---|---|
+| `ItadDeal.IsOfficial` | **Eliminado.** Era el resultado de `OfficialShopIds.Contains(shopId)`, calculado en cada oferta para alimentar un ternario que siempre daba lo mismo |
+| El ternario de `ApplyItadDeal` | **Eliminado**: `offer.Classification = OfficialClassification;` con el porqué en el comentario |
+| `AuthorizedClassification` | **Se queda.** Vivo y correcto en el agregado de gg.deals |
+| El parámetro `shops=` | **Se queda.** Es lo que hace cierta la afirmación: se piden solo tiendas oficiales, así que toda oferta que llega es oficial |
+
+Invariante que ahora vive en el comentario del código, junto a la constante: **la lista que se pide a ITAD y la
+lista de tiendas oficiales son la misma.** Meter en `ITAD__OfficialShopIds` una tienda que no sea oficial la
+etiqueta como oficial — el código ya no puede distinguirlo, y no debe: la configuración es la afirmación. Si
+algún día se piden tiendas no oficiales, hay que volver a decidirlo en `ApplyItadDeal`.
+
+Reabrir el caso «B» (traer todas las tiendas de ITAD y clasificar de verdad) sigue costando lo mismo que antes:
+quitar `shops=`, y aquí ya no hay nada que restaurar en la ruta de ITAD porque la etiqueta correcta para una
+tienda no oficial sería `authorized`, que sigue existiendo.
 
 ### 3.2 `historyLow` se parsea y no se usa
 

@@ -67,6 +67,14 @@ public class SteamGame : BaseModel
     public DateTime? EpicRefreshedAt { get; set; }
 
     /// <summary>
+    /// Last time the Microsoft Store price of this game was refreshed. Same contract as
+    /// <see cref="EpicRefreshedAt"/>: independent of every other provider timestamp, and untouched by a
+    /// failed store call so the next request retries.
+    /// </summary>
+    [Column("microsoft_refreshed_at", TypeName = "timestamp with time zone")]
+    public DateTime? MicrosoftRefreshedAt { get; set; }
+
+    /// <summary>
     /// Last time the external bundles of this game were refreshed. Independent of the offer timestamps:
     /// a bundle refresh failure must not mark the offers stale, nor the other way around.
     /// </summary>

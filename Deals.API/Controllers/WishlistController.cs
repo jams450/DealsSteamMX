@@ -165,6 +165,7 @@ public class WishlistController : ControllerBase
         //  - BestOfficialMinor: cheapest current MXN price among non-keyshop offers. "official" (ITAD
         //    allowlist) and "authorized" (gg.deals retail and other legitimate shops) are NOT split: the
         //    distinction that matters is legitimate shop vs keyshop, and gg.deals never emits "official".
+        //    The direct Steam snapshot joins this minimum outside the query: Steam is not a row here.
         //  - BestKeyshopMinor: cheapest current MXN price among keyshop offers.
         // Rows with pricing_type "unconverted" are excluded: an unconverted amount is not a comparable MXN
         // price. Nulls are ignored by the minima and 0 stays a real price (free games exist).
@@ -214,6 +215,16 @@ public class WishlistController : ControllerBase
                 bestKeyshopMinor = aggregate.BestKeyshopMinor;
             }
 
+            // Steam's own price competes for the best official price and does not live in game_offers: it is
+            // the snapshot column. `Min` over a sequence ignores nulls and returns null only when both are,
+            // so a game with no direct Steam price keeps the aggregate's answer instead of losing it. The
+            // currency guard is honest rather than defensive: a non-MXN snapshot is not comparable to the
+            // MXN minima, and converting it here would duplicate what fx_estimate already labels.
+            var steamOfficialMinor = string.Equals(game?.Currency, MxnCurrency, StringComparison.OrdinalIgnoreCase)
+                ? game?.CurrentPriceMinor
+                : null;
+            bestOfficialMinor = new[] { bestOfficialMinor, steamOfficialMinor }.Min();
+
             // steam_games.name is the Steam detail snapshot; user_library.title is the list snapshot and
             // may still be the appid placeholder before the first price refresh.
             var name = !string.IsNullOrWhiteSpace(game?.Name) ? game!.Name : row.Title;
@@ -226,6 +237,14 @@ public class WishlistController : ControllerBase
                 row.AddedAt,
                 game?.ItadGameId ?? row.ItadGameId,
                 LatestRefresh(game?.OffersRefreshedAt, game?.GgDealsRefreshedAt),
+                // One stamp per provider, straight from the snapshot: no derivation, so a failed provider
+                // keeps its old date instead of inheriting a neighbour's. Steam's is observed_at, the time
+                // its snapshot was taken.
+                game?.ObservedAt,
+                game?.OffersRefreshedAt,
+                game?.GgDealsRefreshedAt,
+                game?.EpicRefreshedAt,
+                game?.MicrosoftRefreshedAt,
                 // Undiscounted Steam list price, straight from the persisted snapshot.
                 game?.InitialPriceMinor,
                 game?.Currency,

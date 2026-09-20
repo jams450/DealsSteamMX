@@ -12,9 +12,11 @@ import { refreshSteamGame } from "@/app/steam/_lib/steam-api";
 import { cn } from "@/lib/ui/cn";
 import { getWishlist, syncWishlist, updateWishlistPreferences } from "./_lib/wishlist-api";
 import { dealScore, discountPercent } from "./_lib/wishlist-metrics";
+import { SYNC_STORES, latestSyncTime, syncStamp } from "./_lib/wishlist-sync";
 import type { WishlistItem, WishlistResponse, WishlistState, WishlistSyncResponse } from "./_lib/wishlist-contract";
 
 const dateFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
+const shortDateFormatter = new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short" });
 
 // Los mínimos de tiendas ya vienen convertidos por el backend: su moneda es siempre MXN y no se
 // presenta como aproximación porque no lo es.
@@ -93,13 +95,35 @@ function WishlistThumb({ src, className }: { readonly src: string | null; readon
   );
 }
 
-// `itadGameId` es la identidad canónica del juego: sin ella, el juego no entra en la comparación ni en
-// las alertas. Se dice tal cual en vez de dejar la celda vacía.
-function ItadBadge({ itadGameId }: { readonly itadGameId: string | null }) {
-  return itadGameId ? (
-    <span className="tabler-badge tabler-badge-info">Identificado en ITAD</span>
-  ) : (
-    <span className="tabler-badge tabler-badge-muted">Sin identificar en ITAD</span>
+// La fila dice qué proveedor está sincronizado y cuándo, uno por uno: un proveedor caído conserva su
+// fecha vieja mientras los demás avanzan, y eso es justo lo que hay que poder ver. El ITAD sustituye al
+// badge «Identificado en ITAD»: la identidad del juego es una de las cosas que esta columna informa.
+// El mapeo proveedor → campo vive en `_lib/wishlist-sync.ts`, con test propio.
+
+// Fecha corta (día y mes) porque la celda lleva cinco sellos y un ancho mayor desborda la tabla.
+function formatShortDate(value: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : shortDateFormatter.format(date);
+}
+
+function SyncBadges({ item }: { readonly item: WishlistItem }) {
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      {SYNC_STORES.map((store) => {
+        const stamp = formatShortDate(syncStamp(item, store));
+        return (
+          <span
+            key={store.key}
+            className={cn("tabler-badge", stamp ? "tabler-badge-info" : "tabler-badge-muted")}
+            title={stamp ? `${store.label}: última sincronización` : `${store.label}: sin sincronizar`}
+          >
+            {store.label} {stamp ?? "—"}
+            <span className="sr-only"> {stamp ? `última sincronización ${stamp}` : "sin sincronización"}</span>
+          </span>
+        );
+      })}
+    </span>
   );
 }
 
@@ -312,7 +336,7 @@ function WishlistRowMeta({ item }: { readonly item: WishlistItem }) {
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
       <span>Alta {added ?? "—"}</span>
       <span>Actualizado {refreshed ?? "—"}</span>
-      <ItadBadge itadGameId={item.itadGameId} />
+      <SyncBadges item={item} />
     </div>
   );
 }
@@ -424,11 +448,22 @@ function WishlistItems({
     { id: "cover", header: "Portada", enableSorting: false, cell: ({ row }) => <WishlistThumb src={row.original.imageUrl} /> },
     {
       accessorKey: "name", header: "Juego", sortingFn: (rowA, rowB, id) => String(rowA.getValue(id)).localeCompare(String(rowB.getValue(id)), "es-MX"),
-      cell: ({ row }) => <div className="min-w-48"><Link href={`/games/${row.original.appId}`} className="text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{row.original.name}</Link><p className="text-xs text-muted">AppID {row.original.appId}</p><ItadBadge itadGameId={row.original.itadGameId} />{rowErrors[row.original.appId] ? <p role="alert" className="mt-1 text-xs text-danger">{rowErrors[row.original.appId]}</p> : null}</div>
+      cell: ({ row }) => <div className="min-w-48"><Link href={`/games/${row.original.appId}`} className="text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{row.original.name}</Link><p className="text-xs text-muted">AppID {row.original.appId}</p>{rowErrors[row.original.appId] ? <p role="alert" className="mt-1 text-xs text-danger">{rowErrors[row.original.appId]}</p> : null}</div>
     },
     { id: "priority", accessorFn: (item) => item.priority ?? undefined, header: "Prioridad", sortingFn: numericSort, sortUndefined: "last" },
     { id: "addedAt", accessorFn: (item) => item.addedAt ? new Date(item.addedAt).getTime() : undefined, header: "Alta", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => formatDateTime(row.original.addedAt) ?? "—" },
     { id: "refreshedAt", accessorFn: (item) => item.refreshedAt ? new Date(item.refreshedAt).getTime() : undefined, header: "Actualizado", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => formatDateTime(row.original.refreshedAt) ?? "—" },
+    // Ordena por el sello más reciente de los cinco, que es el que responde «¿cuán al día está esta fila?».
+    // Los juegos sin ningún sello salen `undefined` y quedan al final en las dos direcciones.
+    {
+      id: "sync",
+      accessorFn: latestSyncTime,
+      header: "Sincronización",
+      enableSorting: true,
+      sortingFn: numericSort,
+      sortUndefined: "last",
+      cell: ({ row }) => <SyncBadges item={row.original} />
+    },
     { id: "basePriceMinor", accessorFn: (item) => item.basePriceMinor ?? undefined, header: "Precio base", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.basePriceMinor} currency={row.original.baseCurrency} /> },
     {
       id: "discountOfficial",
@@ -485,7 +520,7 @@ function WishlistItems({
       <ul className="space-y-3 md:hidden">
         {filteredItems.map((item) => (
           <li key={item.appId} className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-3">
-            <div className="flex items-start gap-2"><WishlistThumb src={item.imageUrl} /><div className="min-w-0"><Link href={`/games/${item.appId}`} className="text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{item.name}</Link><p className="text-xs text-muted">AppID {item.appId}</p><ItadBadge itadGameId={item.itadGameId} /></div></div>
+            <div className="flex items-start gap-2"><WishlistThumb src={item.imageUrl} /><div className="min-w-0"><Link href={`/games/${item.appId}`} className="text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{item.name}</Link><p className="text-xs text-muted">AppID {item.appId}</p></div></div>
             <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2"><PriceFact label="Precio base" amountMinor={item.basePriceMinor} currency={item.baseCurrency} /><PriceFact label="Mínimo histórico" amountMinor={item.historyLowMinor} currency={item.historyLowCurrency} /><PriceFact label="Mín. oficial" amountMinor={item.bestOfficialMinor} currency={MXN} /><PriceFact label="Mín. keys" amountMinor={item.bestKeyshopMinor} currency={MXN} /><MobileMetrics item={item} minViableDiscountPercent={minViableDiscountPercent} /></div>
             <div className="mt-3"><WishlistRowMeta item={item} /></div>
             <div className="mt-3"><RowRefreshButton item={item} refreshing={refreshingAppId === item.appId} blocked={refreshingAppId !== null && refreshingAppId !== item.appId} onRefresh={onRefresh} /></div>

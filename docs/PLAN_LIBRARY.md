@@ -1,6 +1,6 @@
 # DealExt: plan de biblioteca de juegos comprados
 
-Estado: propuesto, pendiente de aprobación. Solo análisis y plan.
+Estado: **implementado** — import de Playnite, binding con precios (y la nota de «sin binding»), página `/library`, favoritos, carátulas y reseñas por plataforma. Las migraciones existen y están aplicadas (`2026-09-24` … `2026-10-01`), y `user_library`, `game_reviews` y `user_game_favorites` están en `SQL/schema.sql`. Queda fuera, por decisión: integraciones por tienda y Steam por API (§10) y la duración de juegos (HowLongToBeat, por el bloqueo de cumplimiento de `PLAN_CATALOG.md` §6).
 
 Alcance de esta fase: subir el export de Playnite, crear la biblioteca, **intentar el binding con
 precios** y dejar una nota explícita de "sin binding" cuando no se pueda. Después, las reseñas por
@@ -97,7 +97,7 @@ Corrige lo que `PLAN_WISHLIST.md` §2 afirmaba: esto **ya está implementado** e
 | `uq_user_library UNIQUE (user_id, store, store_game_id, state)` | Reimportar el mismo JSON es upsert, no duplica |
 | `idx_user_library_user_itad`, `idx_user_library_user_title` | Consulta de binding y fusión por título, ya indexadas |
 | `steam_games` (`app_id`, `name`, `itad_game_id`) | Destino del binding. `name` es la llave del match por título |
-| `game_offers` + `selectBestPrice` | Precio que se muestra en una entrada ligada |
+| `game_offers` + `bestGroupOffer` | Precio que se muestra en una entrada ligada |
 | `ISteamGameService` | Insertar en `steam_games` los juegos que el usuario busque, para que el binding mejore solo |
 | `Deals.Web/lib/contracts/steam.ts` (normalizadores estrictos) | Extender con los tipos de biblioteca, sin relajar validación |
 | `WishlistSyncService` | Escribe `state='wished'` y **nunca toca** filas `owned`. Aquí se añade la otra mitad |
@@ -219,7 +219,7 @@ Battle.net y Ubisoft hasta que exista identidad exacta multi-tienda.
 
 | Estado | Qué muestra la biblioteca |
 |---|---|
-| Identidad exacta | Precio actual, descuento y mínimo histórico de `game_offers` vía `selectBestPrice` |
+| Identidad exacta | Precio actual, descuento y mínimo histórico de `game_offers` vía `bestGroupOffer` |
 | Candidato por título | El mismo precio, etiquetado **"Precio vinculado por título"** |
 | Sin binding | Nota explícita **"Sin precios vinculados"** y el título tal cual, sin precio inventado |
 | `state='subscription'` | Tag **"Game Pass"**, sin precio aunque coincida por título |
@@ -407,22 +407,21 @@ hallazgo de cumplimiento que impide crawlear HLTB.
 
 ```
 PLAN_CATALOG.md   ← base compartida; sin ella las reseñas no tienen dónde colgar
-  Fase 1  games + game_external_ids + backfill
-  Fase 2  resolver en los sitios de inserción
+  Fase 1  games + game_external_ids + backfill        ← hecha
+  Fase 2  resolver en los sitios de inserción         ← hecha
 
 PLAN_LIBRARY.md   (objetivo de la fase actual)
-  Fase 0  Game Pass como state='subscription'     ← horas, independiente, sin esquema
-  Fase 1  import de Playnite → crear la biblioteca
-  Fase 2  binding con precios + nota de "sin binding"
-  Fase 3  UI /library + badges
-  Fase 4  reseñas por plataforma
+  Fase 0  Game Pass como state='subscription'     ← hecha (`LibraryStates.Subscription`)
+  Fase 1  import de Playnite → crear la biblioteca    ← hecha
+  Fase 2  binding con precios + nota de "sin binding" ← hecha
+  Fase 3  UI /library + badges                        ← hecha
+  Fase 4  reseñas por plataforma                      ← hecha
 ```
 
-El catálogo va antes porque el binding de la Fase 2 y las reseñas de la Fase 4 dependen de `game_id`. La
-Fase 0 no depende de nada y se puede hacer hoy.
+El catálogo iba antes porque el binding de la Fase 2 y las reseñas de la Fase 4 dependen de `game_id`. La
+Fase 0 no dependía de nada. Las cinco están hechas; lo que este documento deja fuera (§10) sigue fuera.
 
-**Antes de empezar hay que commitear ITAD y FX**, que siguen staged sin commitear: si no, las migraciones
-fechadas de `PLAN_CATALOG.md` pierden el orden.
+**El orden ya está cumplido**: ITAD y FX se commitearon antes (`865ec95`), así que las migraciones fechadas de `PLAN_CATALOG.md` no perdieron el orden. Se deja escrito porque la razón sigue siendo válida para cualquier trabajo futuro que introduzca migraciones fechadas.
 
 ## 12. Riesgos
 

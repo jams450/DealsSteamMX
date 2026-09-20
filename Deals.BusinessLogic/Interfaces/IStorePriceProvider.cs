@@ -23,4 +23,18 @@ public interface IStorePriceProvider
     /// similar never produces an offer.
     /// </summary>
     Task<StoreOffer?> FindOfferAsync(string title, string externalId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Respaldo por título: busca por nombre y acepta **solo** el resultado cuyo título sea el mismo después
+    /// de normalizar (<see cref="Services.StoreTitleMatcher"/>), devolviendo la oferta con el id que ese
+    /// resultado declare.
+    ///
+    /// Es el segundo camino de identidad, no el primero, y solo se usa cuando el enlace de ITAD no existe: el
+    /// id que sale de aquí no lo emitió la tienda en una URL, se dedujo de un nombre, así que la coincidencia
+    /// exacta es la única garantía disponible. Un no-match es preferible a un id adivinado, porque un id
+    /// equivocado publica el precio de otro juego y con el aspecto de ser el correcto.
+    ///
+    /// Quien lo llama decide cuándo está permitido: con el proveedor de identidad degradado, no.
+    /// </summary>
+    Task<StoreOffer?> FindOfferByTitleAsync(string title, CancellationToken cancellationToken);
 }

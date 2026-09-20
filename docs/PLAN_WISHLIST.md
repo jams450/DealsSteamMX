@@ -1,6 +1,6 @@
 # DealExt: plan de wishlist de Steam y alertas
 
-Estado: propuesto, pendiente de aprobación. Solo análisis y plan. La **biblioteca de juegos comprados**
+Estado: **implementado** (tabla `user_library`, `users.steam_id64`, sync de la wishlist, controller, `/wishlist` + BFF + contratos, `history_low_all_minor`/`history_low_currency`) y commiteado. Lo que **no** está implementado, verificado contra `SQL/schema.sql` y el código: `price_alerts` (la tabla no existe), Telegram, `user_external_accounts` y la UI de alertas. La **biblioteca de juegos comprados** sí lo está → `PLAN_LIBRARY.md`.
 ya no vive aquí: se movió a `PLAN_LIBRARY.md`.
 
 Alcance: importar la wishlist de Steam y notificar ofertas por Telegram. La lista de juegos comprados, su
@@ -28,7 +28,7 @@ Continúa a `PLAN_ITAD.md` y `PLAN_LIBRARY.md`. La identidad de juego compartida
 
 ## 2. Lo que ya existe y se reutiliza
 
-Las fases 1–4 de `PLAN_ITAD.md` están **implementadas** (staged, sin commitear). Lo que este plan aprovecha:
+Las fases 1–4 de `PLAN_ITAD.md` están **implementadas, commiteadas y en producción**. Lo que este plan aprovecha:
 
 | Ya implementado | Cómo se usa aquí |
 |---|---|
@@ -52,10 +52,12 @@ Corrige lo que este plan afirmaba antes de la auditoría:
 |---|---|
 | `user_library` (tabla + entidad + `AppDbContext` + `uq_user_library` + índices) | **Implementado** — `SQL/migrations/2026-09-24_wishlist_and_steam_id.sql` |
 | `users.steam_id64`, `wishlist_synced_at`, `wishlist_state`, `min_viable_discount_percent` | **Implementado** |
-| Wishlist de Steam: sync, controller, `/wishlist` + BFF + contratos | **Implementado en el checkout, sin commitear** |
+| Wishlist de Steam: sync, controller, `/wishlist` + BFF + contratos | **Implementado y commiteado** |
 | Ruta `state='wished'` de `user_library` | **Implementado**; el prune solo borra filas `wished` |
 | `game_offers.history_low_all_minor` / `history_low_currency` | **Implementado** — cierra el pendiente de §7 |
-| `price_alerts`, Telegram, `user_external_accounts`, `state='owned'`/`'subscription'`, UI de biblioteca | **No implementado** |
+| `price_alerts`, Telegram, `user_external_accounts` | **No implementado** (la tabla `price_alerts` no está en `SQL/schema.sql`). Verificado, no supuesto |
+| `state='owned'` / `'subscription'` | **Implementado**: los tres valores canónicos viven en `LibraryStates` y el binding trata `subscription` como estado propio, nunca como búsqueda de precio |
+| UI de biblioteca | **Implementado** → `PLAN_LIBRARY.md`. Esta fila lo daba por pendiente y ya no lo estaba |
 
 El SteamID64 vive en `users.steam_id64` (columna de BD, administrada por el admin y validada en
 `UserService.ValidateSteamId64OrThrow`), **no** en una variable de configuración como afirmaba este plan.
@@ -179,7 +181,7 @@ PLAN_LIBRARY.md   (objetivo de la fase actual)
   Fase 4  reseñas por plataforma
 
 Este plan
-  Fase 6  wishlist de Steam     ← implementada en el checkout, sin commitear
+  Fase 6  wishlist de Steam     ← implementada y commiteada
      └─ Fase 7  alertas + Telegram   ← requiere Fase 6 y el import de PLAN_LIBRARY.md §6
           └─ Fase 8  ajustes de UI de wishlist (excluir poseídos)
 ```
@@ -187,11 +189,12 @@ Este plan
 La numeración se conserva respecto a la versión anterior a propósito: `PLAN_TELEGRAM.md` cita
 `PLAN_WISHLIST.md` §7 para la tabla `price_alerts`, y renumberar habría roto esa referencia.
 
-Antes de empezar hay que commitear ITAD y FX, que están staged sin commitear, para no perder el orden de
-las fechas en `SQL/migrations/`. Queda una decisión de Fase 0 pendiente: la rama
-`classification = "authorized"` es inalcanzable porque las ofertas se piden filtrando por el allowlist
-oficial. Eliminarla simplifica, pero si se elige abrir a tiendas autorizadas después hay que quitar el
-parámetro `shops=` de la consulta a `prices/v3` y reactivar la banda en la UI.
+El orden ya está cumplido: ITAD y FX se commitearon antes (`865ec95`), para no perder el orden de las
+fechas en `SQL/migrations/`. La decisión de Fase 0 sobre `classification = "authorized"` **ya está cerrada**
+(§`PLAN_ITAD.md` 3.1): se eliminó el ternario y el campo `IsOfficial` de la ruta de ITAD, la constante
+`authorized` se conserva porque el agregado de gg.deals la usa de verdad, y el parámetro `shops=` se queda
+como está. Abrir a tiendas autorizadas sigue costando lo mismo —quitar `shops=` y volver a decidir la etiqueta
+en `ApplyItadDeal`—, pero no está pedido.
 
 ## 10. Riesgos
 

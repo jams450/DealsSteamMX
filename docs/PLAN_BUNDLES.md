@@ -186,6 +186,7 @@ Casos que la implementación debe cubrir:
 | Moneda distinta entre ítems | Sin ahorro, o una conversión FX única claramente etiquetada |
 | Fallo del proveedor con snapshot previo | Snapshot conservado, bandera stale, timestamp sin avanzar |
 | Purga | Solo borra filas de su propio `source`; nunca toca las ofertas ni el comparador |
+| Resumen del detalle | Si el juego viene en algún bundle, el resumen pinta **una** tarjeta «Bundle» con el precio del tier más barato que sí tenga precio (prefiriendo MXN). El bundle sigue sin entrar en la comparación ni en el cálculo de ahorro |
 | Atribución | Hipervínculo activo a IsThereAnyDeal y `url` sin alterar |
 | Secretos | Ninguna key en logs, respuestas, fixtures ni frontend |
 | Build | `dotnet build Deals.sln` y `pnpm build` en verde |
@@ -196,6 +197,8 @@ Riesgos:
 | Riesgo | Mitigación |
 |---|---|
 | Sobre de ITAD distinto al esperado | Fase 1 con fixtures reales antes de escribir lógica; descartar lo que no parsee |
+| El precio del bundle se lee como el precio del juego | La tarjeta dice «Incluye este juego» y **no** lleva la marca de «más barato que Steam», y el pie del resumen dice que ese importe no entra en la comparación. Un bundle puede costar menos que el juego suelto y traer otros juegos: la cifra es información, no una oferta del juego |
+| El bundle «más barato» sale de comparar monedas distintas | `pickPricedBundleTier` prefiere tiers en MXN y **no** compara `priceMinor` entre monedas (1999 USD < 39900 MXN como números, y sería el ganador equivocado). Si solo hay otra moneda, se muestra esa y se dice cuál, sin convertir. Cubierto por `bundle-card.test.ts` |
 | `overview/v2` no devuelve el contenido del tier | Se cancela el cálculo de ahorro; V1 solo muestra bundles (decision gate) |
 | Semántica de `addon` ambigua | Sin ahorro para tiers con addon hasta confirmar |
 | Moneda sin cobertura FX | Igual que el comparador: se muestra sin convertir y etiquetado |

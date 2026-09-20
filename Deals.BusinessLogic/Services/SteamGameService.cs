@@ -9,6 +9,7 @@ using Deals.BusinessLogic.Models.Steam;
 using Deals.BusinessLogic.Models.Stores;
 using Deals.Models.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace Deals.BusinessLogic.Services;
 
@@ -24,8 +25,12 @@ public sealed class SteamGameService(
     IItadClient itadClient,
     IGgDealsClient ggDealsClient,
     IStorePriceProvider storePriceProvider,
+    // Concrete, not the interface: IStorePriceProvider is Epic's, and the Microsoft phase is the only
+    // consumer of this store (see the note in ServiceCollectionExtensions).
+    MicrosoftStoreClient microsoftStoreClient,
     IFxRateService fxRateService,
     IGameIdentityResolver identityResolver,
+    ILogger<SteamGameService> logger,
     SteamOffersSettings? offersSettings = null) : ISteamGameService
 {
     private const string Region = "mx";
@@ -33,19 +38,35 @@ public sealed class SteamGameService(
     private const string ItadSource = "itad";
     private const string GgDealsSource = "ggdeals";
     private const string EpicSource = EpicStoreClient.StoreSource;
+    private const string MicrosoftSource = MicrosoftStoreClient.StoreSource;
 
     /// <summary>
     /// The store sells one base offer per game, so a fixed key is the whole offer key: a changed Epic
-    /// catalog id updates the row instead of leaving a second one behind.
+    /// catalog id updates the row instead of leaving a second one behind. The key is scoped by source, so
+    /// every direct store shares it.
     /// </summary>
     private const string StoreOfferKey = "store";
 
     /// <summary>
-    /// ITAD shop id of the Epic Games Store. Not configuration: it is the id the shop list
-    /// (<c>service/shops/v1</c>) publishes, and the only use is reading that shop's deal link out of an
-    /// already-fetched prices payload.
+    /// ITAD shop ids, as published by the shop list (<c>service/shops/v1</c>) — not configuration, because
+    /// the only use is reading one shop's deal link out of an already-fetched prices payload. The ids sit
+    /// next to each other and a wrong one fails **silently**: the shop is simply absent from the payload, the
+    /// link is never read, and the phase reports a no-match that looks like the store not selling the game.
+    /// Verified against the source, not from memory:
+    ///
+    /// <code>
+    /// curl -s "https://api.isthereanydeal.com/service/shops/v1?country=MX"
+    ///   16 Epic Game Store | 36 GreenManGaming | 48 Microsoft Store | 61 Steam | 62 Ubisoft Store
+    /// </code>
+    ///
+    /// Re-run that before changing either id. 48 is Microsoft and 62 is Ubisoft: the second was miscopied
+    /// here from the first, and the symptom was a Microsoft phase that ran, stamped its timestamp and wrote
+    /// no price (see PLAN_MULTISTORE.md §8).
     /// </summary>
     private const string ItadEpicShopId = "16";
+
+    /// <summary>ITAD shop id of the Microsoft Store; see the mapping above.</summary>
+    private const string ItadMicrosoftShopId = "48";
     private const string GgDealsRetailOfferKey = "retail";
     private const string GgDealsKeyshopOfferKey = "keyshop";
     private const string GgDealsRetailShopName = "GG.deals";
@@ -151,20 +172,28 @@ public sealed class SteamGameService(
     }
 
     /// <summary>
-    /// A finished Epic phase (identity resolution + one store call), captured while no transaction is open.
-    /// <see cref="ApplyEpicRefresh"/> is the separate, DB-only step that writes it.
+    /// A finished direct-store phase (identity resolution + one store call), captured while no transaction
+    /// is open. <see cref="ApplyStoreRefresh"/> is the separate, DB-only step that writes it. One record for
+    /// every direct store: the phases differ in how the id is found, never in what is written.
     /// </summary>
-    private sealed record EpicRefreshResult(ProviderRefreshOutcome Outcome, StoreOffer? Offer)
+    private sealed record StoreRefreshResult(ProviderRefreshOutcome Outcome, StoreOffer? Offer)
     {
-        public static EpicRefreshResult NoMatch() =>
+        public static StoreRefreshResult NoMatch() =>
             new(ProviderRefreshOutcome.NoMatch, null);
 
-        public static EpicRefreshResult Succeeded(StoreOffer offer) =>
+        public static StoreRefreshResult Succeeded(StoreOffer offer) =>
             new(ProviderRefreshOutcome.Refreshed, offer);
 
-        public static EpicRefreshResult Failed() =>
+        public static StoreRefreshResult Failed() =>
             new(ProviderRefreshOutcome.Failed, null);
     }
+
+    /// <summary>
+    /// A store identity resolved for one cycle: the id, plus the store URL it was read out of when there was
+    /// one. The URL is only ever the address ITAD's link landed on, never a link a provider payload handed
+    /// us verbatim, and it is used as the offer's own link instead of a URL rebuilt from the id.
+    /// </summary>
+    private sealed record StoreLink(string? ExternalId, string? StoreUrl);
 
     /// <summary>
     /// A finished ITAD bundle phase, captured while no transaction is open.
@@ -365,32 +394,54 @@ public sealed class SteamGameService(
             ? await FetchGgDealsRefreshAsync(appId, cancellationToken)
             : null;
 
-        // Epic runs on the same window but on its own result and its own timestamp: the three providers
-        // share one rate-limit bucket, so a failure in one must never cancel another.
+        // Direct stores run on the same window but on their own result and their own timestamp: every
+        // provider shares one rate-limit bucket, so a failure in one must never cancel another.
         var needsEpic = forceRefresh ||
             snapshot is null ||
             snapshot.EpicRefreshedAt is null ||
             snapshot.EpicRefreshedAt.Value < refreshWindowStart;
 
+        var needsMicrosoft = forceRefresh ||
+            snapshot is null ||
+            snapshot.MicrosoftRefreshedAt is null ||
+            snapshot.MicrosoftRefreshedAt.Value < refreshWindowStart;
+
         string? epicExternalId = null;
-        EpicRefreshResult? epicRefresh = null;
+        StoreRefreshResult? epicRefresh = null;
         if (needsEpic)
         {
-            epicExternalId = snapshot?.GameId is long canonicalGameId
-                ? await repository.Get<GameExternalId>()
-                    .Where(id => id.GameId == canonicalGameId &&
-                        id.NamespaceName == GameExternalIdNamespaces.Epic)
-                    .Select(id => id.ExternalId)
-                    .FirstOrDefaultAsync(cancellationToken)
-                : null;
+            epicExternalId = await FindExternalIdAsync(
+                snapshot?.GameId,
+                GameExternalIdNamespaces.Epic,
+                cancellationToken);
 
             epicRefresh = isComparable
                 ? await FetchEpicRefreshAsync(
                     details?.Name ?? snapshot?.Name,
                     epicExternalId,
                     itadRefresh?.Deals ?? [],
+                    allowTitleFallback: ItadIdentityIsTrustworthy(itadRefresh),
                     cancellationToken)
-                : EpicRefreshResult.NoMatch();
+                : StoreRefreshResult.NoMatch();
+        }
+
+        string? microsoftExternalId = null;
+        StoreRefreshResult? microsoftRefresh = null;
+        if (needsMicrosoft)
+        {
+            microsoftExternalId = await FindExternalIdAsync(
+                snapshot?.GameId,
+                GameExternalIdNamespaces.Xbox,
+                cancellationToken);
+
+            microsoftRefresh = isComparable
+                ? await FetchMicrosoftRefreshAsync(
+                    details?.Name ?? snapshot?.Name,
+                    microsoftExternalId,
+                    itadRefresh?.Deals ?? [],
+                    allowTitleFallback: ItadIdentityIsTrustworthy(itadRefresh),
+                    cancellationToken)
+                : StoreRefreshResult.NoMatch();
         }
 
         // Bundles ride their own window and timestamp: an ITAD bundle failure must leave offersStale and
@@ -494,23 +545,33 @@ public sealed class SteamGameService(
 
             if (epicRefresh is not null)
             {
-                // The store id is claimed before its price is written: when the slug already belongs to
-                // another canonical game, this game must not be priced from that store's page, because the
-                // offer would describe a different game.
-                var accepted = epicRefresh.Offer is null ||
-                    await GameIdentityClaimer.TryClaimAsync(
-                        repository,
-                        game.GameId,
-                        GameExternalIdNamespaces.Epic,
-                        epicRefresh.Offer.ExternalId,
-                        cancellationToken);
+                removedOffers.AddRange(await ApplyClaimedStoreRefreshAsync(
+                    game,
+                    EpicSource,
+                    GameExternalIdNamespaces.Epic,
+                    epicRefresh,
+                    observedAt,
+                    cancellationToken));
 
-                var applied = accepted ? epicRefresh : EpicRefreshResult.NoMatch();
-
-                removedOffers.AddRange(ApplyEpicRefresh(game, applied, observedAt));
-                if (applied.Outcome != ProviderRefreshOutcome.Failed)
+                if (epicRefresh.Outcome != ProviderRefreshOutcome.Failed)
                 {
                     game.EpicRefreshedAt = observedAt;
+                }
+            }
+
+            if (microsoftRefresh is not null)
+            {
+                removedOffers.AddRange(await ApplyClaimedStoreRefreshAsync(
+                    game,
+                    MicrosoftSource,
+                    GameExternalIdNamespaces.Xbox,
+                    microsoftRefresh,
+                    observedAt,
+                    cancellationToken));
+
+                if (microsoftRefresh.Outcome != ProviderRefreshOutcome.Failed)
+                {
+                    game.MicrosoftRefreshedAt = observedAt;
                 }
             }
 
@@ -1212,7 +1273,15 @@ public sealed class SteamGameService(
     {
         offer.ShopId = deal.ShopId;
         offer.ShopName = deal.ShopName;
-        offer.Classification = deal.IsOfficial ? OfficialClassification : AuthorizedClassification;
+        // Sin ternario: la consulta pide `shops=<allowlist oficial>`, así que **toda** oferta que llega por
+        // aquí es de una tienda oficial — la lista de tiendas pedidas y la de tiendas oficiales son la
+        // misma. Clasificar una oferta de ITAD no es una decisión de esta función.
+        //
+        // Consecuencia para quien vaya a tocar `ITAD__OfficialShopIds`: meter ahí una tienda no oficial la
+        // etiqueta como oficial. El otro valor, `authorized`, sigue donde sí es cierto —el agregado de
+        // gg.deals (`ApplyGgDealsPrice`), que suma tiendas oficiales y autorizadas sin decir cuál—; si algún
+        // día se le piden a ITAD tiendas no oficiales, hay que volver a decidirlo aquí.
+        offer.Classification = OfficialClassification;
         offer.DiscountPercent = deal.DiscountPercent;
         offer.DealUrl = deal.DealUrl;
         offer.ObservedAt = observedAt;
@@ -1241,70 +1310,238 @@ public sealed class SteamGameService(
     }
 
     /// <summary>
+    /// ¿Se puede intentar el respaldo por título este ciclo? Solo si el proveedor de identidad respondió.
+    ///
+    /// ITAD es el que dice qué tiendas venden el juego y en qué enlace; el respaldo por título existe para el
+    /// caso en que ITAD respondió y **no** anunció esa tienda. Con ITAD degradado ese silencio no significa
+    /// nada, y buscar por nombre ahí sería inventar una identidad a partir de una avería ajena. Un ciclo sin
+    /// refresco de ITAD (null) no es una avería: la identidad ya se habría reclamado en el ciclo anterior, así
+    /// que reintentar es correcto.
+    /// </summary>
+    private static bool ItadIdentityIsTrustworthy(ItadRefreshResult? itadRefresh) =>
+        itadRefresh?.Outcome != ProviderRefreshOutcome.Failed;
+
+    /// <summary>
     /// Outbound Epic phase: identity resolution plus one store call. No transaction is open and nothing is
     /// written here. The store is looked up by the id already known for it; when there is none, the id is
-    /// read out of the Epic deal link ITAD returned in this same cycle, which lands on the store page and
-    /// carries the slug in its path. Applying the result is <see cref="ApplyEpicRefresh"/>.
+    /// read out of the Epic deal link ITAD returned in this same cycle, and only as a last resort is the
+    /// store's own search asked by title (<paramref name="allowTitleFallback"/>).
     /// </summary>
-    private async Task<EpicRefreshResult> FetchEpicRefreshAsync(
+    private async Task<StoreRefreshResult> FetchEpicRefreshAsync(
         string? title,
         string? knownExternalId,
         IReadOnlyList<ItadDeal> itadDeals,
+        bool allowTitleFallback,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(title))
         {
             // The store is searched by title: without one there is nothing to resolve, and that is an
             // authoritative no-match for this cycle rather than a failure to retry.
-            return EpicRefreshResult.NoMatch();
+            return StoreRefreshResult.NoMatch();
         }
 
         try
         {
-            var externalId = knownExternalId;
-            if (externalId is null)
+            var resolved = knownExternalId is not null
+                ? new StoreLink(knownExternalId, null)
+                : await ResolveStoreLinkFromItadAsync(
+                    itadDeals,
+                    ItadEpicShopId,
+                    EpicStoreClient.ExtractSlug,
+                    buildDealUrl: null,
+                    cancellationToken);
+
+            if (resolved.ExternalId is null)
             {
-                var dealUrl = itadDeals
-                    .FirstOrDefault(deal => string.Equals(deal.ShopId, ItadEpicShopId, StringComparison.OrdinalIgnoreCase))
-                    ?.DealUrl;
+                // No Epic identity from a link this cycle. El buscador por título es el único respaldo, y solo
+                // si ITAD respondió: un slug adivinado es el precio de otro juego.
+                if (!allowTitleFallback)
+                {
+                    return StoreRefreshResult.NoMatch();
+                }
 
-                // The deal link is ITAD's affiliate redirector, never the store URL itself: it has to be
-                // followed once before the store page (and therefore the slug) is visible.
-                var finalUrl = dealUrl is null
-                    ? null
-                    : await itadClient.ResolveDealUrlAsync(dealUrl, cancellationToken);
-
-                externalId = Uri.TryCreate(finalUrl, UriKind.Absolute, out var storeUrl)
-                    ? EpicStoreClient.ExtractSlug(storeUrl)
-                    : null;
+                var searched = await storePriceProvider.FindOfferByTitleAsync(title, cancellationToken);
+                return searched is null
+                    ? StoreRefreshResult.NoMatch()
+                    : StoreRefreshResult.Succeeded(searched);
             }
 
-            if (externalId is null)
-            {
-                // No Epic identity this cycle. A title search would be a guess, and a guessed slug is a
-                // wrong price: the store is skipped instead of being searched by name alone.
-                return EpicRefreshResult.NoMatch();
-            }
-
-            var offer = await storePriceProvider.FindOfferAsync(title, externalId, cancellationToken);
+            var offer = await storePriceProvider.FindOfferAsync(title, resolved.ExternalId, cancellationToken);
             return offer is null
-                ? EpicRefreshResult.NoMatch()
-                : EpicRefreshResult.Succeeded(offer);
+                ? StoreRefreshResult.NoMatch()
+                : StoreRefreshResult.Succeeded(offer);
         }
         catch (Exception exception) when (IsDegradableProviderFailure(exception, cancellationToken))
         {
             // Store down, bot challenge, unparseable, timed out, or out of the shared budget: keep the
             // persisted snapshot and leave EpicRefreshedAt untouched so the next request retries.
-            return EpicRefreshResult.Failed();
+            return StoreRefreshResult.Failed();
         }
     }
 
     /// <summary>
-    /// DB-only phase: writes an outbound Epic result onto the tracked entity. The store sells one base
-    /// offer per game, so the row is written under a fixed offer key and an authoritative no-match clears
-    /// the previous Epic snapshot.
+    /// Outbound Microsoft phase: identity resolution plus one store call, on the same shape as the Epic one.
+    /// The StoreId is already known when the library pass claimed one for this game; when it is not, it is
+    /// read out of the Microsoft deal link ITAD returned in this same cycle. That second path is the whole
+    /// reason this phase exists next to the library pass: the store sells the game in this market whether or
+    /// not the user owns it on Xbox, and a library-driven pass can never price those.
+    ///
+    /// El tercer camino, el buscador por título, cubre lo que los dos anteriores no pueden: un juego que ITAD
+    /// conoce pero del que **no** anunció la shop de Microsoft, o sea un juego que la tienda sí vende y que
+    /// hasta ahora quedaba sin precio. Medido con <c>Floppy Knights</c> (appid 1057800): ITAD devolvía deals MX
+    /// de 16 tiendas y ninguno era Microsoft, mientras el buscador lo encontraba a MXN 141.
     /// </summary>
-    private IReadOnlyList<GameOffer> ApplyEpicRefresh(SteamGame game, EpicRefreshResult refresh, DateTime observedAt)
+    private async Task<StoreRefreshResult> FetchMicrosoftRefreshAsync(
+        string? title,
+        string? knownExternalId,
+        IReadOnlyList<ItadDeal> itadDeals,
+        bool allowTitleFallback,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // A stored id whose shape the catalog does not accept is not an identity: it is discarded and the
+            // id is derived again. Never guessed, and never sent as a query that would answer nothing.
+            var resolved = knownExternalId is not null && MicrosoftStoreClient.IsUsableId(knownExternalId)
+                ? new StoreLink(knownExternalId, null)
+                : await ResolveStoreLinkFromItadAsync(
+                    itadDeals,
+                    ItadMicrosoftShopId,
+                    MicrosoftStoreClient.ExtractStoreId,
+                    MicrosoftStoreClient.StorePageUrl,
+                    cancellationToken);
+
+            if (resolved.ExternalId is null)
+            {
+                // No StoreId from a link this cycle. El buscador por título es el único respaldo, y solo si
+                // ITAD respondió: un id adivinado es el precio de otro juego.
+                if (!allowTitleFallback || string.IsNullOrWhiteSpace(title))
+                {
+                    return StoreRefreshResult.NoMatch();
+                }
+
+                var searched = await microsoftStoreClient.FindOfferByTitleAsync(title, cancellationToken);
+                return searched is null
+                    ? StoreRefreshResult.NoMatch()
+                    : StoreRefreshResult.Succeeded(searched);
+            }
+
+            // The id is mandatory here, so the title is not part of the identity: the client never searches
+            // by name and only uses it to describe the offer it already found.
+            var offer = await microsoftStoreClient.FindOfferAsync(
+                title ?? string.Empty,
+                resolved.ExternalId,
+                cancellationToken,
+                resolved.StoreUrl);
+
+            return offer is null
+                ? StoreRefreshResult.NoMatch()
+                : StoreRefreshResult.Succeeded(offer);
+        }
+        catch (Exception exception) when (IsDegradableProviderFailure(exception, cancellationToken))
+        {
+            // Same contract as Epic: keep the persisted snapshot and leave MicrosoftRefreshedAt untouched
+            // so the next request retries.
+            return StoreRefreshResult.Failed();
+        }
+    }
+
+    /// <summary>
+    /// The store id ITAD's deal link resolves to, for one shop. The link is ITAD's affiliate redirector and
+    /// never the store URL itself, so it is followed once and the id is read out of where it lands. The
+    /// extractor decides the accepted shapes and returns null for anything else: an id that cannot be read
+    /// is a missing identity, not a guess.
+    /// </summary>
+    private async Task<StoreLink> ResolveStoreLinkFromItadAsync(
+        IReadOnlyList<ItadDeal> itadDeals,
+        string itadShopId,
+        Func<Uri, string?> extractId,
+        Func<Uri, string>? buildDealUrl,
+        CancellationToken cancellationToken)
+    {
+        var dealUrl = itadDeals
+            .FirstOrDefault(deal => string.Equals(deal.ShopId, itadShopId, StringComparison.OrdinalIgnoreCase))
+            ?.DealUrl;
+
+        if (dealUrl is null)
+        {
+            return new StoreLink(null, null);
+        }
+
+        var finalUrl = await itadClient.ResolveDealUrlAsync(dealUrl, cancellationToken);
+        if (!Uri.TryCreate(finalUrl, UriKind.Absolute, out var storeUrl))
+        {
+            return new StoreLink(null, null);
+        }
+
+        var externalId = extractId(storeUrl);
+        if (externalId is null)
+        {
+            // The extractor refused the URL, which means the store changed the shape of its links. Logged
+            // because the only way to fix it is to see the URL, and without this line a missing id costs the
+            // price silently. No id is guessed: a wrong store id is a price for another game.
+            logger.LogWarning(
+                "[store.refresh] Could not read a store id out of {Host} for ITAD shop {ShopId}.",
+                storeUrl.Host,
+                itadShopId);
+
+            return new StoreLink(null, null);
+        }
+
+        return new StoreLink(externalId, buildDealUrl?.Invoke(storeUrl));
+    }
+
+    /// <summary>The external id a store already claimed for this canonical game, if any.</summary>
+    private async Task<string?> FindExternalIdAsync(
+        long? gameId,
+        string namespaceName,
+        CancellationToken cancellationToken) =>
+        gameId is long canonicalGameId
+            ? await repository.Get<GameExternalId>()
+                .Where(id => id.GameId == canonicalGameId && id.NamespaceName == namespaceName)
+                .Select(id => id.ExternalId)
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
+
+    /// <summary>
+    /// Claims a direct store's id, then writes its price. The id is claimed first because an id that already
+    /// belongs to another canonical game means the two disagree, and writing the price would describe a
+    /// different game: the row is cleared instead of written.
+    /// </summary>
+    private async Task<IReadOnlyList<GameOffer>> ApplyClaimedStoreRefreshAsync(
+        SteamGame game,
+        string source,
+        string namespaceName,
+        StoreRefreshResult refresh,
+        DateTime observedAt,
+        CancellationToken cancellationToken)
+    {
+        var accepted = refresh.Offer is null ||
+            await GameIdentityClaimer.TryClaimAsync(
+                repository,
+                game.GameId,
+                namespaceName,
+                refresh.Offer.ExternalId,
+                cancellationToken);
+
+        return ApplyStoreRefresh(
+            game,
+            source,
+            accepted ? refresh : StoreRefreshResult.NoMatch(),
+            observedAt);
+    }
+
+    /// <summary>
+    /// DB-only phase: writes an outbound direct-store result onto the tracked entity. Every store sells one
+    /// base offer per game, so the row is written under a fixed offer key and an authoritative no-match
+    /// clears the previous snapshot of that store.
+    /// </summary>
+    private IReadOnlyList<GameOffer> ApplyStoreRefresh(
+        SteamGame game,
+        string source,
+        StoreRefreshResult refresh,
+        DateTime observedAt)
     {
         if (refresh.Outcome == ProviderRefreshOutcome.Failed)
         {
@@ -1313,19 +1550,45 @@ public sealed class SteamGameService(
 
         if (refresh.Outcome == ProviderRefreshOutcome.NoMatch || refresh.Offer is null)
         {
-            return RemoveOffersBySource(game, EpicSource);
+            return RemoveOffersBySource(game, source);
         }
 
         var offers = repository.GetTrack<GameOffer>();
-        ApplyStoreOffer(GetOrCreateOffer(game, offers, EpicSource, StoreOfferKey), refresh.Offer, observedAt);
+        // The canonical key is tried before inserting. A store price can already exist anchored only to the
+        // game (source='microsoft' written by the library pass for a game that had no Steam row at the time)
+        // and inserting a second row for the same (game_id, region, source, offer_key) would raise 23505.
+        // Adopting that row instead both prevents the collision and gives this page the price it lacked.
+        var row = FindCanonicalStoreOffer(offers, game, source) ??
+            GetOrCreateOffer(game, offers, source, StoreOfferKey);
 
-        // Only one key can be returned, so every other Epic row is dropped instead of lingering as a
-        // second price for the same store.
+        if (row.SteamGameId is null)
+        {
+            row.SteamGameId = game.SteamGameId;
+            game.Offers.Add(row);
+        }
+
+        ApplyStoreOffer(row, refresh.Offer, observedAt);
+
+        // Only one key can be returned, so every other row of this store is dropped instead of lingering as
+        // a second price for the same store.
         return RemoveObsoleteOffers(
             game,
-            EpicSource,
+            source,
             new HashSet<string>(StringComparer.OrdinalIgnoreCase) { StoreOfferKey });
     }
+
+    /// <summary>
+    /// The direct-store row of this game under its canonical key, tracked and ready to write. Null when the
+    /// game has no canonical identity yet, in which case the Steam anchor is the only key there is.
+    /// </summary>
+    private GameOffer? FindCanonicalStoreOffer(DbSet<GameOffer> tracked, SteamGame game, string source) =>
+        game.GameId is long gameId
+            ? tracked.FirstOrDefault(existing =>
+                existing.GameId == gameId &&
+                existing.Region == Region &&
+                existing.Source == source &&
+                existing.OfferKey == StoreOfferKey)
+            : null;
 
     /// <summary>
     /// Writes one direct store offer. Every field is replaced, never merged, so a store dropping its

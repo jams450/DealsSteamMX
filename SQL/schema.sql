@@ -80,6 +80,7 @@ CREATE TABLE steam_games (
     offers_refreshed_at TIMESTAMPTZ,
     ggdeals_refreshed_at TIMESTAMPTZ,
     epic_refreshed_at TIMESTAMPTZ,
+    microsoft_refreshed_at TIMESTAMPTZ,
     bundles_refreshed_at TIMESTAMPTZ,
     region VARCHAR(2) NOT NULL,
     observed_at TIMESTAMPTZ NOT NULL,

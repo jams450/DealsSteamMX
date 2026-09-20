@@ -73,7 +73,7 @@ when it was last observed.
   empty payload for both. Each item also carries a price snapshot (`basePriceMinor`/`baseCurrency`,
   `historyLowMinor`/`historyLowCurrency`, `bestOfficialMinor`, `bestKeyshopMinor`) shown as a reference
   beside the wishlist data, plus a per-row refresh that reuses the game detail's refresh endpoint. No price
-  from this page enters the comparator, `selectBestPrice` or any savings math. The response's
+  from this page enters the comparator, `bestGroupOffer` or any savings math. The response's
   `minViableDiscountPercent` (0..95, default 50) is a per-user preference saved with
   `PUT /api/wishlist/preferences` (BFF `PUT /api/bff/wishlist/preferences`) and only feeds the two deal
   scores. The list uses the shared `DataGrid` in client mode for sorting, global filtering, per-column
@@ -89,7 +89,7 @@ when it was last observed.
   browser**: MXN is rendered as-is and the provider currency is shown as its code via `Intl`, never converted.
   A subscription row (`state === "subscription"`) carries the filled Game Pass tag with no price and no
   ownership language, and `priceState === "title_candidate"` always shows the fixed label
-  "Precio vinculado por título". No price from this page enters the comparator, `selectBestPrice` or any
+  "Precio vinculado por título". No price from this page enters the comparator, `bestGroupOffer` or any
   savings math. `storeGameId`, `bindingSource` and `steamAppId` are identity data and are never rendered.
 
 ## 2. Principles
@@ -392,7 +392,7 @@ ITAD store against a gg.deals row.
 | `hasGamePass === true` | only the standalone `tabler-badge-solid tabler-badge-primary` "Game Pass" tag — the same treatment as `/library`'s rows. It never merges into the "Ya lo tienes" wording, and when a Steam-owned copy also exists in Game Pass both badges render separately |
 | `possibleMatchStores` non-empty | `tabler-badge-warning` "Posible coincidencia en <tiendas>" — the same warning tone as the biblioteca's "Precio vinculado por título", so a tentative state never reads as a confirmation |
 | everything empty or the property absent | nothing renders: the line does not exist, spacing is unchanged |
-| always | no price claim, no discount and no savings math from ownership; ownership never feeds the comparator or `selectBestPrice` |
+| always | no price claim, no discount and no savings math from ownership; ownership never feeds the comparator or `bestGroupOffer` |
 
 ### Wishlist (`/wishlist`)
 
@@ -598,7 +598,7 @@ ITAD store against a gg.deals row.
 
 Herramienta de mantenimiento admin-only, no una vista de producto: tabla densa, decisiones explícitas y
 una operación **irreversible** (el juego absorbido se borra). No usa `DataGrid` —cada fila es un grupo con
-unidad propia, no una página de datos— y no participa del comparador, `selectBestPrice` ni ninguna cuenta
+unidad propia, no una página de datos— y no participa del comparador, `bestGroupOffer` ni ninguna cuenta
 de ahorro. Contrato en `lib/contracts/games-merge.ts`, cliente en
 `app/library/duplicates/_lib/games-merge-api.ts`, BFF `GET /api/bff/games/merge-suggestions` y
 `POST /api/bff/games/[id]/merge`, ambos `AdminWithId`.
@@ -947,8 +947,12 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   `toClassification` must be extended together: `normalizeOffer` returns `null` when a classification
   does not validate, so a provider-specific value added in only one of the two places drops every row of
   that kind with no build error and no visible failure. That is how `keyshop` could have disappeared.
-- **No unit tests.** `selectBestPrice` / `cheapestTies` are pure functions on purpose so they can be
-  covered the day a test runner exists; this repo has none and adding one is out of scope here.
+- **Almost no unit tests.** `bestGroupOffer` / `cheapestTies` are pure functions on purpose so they can be
+  covered the day a test runner exists. `node --test` now covers two of these pure modules —
+  `app/games/[steamAppId]/_lib/bundle-card.test.ts` (`pickPricedBundleTier`) and the wishlist `_lib` pair —
+  and the rest is still uncovered. Run them from inside the `_lib` directory: `node --test bundle-card.test.ts`;
+  from the repo root the bracketed path is read as a glob and matches nothing, which reports
+  `tests 0` and **succeeds**.
 - **Wishlist has no filter, sort or pagination.** The API returns the whole snapshot and the page renders
   it in one pass; the normalizer (`app/wishlist/_lib/wishlist-contract.ts`) caps a payload at 5000 items and
   drops unknown/extra fields. Add server-side paging plus a title or store filter only against a real
@@ -989,7 +993,7 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
 - **The four price columns are references, not offers.** `basePriceMinor`/`baseCurrency` and
   `historyLow*` come from the game's own snapshot in its own currency; `bestOfficialMinor` and
   `bestKeyshopMinor` are MXN snapshots the backend derived. They are deliberately **not** part of
-  `game_offers`, `selectBestPrice` or any savings math, are never compared across rows, and a row with no
+  `game_offers`, `bestGroupOffer` or any savings math, are never compared across rows, and a row with no
   observation shows "—" for all four instead of a stale or invented number.
 - **Verification.** No test project exists in this repo, so the check is `pnpm build` plus manual
   browser QA (owed: home/search/detail at light and dark, mobile drawer keyboard walkthrough, and the

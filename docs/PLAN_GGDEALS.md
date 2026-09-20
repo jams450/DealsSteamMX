@@ -1,6 +1,6 @@
 # DealExt: plan de integración gg.deals
 
-Estado: **comparador implementado**, pendiente de commit/despliegue y de la validación runtime final (fases 1–4). Contrato externo verificado contra la documentación oficial y confirmado con una API key real (`region=us` devuelve USD). `dotnet build Deals.sln` y `pnpm build` en verde. Falta aplicar la migración y desplegar con la variable de entorno.
+Estado: **comparador implementado, commiteado y en producción** (fases 1–4). Contrato externo verificado contra la documentación oficial y confirmado con una API key real (`region=us` devuelve USD). La migración está aplicada y las filas de `game_offers` con `source='ggdeals'` se ven en la ficha, en el grupo «gg.deals» y «gg.deals keyshops». `dotnet build Deals.sln` y `pnpm build` en verde.
 
 Alcance: obtener el precio agregado de tiendas oficiales y de keyshops por Steam AppID mediante la API de gg.deals, convertirlo a MXN con el servicio FX existente y mostrarlo en el detalle del juego. Los bundles de gg.deals quedan fuera de esta fase → `PLAN_BUNDLES.md`.
 
@@ -75,7 +75,7 @@ Detalles que condicionan el parser:
 - `POST /api/steam/games/{appId}/refresh` (`SteamController.cs:45`) y su reenvío por el BFF (`app/api/bff/steam/games/[appId]/route.ts:65`). El refresco es un **POST a una ruta**, no un query param.
 - En la UI, `offerMxnCell` (`game-client.tsx:51`) ya renderiza `≈`, la nota `Tasa · fecha · fuente` y el estado sin conversión para cualquier fila con forma de oferta.
 
-Nota: el header de `PLAN_ITAD.md` ya no afirma que el trabajo esté commiteado; el comparador figura como implementado y pendiente de commit/despliegue/validación runtime, consistente con este documento.
+Nota: los headers de `PLAN_ITAD.md` y de este documento ya no afirman que el trabajo esté sin commitear; los dos figuran como implementados, commiteados y en producción.
 
 ## 4. Fase 1: cliente gg.deals
 
@@ -146,7 +146,7 @@ Dos filas por juego, con la forma que el modelo genérico ya define:
 
 Dos consecuencias a tener presentes:
 
-- gg.deals no entrega precio base ni porcentaje de descuento, así que `original_regular_price_minor` y `discount_percent` van a `null`. Hay que verificar cómo los renderizan `offerPriceMinor`, `selectBestPrice` y `formatComparablePrice` antes de dar la UI por buena.
+- gg.deals no entrega precio base ni porcentaje de descuento, así que `original_regular_price_minor` y `discount_percent` van a `null`. Hay que verificar cómo los renderizan `offerPriceMinor`, `bestGroupOffer` y `formatComparablePrice` antes de dar la UI por buena.
 - `deal_url` se guarda con el `url` que devuelve la API y se renderiza verbatim, sin alterarlo: la ToS lo exige. `toHttpsUrl` (`steam.ts:142-149`) ya lo hace así a propósito.
 
 ### Servicio y endpoint
@@ -196,7 +196,7 @@ UI (`Deals.Web/app/games/[steamAppId]/game-client.tsx`):
   - Grupo **gg.deals** — id `offers-ggdeals`, las ofertas `source === "ggdeals"` (retail y keyshop).
 - El encabezado deja de ser "Tiendas oficiales" y pasa a nombrar el proveedor. La columna Fuente ya muestra `shopName`, que distingue `GG.deals` de `GG.deals keyshops`.
 - Reutilizar `OfferGroup` y `offerMxnCell` tal cual. No crear helpers de formato nuevos.
-- `cheapestTies` / `comparableOffers` / `selectBestPrice` (`L91-123`) hoy comparan dentro del grupo oficial. Con dos grupos hay que decidir si el "mejor precio comparable" es por grupo o global, y **una estimación FX de keyshop no debe competir contra precios regionales**: `DESIGN.md` §4 exige que la base de comparación sea explícita y siempre visible.
+- `cheapestTies` / `comparableOffers` / `bestGroupOffer` (`L91-123`) hoy comparan dentro del grupo oficial. Con dos grupos hay que decidir si el "mejor precio comparable" es por grupo o global, y **una estimación FX de keyshop no debe competir contra precios regionales**: `DESIGN.md` §4 exige que la base de comparación sea explícita y siempre visible.
 - Badge **"Datos posiblemente desactualizados"** cuando `offersStale` **o** `ggDealsStale` estén activos.
 - Atribución: **hipervínculo activo**, no texto. `DESIGN.md` §8 (`L296-300`) ya impone `target="_blank" rel="noopener noreferrer"` y el `sr-only` de "se abre en una pestaña nueva". Hoy `ITAD_ATTRIBUTION` (`L18`) es una constante de texto y habrá que convertirla en algo por proveedor.
 - Revisar el copy del botón "Actualizar ofertas" (`L547`): ahora refresca ambos proveedores.

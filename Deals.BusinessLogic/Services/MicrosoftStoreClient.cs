@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Stores;
@@ -8,16 +9,16 @@ namespace Deals.BusinessLogic.Services;
 public sealed record MicrosoftStoreClientSettings(string Market, string Languages, string Currency);
 
 /// <summary>
-/// Microsoft Store (Xbox) prices for one market, read from the public catalog lookup API. Keyless and
-/// native MXN: nothing here converts currency, so every offer it produces is <c>regional</c>.
+/// Microsoft Store (Xbox) prices for one market, read from the public catalog API. Keyless and native MXN:
+/// nothing here converts currency, so every offer it produces is <c>regional</c>.
 ///
 /// <para>
-/// Identity is mandatory and is the PackageFamilyName the Playnite export already carries as the Xbox
-/// <c>GameId</c>. There is deliberately no title search: measured, <c>apps.microsoft.com/api/products/
-/// search</c> is title-only and answers a PackageFamilyName with unrelated products, and
-/// <c>alternateId=ProductId</c> does not exist (0 results for a valid id). The lookup by
-/// PackageFamilyName is the one path that resolves an identity we actually hold, and it returns the
-/// canonical StoreId and the price in the same response.
+/// Identity is mandatory and comes in two measured shapes, resolved by two endpoints of the same catalog:
+/// the PackageFamilyName a Playnite Xbox row carries (<c>products/lookup?alternateId=PackageFamilyName</c>)
+/// and the 12-character StoreId a Microsoft store URL carries (<c>products/{StoreId}</c>, which answers the
+/// canonical id and the price just the same). There is deliberately no title search: measured,
+/// <c>apps.microsoft.com/api/products/search</c> is title-only and answers a PackageFamilyName with
+/// unrelated products, and <c>alternateId=ProductId</c> does not exist (0 results for a valid id).
 /// </para>
 /// </summary>
 public sealed class MicrosoftStoreClient(
@@ -29,6 +30,26 @@ public sealed class MicrosoftStoreClient(
     public const string StoreShopName = "Microsoft Store";
 
     private const string ProductIdHost = "apps.microsoft.com";
+
+    /// <summary>
+    /// Buscador de la tienda. Es **otro host** que el del catálogo (<c>displaycatalog.mp.microsoft.com</c>),
+    /// así que va como URL absoluta y no como ruta sobre la base configurada. Se deja como constante y no como
+    /// opción porque nadie lo va a configurar: el host es el de la tienda y cambiarlo sería otro proveedor.
+    /// </summary>
+    private const string SearchUrl = "https://apps.microsoft.com/api/products/search";
+
+    /// <summary>
+    /// La lista de resultados del buscador viene en <c>productsList</c>. Medido: las claves <c>Products</c> y
+    /// <c>products</c> **no existen** en esta respuesta, así que leerlas devuelve cero resultados sin ningún
+    /// error — la peor forma de fallar, porque se lee igual que "la tienda no lo vende".
+    /// </summary>
+    private const string SearchResultsProperty = "productsList";
+
+    /// <summary>
+    /// Marca de producto de juego en el buscador. El buscador devuelve también aplicaciones, temas y
+    /// películas, y este camino solo puede escribir precios de juegos.
+    /// </summary>
+    private const string GameFlagProperty = "isGame";
 
     /// <summary>Path of the catalog lookup, relative to the configured base address.</summary>
     private const string LookupPath = "v7.0/products/lookup";
@@ -53,18 +74,122 @@ public sealed class MicrosoftStoreClient(
     public string Source => StoreSource;
 
     /// <summary>
-    /// Resolves <paramref name="externalId"/> as a PackageFamilyName and returns its purchasable MXN
-    /// offer. A product with no purchase availability, only zero-priced ones, or no listing in this market
-    /// returns null: there is nothing comparable to show, and any previously persisted row is dropped.
+    /// Resolves <paramref name="externalId"/> and returns its purchasable MXN offer. Two id shapes are
+    /// accepted because the store hands out two kinds: the PackageFamilyName a Playnite Xbox row carries
+    /// (looked up by alternate id) and the 12-character StoreId a Microsoft store URL carries (read
+    /// directly). A product with no purchase availability, only zero-priced ones, or no listing in this
+    /// market returns null: there is nothing comparable to show, and any previously persisted row is dropped.
     /// </summary>
-    public async Task<StoreOffer?> FindOfferAsync(string title, string externalId, CancellationToken cancellationToken)
-    {
-        var packageFamilyName = NormalizePackageFamilyName(externalId)
-            ?? throw new ArgumentException(
-                "Microsoft Store id must be a PackageFamilyName.",
-                nameof(externalId));
+    public Task<StoreOffer?> FindOfferAsync(string title, string externalId, CancellationToken cancellationToken) =>
+        FindOfferAsync(title, externalId, cancellationToken, dealUrl: null);
 
-        using var response = await GetProductAsync(packageFamilyName, cancellationToken);
+    /// <summary>
+    /// Respaldo por título (ver <see cref="IStorePriceProvider.FindOfferByTitleAsync"/>): busca en la tienda,
+    /// se queda con el resultado que sea el mismo juego y reusa el camino normal con el StoreId que ese
+    /// resultado trae. El precio sale del catálogo igual que siempre, así que las reglas de qué es un precio
+    /// (acción <c>Purchase</c>, moneda del mercado, SKU con importe) no se duplican ni se relajan.
+    ///
+    /// Los dos filtros son duros y por motivos distintos: <c>isGame</c> deja fuera lo que no es un juego, y la
+    /// igualdad de título deja fuera los juegos que no son **este** juego. Cualquier cosa menos que eso es un
+    /// id adivinado.
+    ///
+    /// Nota medida: el catálogo de Microsoft **sí** está localizado, así que aquí el título guardado (que se
+    /// pide con <c>cc=mx&amp;l=spanish</c>) es un término de búsqueda válido, al revés que en Epic.
+    /// </summary>
+    public async Task<StoreOffer?> FindOfferByTitleAsync(string title, CancellationToken cancellationToken)
+    {
+        var query = title?.Trim();
+        if (string.IsNullOrEmpty(query) || query.Length > MaxTitleLength)
+        {
+            return null;
+        }
+
+        var url = $"{SearchUrl}?query={Uri.EscapeDataString(query)}" +
+            $"&hl={Uri.EscapeDataString(settings.Languages)}&gl={Uri.EscapeDataString(settings.Market)}";
+
+        using var response = await GetAsync(url, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Microsoft Store search returned HTTP {(int)response.StatusCode}.");
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+        if (ReadStoreIdFromSearch(document.RootElement, query) is not { } storeId)
+        {
+            return null;
+        }
+
+        return await FindOfferAsync(query, storeId, cancellationToken, BuildDealUrl(storeId));
+    }
+
+    /// <summary>
+    /// El StoreId del primer resultado que sea un juego con el mismo título. La ausencia de
+    /// <c>productsList</c> es un payload malformado (leída como lista vacía se confundiría con "no lo vende" y
+    /// borraría la oferta guardada); una lista sin coincidencia es un no-match honesto.
+    /// </summary>
+    private static string? ReadStoreIdFromSearch(JsonElement root, string query)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty(SearchResultsProperty, out var results) ||
+            results.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        foreach (var result in results.EnumerateArray())
+        {
+            // Cada filtro en su propia guarda: encadenados en un solo `||` la precedencia deja pasar un
+            // resultado que **no trae** el flag, y ese resultado podría no ser un juego.
+            if (result.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if (!result.TryGetProperty(GameFlagProperty, out var isGame) || isGame.ValueKind != JsonValueKind.True)
+            {
+                continue;
+            }
+
+            if (!StoreTitleMatcher.Matches(ReadOptionalString(result, "title"), query))
+            {
+                continue;
+            }
+
+            // El id se valida con la misma regla que el que viene de una URL: el buscador devuelve un
+            // productId que tiene que ser un StoreId usable antes de que nadie lo persista como identidad.
+            if (NormalizeStoreId(ReadOptionalString(result, "productId")) is { } storeId)
+            {
+                return storeId;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The same lookup with an explicit offer link, for when the id was read out of the store's own URL and
+    /// that URL is better than one rebuilt from the id. The interface has no such parameter: a caller that
+    /// only knows the id keeps using it.
+    /// </summary>
+    public async Task<StoreOffer?> FindOfferAsync(
+        string title,
+        string externalId,
+        CancellationToken cancellationToken,
+        string? dealUrl)
+    {
+        var path = BuildLookupPath(externalId);
+
+        using var response = await GetAsync(path, cancellationToken);
+        if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)
+        {
+            // Authoritative: the store says this product does not exist. Not a failure, and retrying it on
+            // every request would only re-ask a question already answered.
+            return null;
+        }
+
         if (!response.IsSuccessStatusCode)
         {
             throw new HttpRequestException(
@@ -74,11 +199,67 @@ public sealed class MicrosoftStoreClient(
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
 
-        return FindFirstOffer(document.RootElement);
+        return FindFirstOffer(document.RootElement, dealUrl);
     }
 
     /// <summary>
-    /// A PackageFamilyName is <c>Name_publisherHash</c>: alphanumeric, dots, dashes and exactly one
+    /// The StoreId in a Microsoft store URL. ITAD's deal link lands on whichever URL shape the store
+    /// chooses — measured shapes include <c>apps.microsoft.com/detail/{id}</c>,
+    /// <c>www.microsoft.com/store/productId/{id}</c> and <c>xbox.com/{locale}/games/store/{slug}/{id}</c> —
+    /// so the id is taken as the last path segment and validated as a StoreId, the same way Epic's
+    /// extractor anchors on the slug segment instead of on a whole URL. The host is checked first so a page
+    /// that merely imitates a Microsoft host cannot hand us an id.
+    /// </summary>
+    public static string? ExtractStoreId(Uri? url)
+    {
+        if (url is null || !IsMicrosoftHost(url.Host))
+        {
+            return null;
+        }
+
+        var segments = url.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length == 0 ? null : NormalizeStoreId(Uri.UnescapeDataString(segments[^1]));
+    }
+
+    private static bool IsMicrosoftHost(string host) =>
+        host.Equals("microsoft.com", StringComparison.OrdinalIgnoreCase) ||
+        host.Equals("xbox.com", StringComparison.OrdinalIgnoreCase) ||
+        host.EndsWith(".microsoft.com", StringComparison.OrdinalIgnoreCase) ||
+        host.EndsWith(".xbox.com", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Path for the id this call was given, or a throw when it is neither shape: sending a wrong kind of id
+    /// would answer an empty result set, which is indistinguishable from "not sold here".
+    /// </summary>
+    private string BuildLookupPath(string externalId)
+    {
+        var query = $"market={settings.Market}&languages={settings.Languages}&fieldsTemplate=Details";
+
+        if (NormalizePackageFamilyName(externalId) is { } packageFamilyName)
+        {
+            return $"{LookupPath}?alternateId={PackageFamilyNameAlternateId}" +
+                $"&value={Uri.EscapeDataString(packageFamilyName)}&{query}";
+        }
+
+        if (NormalizeStoreId(externalId) is { } storeId)
+        {
+            return $"v7.0/products/{storeId}?{query}";
+        }
+
+        throw new ArgumentException(
+            "Microsoft Store id must be a PackageFamilyName or a StoreId.",
+            nameof(externalId));
+    }
+
+    /// <summary>
+    /// True when <paramref name="value"/> is an id this client can actually resolve. An id stored under a
+    /// shape the catalog does not accept is not an identity: it is ignored and the id is derived again,
+    /// instead of being sent as a query that would answer nothing.
+    /// </summary>
+    public static bool IsUsableId(string? value) =>
+        NormalizePackageFamilyName(value) is not null || NormalizeStoreId(value) is not null;
+
+    /// <summary>A PackageFamilyName is <c>Name_publisherHash</c>: alphanumeric, dots, dashes and exactly one
     /// underscore. Anything else (a StoreId, a display name, a URL) is rejected instead of being sent as a
     /// lookup that would silently answer nothing.
     /// </summary>
@@ -117,32 +298,46 @@ public sealed class MicrosoftStoreClient(
     /// <summary>
     /// The product page for a StoreId. Built from the validated id instead of echoing a provider URL, and
     /// verified to resolve: this link redirects to the canonical locale URL and answers 410 for an id that
-    /// does not exist.
+    /// does not exist. Used when nothing better exists — see <c>dealUrl</c> below.
     /// </summary>
     private static string BuildDealUrl(string storeId) =>
         $"https://{ProductIdHost}/detail/{storeId}";
 
-    private StoreOffer? FindFirstOffer(JsonElement root)
+    /// <summary>
+    /// The locale store page without its tracking query, e.g.
+    /// <c>https://www.xbox.com/es-MX/games/store/octopath-traveler/9n9606cc950j</c>. Measured: this is what
+    /// ITAD's Microsoft deal link lands on, so when the id was read out of that link the link itself is the
+    /// better offer URL — it carries the slug and the Spanish locale, where <see cref="BuildDealUrl"/> only
+    /// carries the id. Both resolve; this one is what a buyer would share.
+    /// </summary>
+    public static string StorePageUrl(Uri url) => url.GetLeftPart(UriPartial.Path);
+
+    private StoreOffer? FindFirstOffer(JsonElement root, string? dealUrl)
     {
-        // The lookup answers with "Products" (an array), not "Product": measured against the live catalog.
-        if (!root.TryGetProperty("Products", out var products) || products.ValueKind != JsonValueKind.Array)
+        // Measured: the alternate-id lookup answers "Products" (an array) and the direct product call
+        // answers "Product" (a single object). The payload inside is the same, only the envelope differs.
+        if (root.TryGetProperty("Products", out var products) && products.ValueKind == JsonValueKind.Array)
         {
-            throw new JsonException(MalformedPayloadMessage);
-        }
-
-        foreach (var product in products.EnumerateArray())
-        {
-            var offer = ToOffer(product);
-            if (offer is not null)
+            foreach (var product in products.EnumerateArray())
             {
-                return offer;
+                if (ToOffer(product, dealUrl) is { } offer)
+                {
+                    return offer;
+                }
             }
+
+            return null;
         }
 
-        return null;
+        if (root.TryGetProperty("Product", out var single) && single.ValueKind == JsonValueKind.Object)
+        {
+            return ToOffer(single, dealUrl);
+        }
+
+        throw new JsonException(MalformedPayloadMessage);
     }
 
-    private StoreOffer? ToOffer(JsonElement product)
+    private StoreOffer? ToOffer(JsonElement product, string? dealUrl)
     {
         if (product.ValueKind != JsonValueKind.Object)
         {
@@ -226,7 +421,7 @@ public sealed class MicrosoftStoreClient(
             discounted,
             settings.Currency,
             discountPercent,
-            BuildDealUrl(storeId));
+            dealUrl ?? BuildDealUrl(storeId));
     }
 
     /// <summary>
@@ -342,16 +537,8 @@ public sealed class MicrosoftStoreClient(
         return true;
     }
 
-    private async Task<HttpResponseMessage> GetProductAsync(
-        string packageFamilyName,
-        CancellationToken cancellationToken)
+    private async Task<HttpResponseMessage> GetAsync(string path, CancellationToken cancellationToken)
     {
-        // Both parameters are mandatory and there is no "clave=valor" form: measured, dropping either one
-        // answers an empty result set rather than an error.
-        var path = $"{LookupPath}?alternateId={PackageFamilyNameAlternateId}" +
-            $"&value={Uri.EscapeDataString(packageFamilyName)}" +
-            $"&fieldsTemplate=Details&market={settings.Market}&languages={settings.Languages}";
-
         using var lease = await governor.AcquireAsync(cancellationToken);
 
         return await httpClient.GetAsync(path, cancellationToken);

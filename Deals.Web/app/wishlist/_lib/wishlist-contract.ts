@@ -13,6 +13,13 @@ export type WishlistItem = {
   readonly addedAt: string | null;
   readonly itadGameId: string | null;
   readonly refreshedAt: string | null;
+  // Los cinco sellos de proveedor, uno por fuente. Null significa «sin sincronizar todavía», que no es lo
+  // mismo que una fecha vieja: el primero nunca ha corrido, el segundo corrió y falló.
+  readonly steamSyncedAt: string | null;
+  readonly itadSyncedAt: string | null;
+  readonly ggDealsSyncedAt: string | null;
+  readonly epicSyncedAt: string | null;
+  readonly microsoftSyncedAt: string | null;
   // Snapshot de precios del juego. Nullable por diseño: un juego recién importado todavía no tiene
   // observación, y cada campo se pinta como "—" sin inventar un 0.
   readonly basePriceMinor: number | null;
@@ -169,6 +176,11 @@ function normalizeWishlistItem(value: unknown): WishlistItem | null {
     addedAt: toIsoDateTime(read(value, "addedAt")),
     itadGameId: toBoundedText(read(value, "itadGameId"), MAX_ITAD_GAME_ID_LENGTH),
     refreshedAt: toIsoDateTime(read(value, "refreshedAt")),
+    steamSyncedAt: toIsoDateTime(read(value, "steamSyncedAt")),
+    itadSyncedAt: toIsoDateTime(read(value, "itadSyncedAt")),
+    ggDealsSyncedAt: toIsoDateTime(read(value, "ggDealsSyncedAt")),
+    epicSyncedAt: toIsoDateTime(read(value, "epicSyncedAt")),
+    microsoftSyncedAt: toIsoDateTime(read(value, "microsoftSyncedAt")),
     basePriceMinor: toPriceMinor(read(value, "basePriceMinor")),
     baseCurrency: toCurrencyCode(read(value, "baseCurrency")),
     historyLowMinor: toPriceMinor(read(value, "historyLowMinor")),

@@ -842,7 +842,6 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
         return new ItadDeal(
             shopId,
             shopName,
-            settings.OfficialShopIds.Contains(shopId),
             currency,
             ReadOptionalAmount(GetElement(item, "regular", "amountInt")),
             currentPriceMinor,
