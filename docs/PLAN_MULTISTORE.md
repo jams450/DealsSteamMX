@@ -1,7 +1,8 @@
 # DealExt: plan multi-tienda (Epic / Xbox / Ubisoft)
 
-Estado: **análisis con sondas ejecutadas, pendiente de aprobación**. Solo análisis y plan; no hay
-código escrito ni migración aplicada.
+Estado: **Fases 0 y 1 implementadas, desplegadas y verificadas en producción** (Epic devuelve MXN
+nativo en la ficha). Fases 2 a 6 pendientes. Commit `865ec95`; migraciones `2026-10-02` y `2026-10-03`
+aplicadas a mano en el servidor y `SQL/checks/game_offers_anchor.sql` en 0 filas.
 
 Continúa a `PLAN_CATALOG.md` (identidad canónica), `PLAN_ITAD.md` (comparador actual),
 `PLAN_GGDEALS.md` (keyshops) y `PLAN_LIBRARY.md` §10 (`LookupByShopAsync`). Leer también `AGENTS.md`.
@@ -231,6 +232,28 @@ es posesión" (que sigue siendo correcto como etiqueta, no como bloqueo de preci
   distinto de cero. En el caso medido, el SKU `0010` a MXN 1599 con `WholesalePrice 964.92` era el
   comprable; los `0.0` eran licencias de suscripción/Game Pass.
 - **Gotcha:** `products/lookup` no acepta la sintaxis `clave=valor`; exige `alternateId` + `value`.
+- **Gotcha:** `alternateId=ProductId` **no existe**: devuelve 0 resultados incluso con un id válido
+  (`9NKVX66J0ZSK`, medido). El único camino de identidad que funciona es `alternateId=PackageFamilyName`.
+  Un StoreId suelto no se puede tarificar directo; requiere el search filtrado por `productId` exacto.
+- **Gotcha:** el response de `products/lookup` trae `Products` (array, P mayúscula) y **no** `Product`.
+  `Products[0].ProductId` viene en **mayúsculas** mientras que el search lo da en minúsculas: hay que
+  normalizar a minúsculas antes de persistir, que es lo que ITAD acepta.
+
+#### Correcciones medidas después (implementación de la Fase 2)
+
+Una batería de sondas de solo lectura sobre la forma real del JSON, que ajusta lo de arriba:
+
+| Medición | Resultado |
+|---|---|
+| `displaycatalog?alternateId=ProductId&value=9NKVX66J0ZSK` | **0 resultados** (también en minúsculas). Ese `alternateId` no sirve |
+| `apps.microsoft.com/api/products/search?query=<PFN>` | `totalCount: 0` y una lista de 10 productos **no relacionados**. El search es **solo por título** y sus resultados **nunca** son un match sin filtro por id exacto |
+| Dónde vive el precio | `Products[0].DisplaySkuAvailabilities[].Availabilities[].OrderManagementData.Price.{CurrencyCode,ListPrice,MSRP}` |
+| Regla de SKU | filtrar `Actions` con `Purchase` **y** `ListPrice > 0` |
+| Dead Cells (`0010`) | `ListPrice=439.0`, `MSRP=439.0` (sin descuento). `WholesalePrice=307.3` **no** es el precio del usuario |
+| OCTOPATH TRAVELER (`0010`) | `ListPrice=419.7`, `MSRP=1399.0` → descuento `1 − ListPrice/MSRP` = **−70 %**, igual que el badge de la tienda |
+| Cities: Skylines (en suscripción) | **una** availability `Purchase` a 709/709 **más dos a 0.0/0.0**. El síntoma "Incluido" de arriba es del *search* (`price: 0`); en `displaycatalog` aparece como esas filas a 0. Las dos se resuelven con la misma regla: `ListPrice > 0` |
+| `Products[0].PreferredSkuId` | `0010` en los tres casos medidos: selecciona el SKU |
+| `deal_url` sin slug ni título | `https://apps.microsoft.com/detail/{storeId_en_minúsculas}` → **200** y redirige a la URL canónica `www.xbox.com/{locale}/games/store/{slug}/{id}`; un id falso → **410** `ProductNotFound`. `www.xbox.com/{locale}/games/store/-/{id}` también resuelve (404 con id falso) pero necesita el guion como slug |
 
 ### 4.3 Ubisoft — sin scraper, con enlace de revisión manual
 
@@ -427,7 +450,7 @@ Deudas que esta fase **crea** y que la Fase 2 paga (no son opcionales):
 No se podía saltar: es el único cambio que abre la puerta a todo lo demás y `PLAN_CATALOG.md` ya lo
 preveía.
 
-### Fase 1 — cadena de identidad + cliente de tienda genérico + Epic — **implementado**
+### Fase 1 — cadena de identidad + cliente de tienda genérico + Epic — **implementado y verificado en runtime**
 
 **Primero la identidad, porque es lo que evita buscar por nombre.** La cadena implementada, en orden:
 
@@ -491,6 +514,12 @@ Evidencia de que funciona, contra la tienda real (solo lectura, sin key):
 Migración: `SQL/migrations/2026-10-03_epic_store_offers.sql` (solo `steam_games.epic_refreshed_at`; las
 filas de Epic son ofertas normales, sin columnas propias).
 
+**Verificación en producción (hecha):** desplegado el contenedor con la imagen de runtime
+`aspnet:9.0-azurelinux3.0`, la ficha de OCTOPATH TRAVELER muestra el grupo *Epic Games Store* con
+**MXN 161.99**. Ese importe no puede venir de ITAD — que para ese juego estimaba ≈ MXN 327 vía
+`fx_estimate` — así que sale del GraphQL de Epic: la cadena de identidad, el cliente y el arreglo de
+la huella TLS funcionaron a la vez. Queda cerrada la pregunta que este plan dejó abierta en §2.1.
+
 ### Fase 2 — Microsoft / Xbox
 
 - **Pagar las tres deudas que la Fase 1 no podía alcanzar**: buscar la oferta por
@@ -498,14 +527,21 @@ filas de Epic son ofertas normales, sin columnas propias).
   `GameMergeService` (borrar la colisión y luego repuntar, como los favoritos) y relajar
   `steam_game_id` a `NULL`-able en su propia migración. Es esta fase, y no la 1, porque es la primera
   que escribe la oferta de un juego que puede no tener fila de Steam.
-- `MicrosoftStoreClient`: por StoreId resuelto (`GetByStoreIdAsync`) y por PackageFamilyName como
-  camino propio de los juegos poseídos (`products/lookup?alternateId=PackageFamilyName&value=…`).
+- `MicrosoftStoreClient`, **un solo camino de identidad**, que es lo que las sondas permiten
+  (§4.2 *Correcciones medidas después*): `GetByStoreIdAsync` **no existe** como tal, y el `search`
+  necesita título. El camino implementable es **PackageFamilyName → `products/lookup`**, que devuelve
+  en la misma respuesta el `ProductId` (el id canónico) y el precio. El respaldo por título con filtro
+  de id exacto se **pospone**: solo hace falta para identidades que vengan de un `deal_url` de ITAD sin
+  PFN, que es material de la Fase 5.
 - `source='microsoft'`, `classification='official'`, `pricing_type='regional'`, MXN nativo.
-- Identidad: `('xbox', storeId_lowercase)`.
+- Identidad: `('xbox', storeId_en_minúsculas)` — el response lo da en mayúsculas y se normaliza.
 - Precio MX para los 348 juegos de Xbox de la biblioteca vía su PackageFamilyName. Cambiar la
   exclusión por `state='subscription'` de "sin precio" a "con precio, sin badge de propiedad".
+  **Ojo:** hoy `LibraryPriceBindingService` corta en `state='subscription'` como "nunca una consulta"
+  (paso 1 de `ResolveAsync`), así que la decisión toca ese servicio, no solo la UI.
 - Gotcha medido: un título incluido en suscripción devuelve `displayPrice: "Incluido"` y `price`
-  nulo (AC Mirage base). Sin importe numérico no se escribe oferta.
+  nulo (AC Mirage base). Sin importe numérico no se escribe oferta. En `products/lookup` ese mismo caso
+  llega como availabilities `Purchase` extra a `0.0`, así que la regla única es `ListPrice > 0`.
 
 ### Fase 3 — limpieza de ITAD
 
@@ -624,7 +660,7 @@ Nada de SDKs de terceros para GraphQL ni para Microsoft Store.
 | 1 | `searchStore` devuelve `OCTOPATH TRAVELER™` con **MXN 161.99**, `urlSlug: octopath-traveler`, `id=f51ebf66…` — **verificado** |
 | 1 | Seguir el `deal_url` de ITAD de Epic resuelve a `www.epicgames.com/store/p/octopath-traveler?epic_game_id=…` y de ahí sale el slug: sin coincidencia por título — **verificado con un `itad.link` real** |
 | 1 | Un título con parecido engañoso (`OCTOPATH TRAVELER 0`) **no** escribe oferta en la ficha de `OCTOPATH TRAVELER` — **verificado** con un slug ajeno |
-| 1 | `SQL/checks/game_offers_anchor.sql` devuelve 0 filas, incluida la consulta 6 (ninguna fila de Epic con FX) — **pendiente en el servidor** |
+| 1 | `SQL/checks/game_offers_anchor.sql` devuelve 0 filas, incluida la consulta 6 (ninguna fila de Epic con FX) — **verificado en producción** |
 | 2 | Dead Cells desde el export de Playnite: `('xbox', 9nkvx66j0zsk)` resuelto y oferta **MXN 439.00** regional |
 | 3 | Ninguna fila con `source='itad'` y `shop_id='61'`; toda fila de ITAD con `pricing_type='fx_estimate'` |
 | 4 | AC Mirage tiene `publisher='Ubisoft'` rellenado sin ninguna petición extra, y muestra el botón a Ubisoft Store |
