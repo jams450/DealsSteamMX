@@ -111,13 +111,14 @@ CREATE INDEX idx_steam_price_observations_game_observed
 -- append-only price history stays in steam_price_observations. MXN columns are derived;
 -- the original price columns are never overwritten.
 -- game_id is the canonical anchor (docs/PLAN_MULTISTORE.md §5) and region is the country the offer was
--- priced for. Both are backfilled from steam_games. steam_game_id stays NOT NULL until a provider can
--- write an offer for a game that has no Steam row.
+-- priced for. Both are backfilled from steam_games. steam_game_id is nullable because a store can sell a
+-- game Steam does not (microsoft, Fase 2): such an offer carries game_id and no steam_game_id. uq_game_offers
+-- still dedupes the Steam-anchored rows, and uq_game_offers_canonical the rest.
 -- history_low_all_minor / history_low_currency are provider-neutral: ITAD fills them from
 -- historyLow.all, gg.deals from historicalRetail / historicalKeyshops.
 CREATE TABLE game_offers (
     game_offer_id BIGSERIAL PRIMARY KEY,
-    steam_game_id INT NOT NULL REFERENCES steam_games(steam_game_id) ON DELETE CASCADE,
+    steam_game_id INT NULL REFERENCES steam_games(steam_game_id) ON DELETE CASCADE,
     region VARCHAR(2) NOT NULL,
     source VARCHAR(16) NOT NULL,
     offer_key VARCHAR(128) NOT NULL,

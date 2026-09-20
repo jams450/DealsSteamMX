@@ -37,16 +37,32 @@ HAVING count(*) > 1;
 --    steam_games sin game_id, y este archivo exige 0 filas en cada consulta.
 -- SELECT count(*) FROM public.game_offers WHERE game_id IS NULL;
 
--- 6. Ninguna oferta de tienda directa (source = 'epic', docs/PLAN_MULTISTORE.md Fase 1) convertida por FX.
---    Esas tiendas responden en la moneda de la región, así que su fila tiene que ser regional y su precio
+-- 6. Ninguna oferta de tienda directa (source = 'epic' Fase 1, source = 'microsoft' Fase 2) convertida por
+--    FX. Esas tiendas responden en la moneda de la región, así que su fila tiene que ser regional y su precio
 --    MXN idéntico al original. Una fila aquí significa que se escribió una conversión sobre un precio que
 --    ya era MXN, o al revés.
 SELECT game_offer_id, source, original_currency, pricing_type,
        original_current_price_minor, mxn_current_price_minor, fx_rate
 FROM public.game_offers
-WHERE source = 'epic'
+WHERE source IN ('epic', 'microsoft')
   AND (original_currency <> 'MXN'
        OR pricing_type <> 'regional'
        OR mxn_current_price_minor IS DISTINCT FROM original_current_price_minor
        OR mxn_regular_price_minor IS DISTINCT FROM original_regular_price_minor
        OR fx_rate IS NOT NULL);
+
+-- 7. Ninguna oferta de Xbox (source = 'microsoft') sin ancla canónica. Estas filas no tienen por qué tener
+--    snapshot de Steam, y por eso steam_game_id es NULL; pero sin game_id no hay nada que las encuentre, ni
+--    el detalle (que lee por game_id) ni una futura página canónica. Una fila aquí es una oferta huérfana.
+SELECT game_offer_id, steam_game_id, region
+FROM public.game_offers
+WHERE source = 'microsoft'
+  AND game_id IS NULL;
+
+-- 8. Toda oferta con steam_game_id NULL tiene que ser de Xbox. El único escritor de una oferta sin snapshot
+--    es el pase de precios de tienda (source = 'microsoft'); ITAD y gg.deals se descubren por el snapshot de
+--    Steam, así que una sin él es un dato que nadie refresca ni borra.
+SELECT game_offer_id, source, offer_key
+FROM public.game_offers
+WHERE steam_game_id IS NULL
+  AND source <> 'microsoft';

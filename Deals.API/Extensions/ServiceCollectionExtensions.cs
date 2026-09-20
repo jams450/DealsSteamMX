@@ -152,6 +152,50 @@ public static class ServiceCollectionExtensions
         });
         services.AddScoped<IStorePriceProvider>(serviceProvider => serviceProvider.GetRequiredService<EpicStoreClient>());
 
+        services.AddOptions<MicrosoftOptions>()
+            .Validate(
+                options => IsHttps(options.BaseUrl),
+                "Microsoft:BaseUrl must be an absolute HTTPS URL.")
+            .Validate(
+                options => options.Market?.Length == 2 && options.Market.All(char.IsAsciiLetterUpper),
+                "Microsoft:Market must be a two-letter uppercase country code.")
+            .Validate(
+                options => !string.IsNullOrWhiteSpace(options.Languages) && options.Languages.Length <= 32,
+                "Microsoft:Languages must be a non-empty language list.")
+            .Validate(
+                options => options.Currency?.Length == 3 && options.Currency.All(char.IsAsciiLetterUpper),
+                "Microsoft:Currency must be a three-letter uppercase currency code.")
+            .Validate(
+                options => !string.IsNullOrWhiteSpace(options.UserAgent) && options.UserAgent.Length <= 256,
+                "Microsoft:UserAgent must be configured.")
+            .ValidateOnStart();
+
+        services.AddSingleton(serviceProvider =>
+        {
+            var options = serviceProvider.GetRequiredService<IOptions<MicrosoftOptions>>().Value;
+            return new MicrosoftStoreClientSettings(options.Market, options.Languages, options.Currency);
+        });
+
+        // Deliberately NOT mapped onto IStorePriceProvider. SteamGameService resolves that interface for its
+        // Epic phase, and .NET DI hands a single-instance request the LAST registration: an unkeyed mapping
+        // here would make every Epic refresh call the Microsoft client with an Epic slug, quietly returning
+        // no offer and purging the Epic rows. Consumers of this store ask for MicrosoftStoreClient by name,
+        // which is also the right shape for a pass that only Microsoft ids can drive.
+        services.AddHttpClient<MicrosoftStoreClient>((serviceProvider, client) =>
+        {
+            var options = serviceProvider.GetRequiredService<IOptions<MicrosoftOptions>>().Value;
+            if (!IsHttps(options.BaseUrl))
+            {
+                throw new InvalidOperationException("Microsoft:BaseUrl must be an absolute HTTPS URL.");
+            }
+
+            client.BaseAddress = new Uri(options.BaseUrl);
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.TimeoutSeconds, 1, 60));
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(options.UserAgent);
+        });
+
+        services.AddScoped<ILibraryStorePriceService, LibraryStorePriceService>();
+
         services.AddOptions<FxOptions>()
             .Validate(
                 options => IsHttps(options.BaseUrl),

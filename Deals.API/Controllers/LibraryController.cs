@@ -47,6 +47,7 @@ public class LibraryController : ControllerBase
     private readonly IReviewService _reviewService;
     private readonly IFavoriteService _favoriteService;
     private readonly ILibraryCoverService _libraryCoverService;
+    private readonly ILibraryStorePriceService _libraryStorePriceService;
 
     public LibraryController(
         IRepository repository,
@@ -54,7 +55,8 @@ public class LibraryController : ControllerBase
         ILibraryPriceBindingService libraryPriceBindingService,
         IReviewService reviewService,
         IFavoriteService favoriteService,
-        ILibraryCoverService libraryCoverService)
+        ILibraryCoverService libraryCoverService,
+        ILibraryStorePriceService libraryStorePriceService)
     {
         _repository = repository;
         _gameIdentityResolver = gameIdentityResolver;
@@ -62,6 +64,7 @@ public class LibraryController : ControllerBase
         _reviewService = reviewService;
         _favoriteService = favoriteService;
         _libraryCoverService = libraryCoverService;
+        _libraryStorePriceService = libraryStorePriceService;
     }
 
     [HttpPost("import")]
@@ -221,6 +224,32 @@ public class LibraryController : ControllerBase
 
         var result = await _libraryCoverService.SyncMissingCoversAsync(GetUserId(), limit, cancellationToken);
         return Ok(LibraryCoverSyncResponse.From(result));
+    }
+
+    /// <summary>
+    /// Prices the library rows Steam cannot price, today the Xbox ones, one bounded pass. This is the only
+    /// writer of an offer without a Steam snapshot: the offer hangs off the canonical game, because the
+    /// library row's store id (a PackageFamilyName) is not a Steam appid. A row already priced inside the
+    /// refresh window is skipped, so calling this repeatedly walks the library instead of re-asking the store.
+    /// </summary>
+    [HttpPost("prices/sync")]
+    public async Task<IActionResult> SyncStorePrices(
+        [FromBody] LibraryStorePriceSyncRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var limit = request?.Limit ?? LibraryStorePriceLimits.Default;
+        if (limit < 1 || limit > LibraryStorePriceLimits.Max)
+        {
+            throw new ArgumentException(
+                $"El límite debe estar entre 1 y {LibraryStorePriceLimits.Max} juegos",
+                nameof(request));
+        }
+
+        var result = await _libraryStorePriceService.SyncStorePricesAsync(
+            GetUserId(),
+            limit,
+            cancellationToken);
+        return Ok(LibraryStorePriceSyncResponse.From(result));
     }
 
     [HttpGet]

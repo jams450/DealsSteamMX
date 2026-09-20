@@ -170,7 +170,9 @@ public class WishlistController : ControllerBase
         // price. Nulls are ignored by the minima and 0 stays a real price (free games exist).
         var steamGameIds = games.Select(game => game.SteamGameId).Distinct().ToList();
         var aggregatesByGameId = await _repository.Get<GameOffer>()
-            .Where(offer => steamGameIds.Contains(offer.SteamGameId))
+            // A row with no Steam snapshot (source='microsoft') is not part of this aggregate, which is keyed
+            // by the Steam snapshot the wishlist rows carry.
+            .Where(offer => offer.SteamGameId != null && steamGameIds.Contains(offer.SteamGameId.Value))
             .GroupBy(offer => offer.SteamGameId)
             .Select(group => new
             {
@@ -188,7 +190,7 @@ public class WishlistController : ControllerBase
                         ? offer.MxnCurrentPriceMinor
                         : null)
             })
-            .ToDictionaryAsync(aggregate => aggregate.SteamGameId, cancellationToken);
+            .ToDictionaryAsync(aggregate => aggregate.SteamGameId!.Value, cancellationToken);
 
         var items = new List<WishlistItemResponse>(rows.Count);
         foreach (var row in rows)

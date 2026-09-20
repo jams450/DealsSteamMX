@@ -786,18 +786,20 @@ export function GameClient({ appId }: GameClientProps) {
 
   // Agrupado por proveedor: cada grupo compara y marca sus propias filas. `classification` ya no
   // filtra nada, solo decide el badge (oficial / keyshop / ninguno).
-  // Tienda directa (Epic) trae una oferta por juego con precio regional → tabla, primero porque su
+  // Tienda directa (Epic, Microsoft) trae una oferta por juego con precio regional → tabla, primero porque su
   // importe es el real de la región y no una estimación.
   // ITAD trae una oferta por tienda → tabla. gg.deals trae un agregado por bucket → lista compacta.
   const epicOffers = (game.offers ?? []).filter((offer) => offer.source === "epic");
+  const microsoftOffers = (game.offers ?? []).filter((offer) => offer.source === "microsoft");
   const itadOffers = (game.offers ?? []).filter((offer) => offer.source === "itad");
   const ggDealsOffers = (game.offers ?? []).filter((offer) => offer.source === "ggdeals");
   const groups = [
     { id: "offers-epic", heading: "Epic Games Store", offers: epicOffers, cheapest: cheapestOfferKeys(epicOffers), aggregate: false },
+    { id: "offers-microsoft", heading: "Microsoft Store", offers: microsoftOffers, cheapest: cheapestOfferKeys(microsoftOffers), aggregate: false },
     { id: "offers-itad", heading: "ITAD", offers: itadOffers, cheapest: cheapestOfferKeys(itadOffers), aggregate: false },
     { id: "offers-ggdeals", heading: "gg.deals", offers: ggDealsOffers, cheapest: cheapestOfferKeys(ggDealsOffers), aggregate: true }
   ];
-  const totalOffers = epicOffers.length + itadOffers.length + ggDealsOffers.length;
+  const totalOffers = epicOffers.length + microsoftOffers.length + itadOffers.length + ggDealsOffers.length;
   const stale = game.offersStale || game.ggDealsStale;
   // Activos primero; dentro de cada grupo se respeta el orden del proveedor.
   const sortedBundles = [...game.bundles];

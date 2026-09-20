@@ -15,8 +15,14 @@ public class GameOffer : BaseModel
     [Column("game_offer_id")]
     public long GameOfferId { get; set; }
 
+    /// <summary>
+    /// Steam snapshot the offer used to hang off exclusively. Nullable since Fase 2: a store can sell a game
+    /// Steam does not (<c>source='microsoft'</c>), and that offer has no <see cref="SteamGameId"/> to point
+    /// at. Such a row requires <see cref="GameId"/>, which is what makes the canonical key enforce its
+    /// uniqueness.
+    /// </summary>
     [Column("steam_game_id")]
-    public int SteamGameId { get; set; }
+    public int? SteamGameId { get; set; }
 
     /// <summary>
     /// Canonical anchor (docs/PLAN_MULTISTORE.md §5), derived from <see cref="SteamGameId"/>. Nullable

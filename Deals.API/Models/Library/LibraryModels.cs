@@ -72,6 +72,33 @@ public sealed record LibraryItemResponse(
 public sealed record LibraryCoverSyncRequest(int? Limit);
 
 /// <summary>
+/// Body of a store price sync pass. <see cref="Limit"/> is optional: the service applies its own default
+/// and rejects a value outside 1..<c>LibraryStorePriceLimits.Max</c>.
+/// </summary>
+public sealed record LibraryStorePriceSyncRequest(int? Limit);
+
+/// <summary>
+/// Wire contract of a store price pass. <see cref="Pending"/> is what the pass still has to visit when the
+/// response leaves, so the caller loops on it instead of guessing a batch size.
+/// </summary>
+public sealed record LibraryStorePriceSyncResponse(
+    int Pending,
+    int Unsupported,
+    int Updated,
+    int Failed,
+    int Rejected,
+    int Remaining)
+{
+    public static LibraryStorePriceSyncResponse From(LibraryStorePriceSyncResult result) => new(
+        result.Pending,
+        result.Unsupported,
+        result.Updated,
+        result.Failed,
+        result.Rejected,
+        result.Remaining);
+}
+
+/// <summary>
 /// Wire contract of a cover sync pass, mirroring <c>Deals.Web/lib/contracts/library-covers.ts</c>.
 /// </summary>
 public sealed record LibraryCoverSyncResponse(

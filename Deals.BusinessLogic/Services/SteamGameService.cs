@@ -498,7 +498,12 @@ public sealed class SteamGameService(
                 // another canonical game, this game must not be priced from that store's page, because the
                 // offer would describe a different game.
                 var accepted = epicRefresh.Offer is null ||
-                    await ClaimEpicExternalIdAsync(game, epicRefresh.Offer.ExternalId, cancellationToken);
+                    await GameIdentityClaimer.TryClaimAsync(
+                        repository,
+                        game.GameId,
+                        GameExternalIdNamespaces.Epic,
+                        epicRefresh.Offer.ExternalId,
+                        cancellationToken);
 
                 var applied = accepted ? epicRefresh : EpicRefreshResult.NoMatch();
 
@@ -1320,43 +1325,6 @@ public sealed class SteamGameService(
             game,
             EpicSource,
             new HashSet<string>(StringComparer.OrdinalIgnoreCase) { StoreOfferKey });
-    }
-
-    /// <summary>
-    /// Claims the Epic external id for this game and reports whether the offer may be written, i.e. whether
-    /// this game owns the store id. Same atomic claim the identity resolver uses, scoped to the Epic
-    /// namespace so a slug already owned elsewhere is dropped here instead of aborting the whole detail
-    /// request. DB-only and inside the caller's transaction.
-    /// </summary>
-    private async Task<bool> ClaimEpicExternalIdAsync(
-        SteamGame game,
-        string externalId,
-        CancellationToken cancellationToken)
-    {
-        if (game.GameId is not long gameId)
-        {
-            // No canonical row to attach the mapping to. The offer is still written and stays keyed by the
-            // Steam snapshot, so the price is not lost; the id is claimed once the backfill gives this game
-            // a canonical row.
-            return true;
-        }
-
-        var inserted = await repository.ExecuteSqlRawAsync(
-            "INSERT INTO game_external_ids (game_id, namespace, external_id, created_at, updated_at) " +
-            "VALUES ({0}, {1}, {2}, NOW(), NOW()) ON CONFLICT (namespace, external_id) DO NOTHING",
-            gameId, GameExternalIdNamespaces.Epic, externalId);
-
-        if (inserted > 0)
-        {
-            return true;
-        }
-
-        var owner = await repository.Get<GameExternalId>()
-            .Where(id => id.NamespaceName == GameExternalIdNamespaces.Epic && id.ExternalId == externalId)
-            .Select(id => (long?)id.GameId)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        return owner == gameId;
     }
 
     /// <summary>

@@ -220,10 +220,21 @@ public sealed class GameMergeService : IGameMergeService
                 absorbedGameId);
 
             // Offers move with the game because game_offers.game_id is a NO ACTION FK: leaving them behind
-            // would make the DELETE below raise 23503. No collision handling is needed while every offer
-            // hangs off a steam_game_id and step 3 allows at most one Steam appid per game, so the
-            // survivor cannot already own the absorbed game's (region, source, offer key). The phase that
-            // writes Steam-less offers has to add it, exactly as favorites do it a few lines below.
+            // would make the DELETE below raise 23503. A Steam-less offer (source='microsoft', Fase 2) is
+            // keyed by (game_id, region, source, offer_key) instead of by a steam_game_id, so the survivor
+            // can already own the absorbed game's key and the repoint would raise 23505. The collision is
+            // deleted first, exactly as favorites do it a few lines below: the survivor's row loses, which
+            // is arbitrary but self-healing, because the refresh gate rewrites it on the next look.
+            await _repository.ExecuteSqlRawAsync(
+                """
+                DELETE FROM public.game_offers a
+                USING public.game_offers b
+                WHERE a.game_id = {0} AND b.game_id = {1}
+                  AND a.region = b.region AND a.source = b.source AND a.offer_key = b.offer_key
+                """,
+                survivorGameId,
+                absorbedGameId);
+
             await _repository.ExecuteSqlRawAsync(
                 "UPDATE public.game_offers SET game_id = {0}, updated_at = NOW() WHERE game_id = {1}",
                 survivorGameId,

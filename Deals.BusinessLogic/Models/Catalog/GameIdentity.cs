@@ -1,3 +1,5 @@
+using Deals.BusinessLogic.Models.Library;
+
 namespace Deals.BusinessLogic.Models.Catalog;
 
 /// <summary>
@@ -14,6 +16,12 @@ public static class GameExternalIdNamespaces
     /// for shop 16 and which the store resolves back to a single offer.
     /// </summary>
     public const string Epic = "epic";
+
+    /// <summary>
+    /// Microsoft Store (Xbox). The id is the StoreId in lowercase (<c>9nkvx66j0zsk</c>), the format ITAD
+    /// accepts for shop 48. The catalog answers it in uppercase and every writer normalizes it here.
+    /// </summary>
+    public const string Xbox = StoreKeys.Xbox;
 }
 
 /// <summary>One exact external identifier: a namespace plus its immutable id.</summary>

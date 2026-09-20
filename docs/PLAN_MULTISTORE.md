@@ -1,8 +1,10 @@
 # DealExt: plan multi-tienda (Epic / Xbox / Ubisoft)
 
-Estado: **Fases 0 y 1 implementadas, desplegadas y verificadas en producción** (Epic devuelve MXN
-nativo en la ficha). Fases 2 a 6 pendientes. Commit `865ec95`; migraciones `2026-10-02` y `2026-10-03`
-aplicadas a mano en el servidor y `SQL/checks/game_offers_anchor.sql` en 0 filas.
+Estado: **Fases 0, 1 y 2 implementadas y desplegadas** (Epic y Microsoft devuelven MXN nativo en la
+ficha). Fase 2 **sin verificar en runtime**: falta aplicar su migración y correr el pase de precios.
+Fases 3 a 6 pendientes. Fase 1 verificada en producción con el commit `865ec95`; migraciones
+`2026-10-02` y `2026-10-03` aplicadas a mano en el servidor y `SQL/checks/game_offers_anchor.sql` en
+0 filas.
 
 Continúa a `PLAN_CATALOG.md` (identidad canónica), `PLAN_ITAD.md` (comparador actual),
 `PLAN_GGDEALS.md` (keyshops) y `PLAN_LIBRARY.md` §10 (`LookupByShopAsync`). Leer también `AGENTS.md`.
@@ -520,28 +522,41 @@ filas de Epic son ofertas normales, sin columnas propias).
 `fx_estimate` — así que sale del GraphQL de Epic: la cadena de identidad, el cliente y el arreglo de
 la huella TLS funcionaron a la vez. Queda cerrada la pregunta que este plan dejó abierta en §2.1.
 
-### Fase 2 — Microsoft / Xbox
+### Fase 2 — Microsoft / Xbox — **implementado**
 
-- **Pagar las tres deudas que la Fase 1 no podía alcanzar**: buscar la oferta por
-  `(game_id, region, source, offer_key)` en `GetOrCreateOffer`, manejar la colisión de `game_offers` en
-  `GameMergeService` (borrar la colisión y luego repuntar, como los favoritos) y relajar
-  `steam_game_id` a `NULL`-able en su propia migración. Es esta fase, y no la 1, porque es la primera
-  que escribe la oferta de un juego que puede no tener fila de Steam.
-- `MicrosoftStoreClient`, **un solo camino de identidad**, que es lo que las sondas permiten
-  (§4.2 *Correcciones medidas después*): `GetByStoreIdAsync` **no existe** como tal, y el `search`
-  necesita título. El camino implementable es **PackageFamilyName → `products/lookup`**, que devuelve
-  en la misma respuesta el `ProductId` (el id canónico) y el precio. El respaldo por título con filtro
-  de id exacto se **pospone**: solo hace falta para identidades que vengan de un `deal_url` de ITAD sin
-  PFN, que es material de la Fase 5.
-- `source='microsoft'`, `classification='official'`, `pricing_type='regional'`, MXN nativo.
-- Identidad: `('xbox', storeId_en_minúsculas)` — el response lo da en mayúsculas y se normaliza.
-- Precio MX para los 348 juegos de Xbox de la biblioteca vía su PackageFamilyName. Cambiar la
-  exclusión por `state='subscription'` de "sin precio" a "con precio, sin badge de propiedad".
-  **Ojo:** hoy `LibraryPriceBindingService` corta en `state='subscription'` como "nunca una consulta"
-  (paso 1 de `ResolveAsync`), así que la decisión toca ese servicio, no solo la UI.
-- Gotcha medido: un título incluido en suscripción devuelve `displayPrice: "Incluido"` y `price`
-  nulo (AC Mirage base). Sin importe numérico no se escribe oferta. En `products/lookup` ese mismo caso
-  llega como availabilities `Purchase` extra a `0.0`, así que la regla única es `ListPrice > 0`.
+- **Las tres deudas que la Fase 1 no podía alcanzar**: `GetOrCreateOffer` sigue colgando de
+  `game.Offers` (anclado a Steam) y el escritor nuevo **no lo usa**: el pase escribe por
+  `(game_id, region, source, offer_key)` (migración `2026-10-04_game_offers_steam_less.sql`),
+  `GameMergeService` ya borra la colisión de `game_offers` antes de repuntar (patrón de favoritos) y
+  `steam_game_id` es `NULL`-able.
+- **`uq_game_offers` NO se borró**, en contra de lo que decía este plan. Sigue siendo el único dedupe de
+  las ofertas ancladas a Steam y una fila con `steam_game_id` nulo no lo debilita (Postgres trata los
+  `NULL` como distintos). Se borra el día que ningún escritor pueda dejar `game_id` nulo, porque es
+  `game_id` nulo lo que deja a `uq_game_offers_canonical` sin cubrir la fila.
+- `MicrosoftStoreClient`, **un solo camino de identidad**: PackageFamilyName → `products/lookup`, que
+  devuelve en la misma respuesta el `ProductId` (el id canónico, normalizado a minúsculas) y el precio.
+  El respaldo por título con filtro de id exacto sigue **pospuesto** a la Fase 5.
+- `source='microsoft'`, `classification='official'`, `pricing_type='regional'`, MXN nativo, sin FX.
+- Identidad: `('xbox', storeId_en_minúsculas)` vía `GameIdentityClaimer`. Si el id ya pertenece a otro
+  juego canónico, la oferta **no se escribe** y se cuenta como `rejected`.
+- Escritura: `POST /api/library/prices/sync` con `{ "limit": N }` (1..50, default 10), espejo de
+  `covers/sync`. Recorre las filas de `store='xbox'` de la biblioteca, se salta las que ya tienen oferta
+  dentro de la ventana de refresco (7 días, leída de `observed_at`) y guarda una sola vez al final. La
+  respuesta es de conteos: `pending | unsupported | updated | failed | rejected | remaining`.
+- **La oferta lleva las dos anclas cuando el juego tiene fila de Steam.** No es cosmético: el detalle del
+  juego lee `game.Offers` (`steam_game_id`), así que un juego que está en Xbox *y* en Steam no se vería
+  sin eso. Un juego de Xbox que no está en Steam no tiene página de detalle que lo muestre: su oferta
+  queda bien escrita para la futura página canónica (`PLAN_CATALOG.md`), no para hoy.
+- UI: grupo **Microsoft Store** en el detalle, junto al de Epic.
+- Gotcha medido: un título incluido en suscripción llega como availability `Purchase` extra a `0.0`; la
+  regla única es `Actions` contiene `Purchase` **y** `ListPrice > 0`.
+- **Corrección al plan: la exclusión de `state='subscription'` NO se tocó.** El plan la justificaba con
+  "precio visible en la biblioteca", y la biblioteca **no pinta precios**: el contrato los normaliza
+  (`Deals.Web/app/library/_lib/library-contract.ts`) y ninguna vista los renderiza. Cambiar
+  `LibraryPriceBindingService` habría sido trabajo invisible: contrato, tests y semántica de estado a
+  cambio de nada. Sigue en pie como prerrequisito del día que la biblioteca pinte precios (o de la página
+  canónica), junto con el agregado por `game_id`, que hoy agrupa por `steam_game_id` y por eso no ve una
+  oferta sin fila de Steam.
 
 ### Fase 3 — limpieza de ITAD
 
@@ -595,6 +610,19 @@ alerta de Epic se vuelve útil por primera vez.
 
 ### Orden obligatorio
 
+| Paso | Estado |
+|---|---|
+| ~~1. Cerrar la Fase 1 en producción (§2.1)~~ | **hecho** (`05fff68`, `80b7e5f`, `865ec95`; precio Epic en MXN nativo en la ficha) |
+| 2. Fase 2 (Xbox) | **hecho en código**, pendiente de migración + pase + verificación en runtime |
+| 3. Fase 3 (limpieza de ITAD) | pendiente: quitar `61` de `ITAD__OfficialShopIds` es una línea de `.env` y borra el bug §2.2 |
+| 4. Fase 4 (publisher/developer + enlace Ubisoft) | pendiente |
+| 5. Fase 5 (job dirigido por wishlist) | pendiente |
+| 6. Fase 6 (UI por tienda) | pendiente |
+
+El orden sigue siendo el mismo: la Fase 3 depende de que las tiendas directas ya escriban su precio (si
+no, quitar Steam de ITAD deja la ficha sin precio), y la 5 depende de la cadena de identidad de la 1 y
+la 2.
+
 1. ~~Commitear el trabajo de ITAD y FX~~ — **hecho y verificado**: entró en `05fff68` y `80b7e5f`, y
    las migraciones `2026-09-17_itad_offers` / `2026-09-18_fx_rates` ya están en `HEAD`. Nada
    pendiente por ese lado; la nota de `PLAN_ITAD.md` §5 que decía lo contrario se corrigió.
@@ -639,6 +667,8 @@ Nada de SDKs de terceros para GraphQL ni para Microsoft Store.
 | Microsoft devuelve precios no numéricos para títulos incluidos en suscripción | Medido: AC Mirage base se anuncia como `displayPrice: "Incluido"` con `price` nulo. Regla: sin precio numérico no se escribe oferta |
 | La detección por publisher se convierte en un motor de reglas | Es un dato de ficha y un enlace saliente. Ninguna decisión de precio depende de `publisher` |
 | El job de identidad reintenta la búsqueda de título en cada ciclo | Regla de orden de la Fase 5: identidad primero, precios después, y el mapeo se persiste |
+| **Una fusión de juegos borra la oferta colisionante del superviviente** (§6 Fase 2: `game_offers` es único por `(game_id, region, source, offer_key)`, así que el repunte no puede conservar las dos) | Es una fila de precio, no identidad: el gate de 7 días la reescribe en el siguiente pase. `game_merges` **no** la cuenta (solo registra `moved_external_ids`, `moved_steam_games`, `moved_library_rows`); si hace falta trazar esa pérdida, la columna que falta es `dropped_game_offers` |
+| El pase de precios de Xbox no tiene botón ni ruta BFF | Es mantenimiento de admin: se corre con la llamada documentada en §10. `covers/sync` tiene botón porque su resultado **se ve** en la grilla; una biblioteca que no pinta precios no justifica UI. Si la biblioteca pinta precios (o llega la página canónica), el botón es el mismo molde |
 
 ## 9. Fuera de alcance
 
@@ -662,11 +692,58 @@ Nada de SDKs de terceros para GraphQL ni para Microsoft Store.
 | 1 | Un título con parecido engañoso (`OCTOPATH TRAVELER 0`) **no** escribe oferta en la ficha de `OCTOPATH TRAVELER` — **verificado** con un slug ajeno |
 | 1 | `SQL/checks/game_offers_anchor.sql` devuelve 0 filas, incluida la consulta 6 (ninguna fila de Epic con FX) — **verificado en producción** |
 | 2 | Dead Cells desde el export de Playnite: `('xbox', 9nkvx66j0zsk)` resuelto y oferta **MXN 439.00** regional |
+| 2 | `POST /api/library/prices/sync` devuelve `updated > 0`, `rejected = 0`, y una segunda corrida seguida devuelve `pending = 0` (la ventana de refresco ya cubre lo escrito) |
+| 2 | Un juego que está en Xbox y en Steam muestra su oferta `source='microsoft'` en la ficha, dentro del grupo **Microsoft Store**, en MXN nativo |
 | 3 | Ninguna fila con `source='itad'` y `shop_id='61'`; toda fila de ITAD con `pricing_type='fx_estimate'` |
 | 4 | AC Mirage tiene `publisher='Ubisoft'` rellenado sin ninguna petición extra, y muestra el botón a Ubisoft Store |
 | 5 | Correr el job dos veces: la segunda no emite ninguna resolución de identidad (todo cache-hit en `game_external_ids`) y solo refresca los precios con el gate vencido |
 | 5 | La wishlist de 600 juegos produce ofertas Epic y Microsoft en MXN, con `pricing_type='regional'` |
 | 6 | La ficha muestra Epic arriba con 161.99 y badge "Precio regional MX" |
+
+### Fase 2: despliegue y verificación (**aún no ejecutado**)
+
+Requisito previo: las seis variables `Microsoft__*` en el `.env` del servidor **antes** de reconstruir.
+Compose pasa cadena vacía a una variable sin definir, y la validación de `MicrosoftOptions` rechaza el
+arranque (mismo footgun que tuvo Epic en la Fase 1).
+
+```bash
+# 1. Migración a mano: no hay runner.
+docker exec -i <postgres> psql -U <usuario> -d <bd> \
+  < SQL/migrations/2026-10-04_game_offers_steam_less.sql
+
+# 2. Reconstruir la API (compose lee las variables al crear el contenedor).
+docker compose build api && docker compose up -d api
+
+# 3. Pase acotado. Repetir hasta que `remaining` sea 0. El controlador es AdminWithId.
+curl -s -X POST "$API/api/library/prices/sync" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"limit": 10}'
+```
+
+Lectura, sin modificar nada:
+
+```sql
+-- La oferta de Xbox de un juego que también está en Steam (Dead Cells: app 588650).
+SELECT o.game_id, o.steam_game_id, o.source, o.offer_key, o.region, o.classification,
+       o.pricing_type, o.original_currency, o.original_regular_price_minor,
+       o.original_current_price_minor, o.mxn_current_price_minor, o.discount_percent,
+       o.deal_url, o.observed_at
+FROM steam_games g
+JOIN game_offers o ON o.game_id = g.game_id AND o.source = 'microsoft'
+WHERE g.app_id = 588650 AND g.region = 'mx';
+
+-- La identidad reclamada: el StoreId en minúsculas (§4.2).
+SELECT game_id, namespace, external_id FROM game_external_ids
+WHERE namespace = 'xbox' ORDER BY game_id LIMIT 20;
+
+-- Cobertura: cuántas filas de Xbox de la biblioteca siguen sin precio.
+SELECT count(*) FILTER (WHERE o.game_offer_id IS NULL) AS sin_precio, count(*) AS total
+FROM user_library l
+LEFT JOIN game_offers o ON o.game_id = l.game_id AND o.source = 'microsoft' AND o.region = 'mx'
+WHERE l.store = 'xbox' AND l.game_id IS NOT NULL;
+```
+
+Esperado: Dead Cells `43900` con `pricing_type='regional'` y `steam_game_id` **no** nulo (también está en
+Steam); OCTOPATH `41970` sobre `139900` (−70 %).
 
 Sondas de reproducción del análisis (§1 y §2), todas sin key salvo la última. **Todas necesitan un
 User-Agent**: sin agente, el endpoint de Epic responde 403 (ver §6 Fase 1).

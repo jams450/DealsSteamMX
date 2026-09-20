@@ -213,7 +213,9 @@ public class LibraryPriceBindingService : ILibraryPriceBindingService
         if (steamGameIds.Count > 0)
         {
             var aggregates = await _repository.Get<GameOffer>()
-                .Where(offer => steamGameIds.Contains(offer.SteamGameId))
+                // A row with no Steam snapshot (source='microsoft') is not part of this aggregate, which is
+                // keyed by the Steam snapshot the wishlist and library rows carry.
+                .Where(offer => offer.SteamGameId != null && steamGameIds.Contains(offer.SteamGameId.Value))
                 .GroupBy(offer => offer.SteamGameId)
                 .Select(group => new
                 {
@@ -234,7 +236,7 @@ public class LibraryPriceBindingService : ILibraryPriceBindingService
                 .ToListAsync(cancellationToken);
 
             aggregatesByGameId = aggregates.ToDictionary(
-                aggregate => aggregate.SteamGameId,
+                aggregate => aggregate.SteamGameId!.Value,
                 aggregate => new Aggregate(
                     aggregate.HistoryLowMinor,
                     aggregate.BestOfficialMinor,

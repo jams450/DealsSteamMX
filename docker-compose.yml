@@ -55,6 +55,12 @@ services:
       - Epic__Locale=${Epic__Locale}
       - Epic__UserAgent=${Epic__UserAgent}
       - Epic__TimeoutSeconds=${Epic__TimeoutSeconds}
+      - Microsoft__BaseUrl=${Microsoft__BaseUrl}
+      - Microsoft__Market=${Microsoft__Market}
+      - Microsoft__Languages=${Microsoft__Languages}
+      - Microsoft__Currency=${Microsoft__Currency}
+      - Microsoft__UserAgent=${Microsoft__UserAgent}
+      - Microsoft__TimeoutSeconds=${Microsoft__TimeoutSeconds}
     networks:
       - dealext-network
       - server-data
