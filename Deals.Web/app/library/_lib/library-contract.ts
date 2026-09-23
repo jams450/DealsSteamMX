@@ -1,6 +1,6 @@
 // Rutas relativas a propósito: este módulo se cubre con `node --test`, que no resuelve el alias `@/`.
 import { normalizeReview, playStatusOf, type Review, type ReviewStatus } from "../../../lib/contracts/reviews.ts";
-import { toStoreKey } from "../../../lib/contracts/stores.ts";
+import { normalizeStore } from "../../../lib/contracts/stores.ts";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -356,7 +356,7 @@ function normalizeLibraryItem(value: unknown): LibraryItem | null {
   // La reseña solo se acepta si pertenece a esta fila: un `gameId`/`platform` que no coincide se descarta
   // en vez de pintar una reseña ajena sobre el juego equivocado.
   const gameId = toPositiveInteger(read(value, "gameId"));
-  const platform = toStoreKey(store);
+  const platform = normalizeStore(store);
   const review = normalizeReview(read(value, "review"));
   const matchedReview =
     review !== null && gameId !== null && platform !== null && review.gameId === gameId && review.platform === platform

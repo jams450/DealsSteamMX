@@ -3,6 +3,7 @@ import { csrfFetch } from "@/lib/security/csrf-client";
 import {
   normalizeCoverSyncReport,
   normalizeCoverUrl,
+  type CoverPick,
   type LibraryCoverSyncReport
 } from "@/lib/contracts/library-covers";
 import {
@@ -59,14 +60,15 @@ export async function syncLibraryCovers(limit?: number): Promise<LibraryCoverSyn
 }
 
 /**
- * Coloca la portada de un juego canónico desde el appid elegido en la búsqueda de Steam. Devuelve la URL
- * que guardó el servidor, que es la que la grilla debe pintar.
+ * Coloca la portada de un juego canónico desde el id elegido en la búsqueda: el appid de Steam o el de
+ * IGDB, exactamente uno de los dos (`CoverPick`) y nunca una URL — la resuelve el servidor. Devuelve la
+ * URL que guardó el servidor, que es la que la grilla debe pintar.
  */
-export async function setGameCover(gameId: number, steamAppId: number): Promise<string> {
+export async function setGameCover(gameId: number, pick: CoverPick): Promise<string> {
   const response = await csrfFetch(`/api/bff/games/${gameId}/cover`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ steamAppId }),
+    body: JSON.stringify(pick),
     cache: "no-store"
   });
   if (!response.ok) throw await parseApiError(response, "No se pudo guardar la portada");

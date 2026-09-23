@@ -1,6 +1,4 @@
-using System.Globalization;
 using System.Security.Claims;
-using System.Text.RegularExpressions;
 using Deals.API.Models.Library;
 using Deals.API.Models.Reviews;
 using Deals.BusinessLogic.Interfaces;
@@ -37,10 +35,6 @@ public class LibraryController : ControllerBase
         [Guid.Parse("e3c26a3d-d695-4cb7-a769-5ff7612c7edd")] = new("Battle.net", StoreKeys.Battlenet, LibraryStates.Owned)
     };
 
-    private static readonly Regex DotNetDatePattern = new(
-        @"^/Date\((-?\d+)\)/$",
-        RegexOptions.CultureInvariant);
-
     private readonly IRepository _repository;
     private readonly IGameIdentityResolver _gameIdentityResolver;
     private readonly ILibraryPriceBindingService _libraryPriceBindingService;
@@ -48,6 +42,9 @@ public class LibraryController : ControllerBase
     private readonly IFavoriteService _favoriteService;
     private readonly ILibraryCoverService _libraryCoverService;
     private readonly ILibraryStorePriceService _libraryStorePriceService;
+    private readonly IManualLibraryService _manualLibraryService;
+    private readonly IManualSearchService _manualSearchService;
+    private readonly IConsoleLibraryImportService _consoleLibraryImportService;
 
     public LibraryController(
         IRepository repository,
@@ -56,7 +53,10 @@ public class LibraryController : ControllerBase
         IReviewService reviewService,
         IFavoriteService favoriteService,
         ILibraryCoverService libraryCoverService,
-        ILibraryStorePriceService libraryStorePriceService)
+        ILibraryStorePriceService libraryStorePriceService,
+        IManualLibraryService manualLibraryService,
+        IManualSearchService manualSearchService,
+        IConsoleLibraryImportService consoleLibraryImportService)
     {
         _repository = repository;
         _gameIdentityResolver = gameIdentityResolver;
@@ -65,6 +65,9 @@ public class LibraryController : ControllerBase
         _favoriteService = favoriteService;
         _libraryCoverService = libraryCoverService;
         _libraryStorePriceService = libraryStorePriceService;
+        _manualLibraryService = manualLibraryService;
+        _manualSearchService = manualSearchService;
+        _consoleLibraryImportService = consoleLibraryImportService;
     }
 
     [HttpPost("import")]
@@ -252,6 +255,125 @@ public class LibraryController : ControllerBase
         return Ok(LibraryStorePriceSyncResponse.From(result));
     }
 
+    /// <summary>
+    /// Provider title search for the manual-add dialog: covers and years to pick from (IGDB, measured in
+    /// docs/PLAN_CONSOLE.md §2.3). Read-only; it never writes and never decides identity. A null
+    /// <c>source</c> means the provider is unavailable, which the dialog shows as such — not as "no hits".
+    /// Catalog candidates have no GET endpoint: they travel inside the POST /manual response, because
+    /// only that call can be refused by the no-title-identity rule and only it needs them.
+    /// </summary>
+    [HttpGet("manual/enrich")]
+    public async Task<IActionResult> GetManualEnrich(
+        [FromQuery] string? title,
+        CancellationToken cancellationToken)
+    {
+        var result = await _manualSearchService.SearchAsync(title ?? string.Empty, cancellationToken);
+        return Ok(ManualSearchResponse.From(result));
+    }
+
+    /// <summary>
+    /// Manual addition of a game (console or any platform) to the caller's library: the row hangs off the
+    /// canonical game_id, written as store_game_id plus a platform mapping in game_external_ids
+    /// (docs/PLAN_CONSOLE.md §4). Candidates are offered, never silently chosen. Answers 200 with an
+    /// outcome (<c>created | attached | duplicate | candidates</c>), 404 when the user no longer exists.
+    /// </summary>
+    [HttpPost("manual")]
+    public async Task<IActionResult> AddManual(
+        [FromBody] ManualLibraryAddRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _manualLibraryService.AddAsync(
+            GetUserId(),
+            request.Store,
+            request.Title,
+            request.GameId,
+            request.Create,
+            request.IsInstalled,
+            request.AddedAt,
+            request.IgdbId,
+            cancellationToken);
+        if (result is null)
+        {
+            return NotFound();
+        }
+
+        return Ok(ManualLibraryAddResponse.From(result));
+    }
+
+    /// <summary>
+    /// Read-only preview of a console bulk import (<c>docs/PLAN_CONSOLE.md</c> §7): the Playnite export rows
+    /// whose <c>Source</c> is null. Answers, per entry, the catalog candidates for its title — suggestions
+    /// only, identity is never asserted by title — and the platform slugs the catalog can infer from the
+    /// Playnite platform names, with <c>needsPlatform</c> when nothing can be suggested. It writes nothing.
+    /// <c>POST /api/library/import</c> is untouched and still requires a non-null <c>Source</c>; this
+    /// endpoint requires it null, so neither path accepts the other's payload.
+    /// </summary>
+    [HttpPost("console-import/preview")]
+    [RequestSizeLimit(MaxBodyBytes)]
+    public async Task<IActionResult> PreviewConsoleImport(
+        [FromBody] List<ConsoleImportEntryRequest>? entries,
+        CancellationToken cancellationToken)
+    {
+        var inputs = MapConsoleEntries(entries);
+        var result = await _consoleLibraryImportService.PreviewAsync(GetUserId(), inputs, cancellationToken);
+        if (result is null)
+        {
+            return NotFound();
+        }
+
+        return Ok(ConsoleImportPreviewResponse.From(result));
+    }
+
+    /// <summary>
+    /// Commits explicit console import decisions. Each entry carries the platform the person chose (validated
+    /// with <c>StoreKeys.Normalize</c>; the eight PC stores are refused) and exactly one identity action:
+    /// <c>AttachGameId</c> for an existing canonical game or <c>Create</c> for a new one — a title never
+    /// decides identity. The whole payload is validated before the first write, an identity conflict is 409
+    /// with nothing written, and persistence is insert-only: an exact row already present is reported as
+    /// <c>already_present</c>, never updated, deleted or pruned.
+    /// </summary>
+    [HttpPost("console-import/commit")]
+    [RequestSizeLimit(MaxBodyBytes)]
+    public async Task<IActionResult> CommitConsoleImport(
+        [FromBody] List<ConsoleImportDecisionRequest>? decisions,
+        CancellationToken cancellationToken)
+    {
+        var inputs = MapConsoleDecisions(decisions);
+        var result = await _consoleLibraryImportService.CommitAsync(GetUserId(), inputs, cancellationToken);
+        if (result is null)
+        {
+            return NotFound();
+        }
+
+        var response = ConsoleImportCommitResponse.From(result);
+        return result.Applied
+            ? Ok(response)
+            : StatusCode(StatusCodes.Status409Conflict, response);
+    }
+
+    /// <summary>
+    /// Removes one library row of the caller. Undo for a manual addition — there was no way to delete any
+    /// library row before. The canonical game, its mappings, reviews and favorites stay: identity and
+    /// user content are shared, and a Playnite reimport can recreate the row.
+    /// </summary>
+    [HttpDelete("library/{userLibraryId:long}")]
+    public async Task<IActionResult> DeleteLibraryRow(long userLibraryId, CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        var row = await _repository.GetTrack<UserLibrary>()
+            .FirstOrDefaultAsync(
+                entry => entry.UserLibraryId == userLibraryId && entry.UserId == userId,
+                cancellationToken);
+        if (row is null)
+        {
+            return NotFound();
+        }
+
+        _repository.GetTrack<UserLibrary>().Remove(row);
+        await _repository.SaveChangesAsync();
+        return NoContent();
+    }
+
     [HttpGet]
     public async Task<IActionResult> Get(CancellationToken cancellationToken)
     {
@@ -282,13 +404,16 @@ public class LibraryController : ControllerBase
             .Select(entry => entry.GameId!.Value)
             .Distinct()
             .ToList();
-        // Cover art is a display-only extra: one batch query for the same canonical games. No writes.
-        var imageByGameId = gameIds.Count == 0
-            ? new Dictionary<long, string?>()
-            : await _repository.Get<Game>()
+        // Cover art and the canonical title are display-only extras: one batch query for the same canonical
+        // games. No writes. The canonical title wins over the imported row title so a Playnite reimport,
+        // which keeps writing user_library.title, can never overwrite what the catalog says the game is.
+        var gameById = gameIds.Count == 0
+            ? new Dictionary<long, (string Title, string? ImageUrl)>()
+            : (await _repository.Get<Game>()
                 .Where(game => gameIds.Contains(game.GameId))
-                .Select(game => new { game.GameId, game.ImageUrl })
-                .ToDictionaryAsync(game => game.GameId, game => game.ImageUrl, cancellationToken);
+                .Select(game => new { game.GameId, game.Title, game.ImageUrl })
+                .ToListAsync(cancellationToken))
+                .ToDictionary(game => game.GameId, game => (game.Title, game.ImageUrl));
 
         // The same batch feeds both derived fields of a row: the representative review of the pair and every
         // year it was played (a replay on another year must show under both years in the report filter).
@@ -331,6 +456,21 @@ public class LibraryController : ControllerBase
                     : LibraryPriceBinding.None;
                 GameReview? review = null;
                 IReadOnlyList<int> playedYears = [];
+
+                // The canonical title and the cover share the one batch lookup above. A row without a game
+                // id (or without a canonical row) keeps the imported title: that is the fallback, not an error.
+                var canonicalTitle = entry.Title;
+                string? imageUrl = null;
+                if (entry.GameId is > 0 && gameById.TryGetValue(entry.GameId.Value, out var gameDisplay))
+                {
+                    if (!string.IsNullOrWhiteSpace(gameDisplay.Title))
+                    {
+                        canonicalTitle = gameDisplay.Title;
+                    }
+
+                    imageUrl = gameDisplay.ImageUrl;
+                }
+
                 if (entry.GameId is > 0)
                 {
                     var key = (entry.GameId.Value, entry.Store);
@@ -344,7 +484,7 @@ public class LibraryController : ControllerBase
                     entry.UserLibraryId,
                     entry.Store,
                     entry.StoreGameId,
-                    entry.Title,
+                    canonicalTitle,
                     entry.State,
                     entry.IsInstalled,
                     entry.AddedAt,
@@ -359,11 +499,10 @@ public class LibraryController : ControllerBase
                     binding.BaseCurrency,
                     entry.GameId,
                     review is null ? null : ReviewResponse.From(review),
-                    entry.GameId is > 0 && imageByGameId.TryGetValue(entry.GameId.Value, out var imageUrl)
-                        ? imageUrl
-                        : null,
+                    imageUrl,
                     entry.GameId is > 0 && favoriteGameIds.Contains(entry.GameId.Value),
                     playedYears);
+
             })
             .ToList();
 
@@ -394,33 +533,70 @@ public class LibraryController : ControllerBase
             ? throw new ArgumentException($"{field} is required", field)
             : value;
 
+    /// <summary>
+    /// Maps the console preview payload to the business contract. A null element is a malformed payload, not
+    /// an empty entry; the shape validation itself lives in the service.
+    /// </summary>
+    private static List<ConsoleImportEntryInput> MapConsoleEntries(List<ConsoleImportEntryRequest>? entries)
+    {
+        var inputs = new List<ConsoleImportEntryInput>(entries?.Count ?? 0);
+        if (entries is null)
+        {
+            return inputs;
+        }
+
+        foreach (var entry in entries)
+        {
+            if (entry is null)
+            {
+                throw new ArgumentException("El payload no puede contener entradas nulas", nameof(entries));
+            }
+
+            inputs.Add(new ConsoleImportEntryInput(
+                entry.GameId,
+                entry.Name,
+                entry.Source,
+                entry.Platforms,
+                entry.IsInstalled,
+                entry.Added));
+        }
+
+        return inputs;
+    }
+
+    /// <summary>Maps the console commit payload to the business contract, one decision per preview entry.</summary>
+    private static List<ConsoleImportDecisionInput> MapConsoleDecisions(List<ConsoleImportDecisionRequest>? decisions)
+    {
+        var inputs = new List<ConsoleImportDecisionInput>(decisions?.Count ?? 0);
+        if (decisions is null)
+        {
+            return inputs;
+        }
+
+        foreach (var decision in decisions)
+        {
+            if (decision is null)
+            {
+                throw new ArgumentException("El payload no puede contener entradas nulas", nameof(decisions));
+            }
+
+            inputs.Add(new ConsoleImportDecisionInput(
+                decision.EntryId,
+                decision.Name,
+                decision.OwnedPlatform,
+                decision.AttachGameId,
+                decision.Create,
+                decision.IsInstalled,
+                decision.Added));
+        }
+
+        return inputs;
+    }
+
     private static DateTime? ParseAdded(string? added)
     {
         var text = RequireText(added, nameof(PlayniteLibraryEntry.Added));
-
-        var match = DotNetDatePattern.Match(text);
-        if (match.Success)
-        {
-            if (!long.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var milliseconds))
-            {
-                throw new ArgumentException("Added is not a valid Playnite date", nameof(PlayniteLibraryEntry.Added));
-            }
-
-            return DateTimeOffset.FromUnixTimeMilliseconds(milliseconds).UtcDateTime;
-        }
-
-        if (DateTimeOffset.TryParse(
-            text,
-            CultureInfo.InvariantCulture,
-            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
-            out var parsed))
-        {
-            return parsed.UtcDateTime;
-        }
-
-        throw new ArgumentException(
-            "Added must be an ISO timestamp or /Date(<epoch-milliseconds>)/",
-            nameof(PlayniteLibraryEntry.Added));
+        return PlayniteDates.Parse(text, nameof(PlayniteLibraryEntry.Added));
     }
 
     private int GetUserId()

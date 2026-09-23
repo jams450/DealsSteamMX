@@ -1,4 +1,4 @@
-import { toStoreKey, type StoreKey } from "./stores.ts";
+import { normalizeStore } from "./stores.ts";
 import { normalizeReviewList, type Review } from "./reviews.ts";
 
 type UnknownRecord = Record<string, unknown>;
@@ -86,12 +86,13 @@ export type SteamGameBundle = {
   readonly tiers: readonly SteamBundleTier[];
 };
 
-// Posesión de la biblioteca tal como la calcula el backend: tiendas con identidad exacta y coincidencias
-// por título. Se muestra tal cual: la UI nunca confunde "posible" con "confirmado".
+// Posesión de la biblioteca tal como la calcula el backend: tiendas/plataformas con identidad exacta
+// (incluye consolas: vocabulario abierto, PLAN_CONSOLE §3) y coincidencias por título. Se muestra tal
+// cual: la UI nunca confunde "posible" con "confirmado".
 export type SteamOwnership = {
-  readonly ownedStores: readonly StoreKey[];
+  readonly ownedStores: readonly string[];
   readonly hasGamePass: boolean;
-  readonly possibleMatchStores: readonly StoreKey[];
+  readonly possibleMatchStores: readonly string[];
 };
 
 export type SteamGame = SteamSearchResult & {
@@ -124,13 +125,13 @@ export type SteamGame = SteamSearchResult & {
 // Tope defensivo: una biblioteca real no tiene más tiendas que el catálogo.
 const MAX_OWNERSHIP_STORES = 16;
 
-function toOwnershipStores(value: unknown): readonly StoreKey[] {
+function toOwnershipStores(value: unknown): readonly string[] {
   if (!Array.isArray(value)) return [];
 
   const seen = new Set<string>();
-  const stores: StoreKey[] = [];
+  const stores: string[] = [];
   for (const entry of value) {
-    const key = toStoreKey(entry);
+    const key = normalizeStore(entry);
     if (key === null || key === "steam" || seen.has(key)) continue;
     seen.add(key);
     stores.push(key);

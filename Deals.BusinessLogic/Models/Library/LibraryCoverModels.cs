@@ -27,3 +27,23 @@ public sealed record LibraryCoverSyncResult(
     int Updated,
     int Failed,
     int Remaining);
+
+/// <summary>
+/// Where a manual cover pick comes from. The source is what the server re-reads: the client only picks an
+/// id, and the stored URL is always the one the provider returned.
+/// </summary>
+public enum GameCoverSource
+{
+    /// <summary>Steam CDN header image of an appid.</summary>
+    Steam,
+
+    /// <summary>IGDB cover of an IGDB game id.</summary>
+    Igdb
+}
+
+/// <summary>
+/// One manual cover pick, already discriminated: exactly one of the two ids is set and the other is null.
+/// No URL and no title ever travels in this command. The API maps its request shape to it and the service
+/// re-validates, so an ambiguous body is a 400 before any provider call or write.
+/// </summary>
+public sealed record GameCoverCommand(GameCoverSource Source, int? SteamAppId, long? IgdbId);

@@ -22,10 +22,14 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISteamGameService, SteamGameService>();
         services.AddScoped<IGameIdentityResolver, GameIdentityResolver>();
         services.AddScoped<IGameMergeService, GameMergeService>();
+        services.AddScoped<IGameTitleEditService, GameTitleEditService>();
         services.AddScoped<ILibraryPriceBindingService, LibraryPriceBindingService>();
         services.AddScoped<IGameOwnershipService, GameOwnershipService>();
         services.AddScoped<IReviewService, ReviewService>();
         services.AddScoped<IFavoriteService, FavoriteService>();
+    services.AddScoped<IManualLibraryService, ManualLibraryService>();
+    services.AddScoped<IConsoleLibraryImportService, ConsoleLibraryImportService>();
+    services.AddHttpClient<IManualSearchService, ManualSearchService>();
         services.AddScoped<ILibraryCoverService, LibraryCoverService>();
         services.AddScoped<IRepository, Repository>();
         services.AddHttpClient<ISteamStoreClient, SteamStoreClient>((serviceProvider, client) =>

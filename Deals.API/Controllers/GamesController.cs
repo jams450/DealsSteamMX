@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Deals.API.Models.Games;
 using Deals.API.Security;
 using Deals.BusinessLogic.Interfaces;
+using Deals.BusinessLogic.Models.Library;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -18,16 +19,24 @@ public class GamesController : ControllerBase
 {
     private readonly IGameMergeService _gameMergeService;
     private readonly ILibraryCoverService _libraryCoverService;
+    private readonly IGameTitleEditService _gameTitleEditService;
 
-    public GamesController(IGameMergeService gameMergeService, ILibraryCoverService libraryCoverService)
+    public GamesController(
+        IGameMergeService gameMergeService,
+        ILibraryCoverService libraryCoverService,
+        IGameTitleEditService gameTitleEditService)
     {
         _gameMergeService = gameMergeService;
         _libraryCoverService = libraryCoverService;
+        _gameTitleEditService = gameTitleEditService;
     }
 
     /// <summary>
-    /// Places the cover of a canonical game from a Steam appid the admin picked in a search. The stored URL
-    /// always comes from Steam, and this is the one path that replaces an existing cover.
+    /// Places the cover of a canonical game from an id the admin picked in a search: a Steam appid or an
+    /// IGDB game id, exactly one of the two. The stored URL always comes from the provider the id names —
+    /// never from the body and never from the client — and this is the one path that replaces an existing
+    /// cover. A malformed body is a 400, a missing game or a provider row without artwork is a 404 and an
+    /// unreachable provider is a 503; none of them writes.
     /// </summary>
     [HttpPut("{gameId:long}/cover")]
     public async Task<IActionResult> SetCover(
@@ -35,8 +44,39 @@ public class GamesController : ControllerBase
         [FromBody] GameCoverRequest request,
         CancellationToken cancellationToken)
     {
-        var imageUrl = await _libraryCoverService.SetCoverFromSteamAsync(gameId, request.SteamAppId, cancellationToken);
+        var command = request.ToCommand();
+        var imageUrl = command.Source switch
+        {
+            GameCoverSource.Steam => await _libraryCoverService.SetCoverFromSteamAsync(
+                gameId, command.SteamAppId!.Value, cancellationToken),
+            GameCoverSource.Igdb => await _libraryCoverService.SetCoverFromIgdbAsync(
+                gameId, command.IgdbId!.Value, cancellationToken),
+            _ => throw new ArgumentException("La fuente de la portada no es válida.", nameof(request))
+        };
+
         return Ok(new GameCoverResponse(imageUrl));
+    }
+
+    /// <summary>
+    /// Edits the canonical title of a game (<c>games.title</c> + <c>games.normalized_title</c>), never the
+    /// imported <c>user_library.title</c>: the library read-model projects the canonical value whenever the
+    /// row has a game id, so a Playnite reimport cannot overwrite what the grid shows. The body is
+    /// discriminated — <c>manual</c> with a typed title, or <c>igdb</c> with an id whose title the server
+    /// reads from IGDB. A refused identity claim is 409 with the reason (never an exception: the global
+    /// handler would drop the payload) and writes nothing; an unavailable or empty IGDB lookup is 503/404.
+    /// </summary>
+    [HttpPut("{gameId:long}/title")]
+    public async Task<IActionResult> SetTitle(
+        long gameId,
+        [FromBody] GameTitleRequest request,
+        CancellationToken cancellationToken)
+    {
+        var command = request.ToCommand();
+        var outcome = await _gameTitleEditService.EditTitleAsync(gameId, command, cancellationToken);
+
+        return outcome.Applied
+            ? Ok(GameTitleEditResponse.From(outcome))
+            : StatusCode(StatusCodes.Status409Conflict, GameTitleConflictResponse.From(outcome));
     }
 
     /// <summary>Duplicate candidates for the calling admin's own library. Suggestions only, read-only.</summary>

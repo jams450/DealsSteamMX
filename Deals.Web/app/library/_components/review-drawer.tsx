@@ -10,7 +10,7 @@ import { X } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
-import { storeLabel, toStoreKey, type StoreKey } from "@/lib/contracts/stores";
+import { normalizeStore, storeLabel } from "@/lib/contracts/stores";
 import {
   formatReviewMonth,
   newestReview,
@@ -42,7 +42,7 @@ function formatDate(value: string | null) {
 // Una plataforma tal como la ve el drawer: la llave canónica con la que se guardan las reseñas y los datos
 // de esa fila que sí cambian por tienda.
 export interface ReviewPlatform {
-  readonly key: StoreKey;
+  readonly key: string;
   readonly label: string;
   readonly state: LibraryState;
   readonly isInstalled: boolean;
@@ -59,7 +59,7 @@ export function reviewablePlatforms(game: LibraryGame): readonly ReviewPlatform[
   const platforms: ReviewPlatform[] = [];
 
   for (const platform of game.platforms) {
-    const key = toStoreKey(platform.store);
+    const key = normalizeStore(platform.store);
     if (key === null) continue;
 
     const existingIndex = platforms.findIndex((entry) => entry.key === key);
@@ -85,9 +85,9 @@ export function reviewablePlatforms(game: LibraryGame): readonly ReviewPlatform[
 /**
  * Plataforma con la que se abre el drawer: la reseña más reciente si su plataforma sigue siendo
  * reseñable, si no la primera. `null` significa que la fila no se puede reseñar (sin identidad en el
- * catálogo o sin ninguna tienda del vocabulario) y la grilla no debe ofrecer la acción.
+ * catálogo o sin ninguna plataforma reseñable) y la grilla no debe ofrecer la acción.
  */
-export function defaultReviewPlatform(game: LibraryGame): StoreKey | null {
+export function defaultReviewPlatform(game: LibraryGame): string | null {
   if (game.gameId === null) return null;
 
   const platforms = reviewablePlatforms(game);
@@ -99,8 +99,8 @@ export function defaultReviewPlatform(game: LibraryGame): StoreKey | null {
 // Agrupa las reseñas de un juego por plataforma. Vive fuera del componente porque la usan el estado
 // derivado y los manejadores de alta/borrado, que deben recalcular la lista sin perder las demás
 // plataformas.
-function groupByPlatform(list: readonly Review[]): Map<StoreKey, Review[]> {
-  const map = new Map<StoreKey, Review[]>();
+function groupByPlatform(list: readonly Review[]): Map<string, Review[]> {
+  const map = new Map<string, Review[]>();
   for (const review of list) {
     const bucket = map.get(review.platform);
     if (bucket === undefined) map.set(review.platform, [review]);
@@ -121,7 +121,7 @@ function readScoreInput(raw: string): number | null | "invalid" {
 interface ReviewEditorProps {
   readonly domId: number;
   readonly gameId: number;
-  readonly platform: StoreKey;
+  readonly platform: string;
   readonly existing: Review | null;
   readonly onSaved: (review: Review) => void;
   readonly onCancel: () => void;
@@ -357,7 +357,7 @@ interface ReviewDrawerProps {
    * más reciente que queda, o `null` si ya no hay ninguna. La grilla guarda una sola reseña por fila, así
    * que recibe la representativa y no el evento crudo.
    */
-  readonly onReviewsChanged: (gameId: number, platform: StoreKey, review: Review | null) => void;
+  readonly onReviewsChanged: (gameId: number, platform: string, review: Review | null) => void;
 }
 
 /**
@@ -367,7 +367,7 @@ interface ReviewDrawerProps {
  */
 export function ReviewDrawer({ game, onClose, onReviewsChanged }: ReviewDrawerProps) {
   const platforms = useMemo(() => reviewablePlatforms(game), [game]);
-  const [platform, setPlatform] = useState<StoreKey | null>(() => defaultReviewPlatform(game));
+  const [platform, setPlatform] = useState<string | null>(() => defaultReviewPlatform(game));
   // `null` = todavía sin leer (cargando). Un arreglo vacío es "el juego no tiene reseñas": nunca se
   // rellena con lo que traía la fila de biblioteca, porque tras borrar la última eso la resucitaría.
   const [reviews, setReviews] = useState<readonly Review[] | null>(null);
@@ -436,7 +436,7 @@ export function ReviewDrawer({ game, onClose, onReviewsChanged }: ReviewDrawerPr
   const loading = reviews === null;
 
   const publish = useCallback(
-    (list: readonly Review[], key: StoreKey) => {
+    (list: readonly Review[], key: string) => {
       if (gameId === null) return;
       onReviewsChanged(gameId, key, newestReview(list));
     },
@@ -529,7 +529,7 @@ export function ReviewDrawer({ game, onClose, onReviewsChanged }: ReviewDrawerPr
                   id="review-platform"
                   label="Plataforma"
                   value={selected.key}
-                  onChange={(event) => setPlatform(toStoreKey(event.target.value))}
+                  onChange={(event) => setPlatform(normalizeStore(event.target.value))}
                 >
                   {platforms.map((entry) => (
                     <option key={entry.key} value={entry.key}>

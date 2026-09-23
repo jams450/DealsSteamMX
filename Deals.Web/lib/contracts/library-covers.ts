@@ -1,6 +1,12 @@
-// Contrato del relleno de portadas de la biblioteca. El cliente manda un appid de Steam, nunca una URL:
-// la portada la resuelve y la guarda el servidor (Steam CDN), igual que el resto de datos de proveedor.
+// Contrato del relleno de portadas de la biblioteca. El cliente manda un id de proveedor — el appid de
+// Steam o el id de IGDB, exactamente uno de los dos —, nunca una URL: la portada la resuelve y la guarda
+// el servidor (Steam o IGDB), igual que el resto de datos de proveedor. La elección es tan estricta como
+// la del backend: los dos campos a la vez, ninguno, o un tercer campo (`imageUrl`, `title`) es inválido
+// aquí y 400 allá, porque la forma es discriminada y no se adivina qué quiso el llamador.
 // La portada es decorativa: ninguna operación de este contrato reclama identidad ni toca precios.
+//
+// Rutas relativas a propósito: este módulo se cubre con `node --test`, que no resuelve el alias `@/`.
+import { toStoreKey } from "./stores.ts";
 
 /** Tope de la pasada, el mismo número que valida el backend. */
 export const COVER_SYNC_MAX_LIMIT = 100;
@@ -22,7 +28,7 @@ export type LibraryCoverSyncReport = {
 type UnknownRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function toCount(value: unknown): number | null {
@@ -69,13 +75,80 @@ export function normalizeCoverSyncReport(input: unknown): LibraryCoverSyncReport
   return { missing, missingWithoutSteamId, updated, failed, remaining };
 }
 
-/** Cuerpo válido de una elección manual: un appid entero positivo, nada más. */
-export function parseCoverPick(input: unknown): { readonly steamAppId: number } | null {
+/** Catálogo donde se busca y se resuelve la portada: Steam (PC) o IGDB (consola). */
+export type CoverSource = "steam" | "igdb";
+
+/**
+ * Elección manual de portada: exactamente UNO de los dos ids, nunca los dos ni ninguno, y jamás una URL
+ * o un título. El servidor relee la portada por este id, así que un llamador no puede apuntar el catálogo
+ * hacia una imagen arbitraria.
+ */
+export type CoverPick =
+  | { readonly steamAppId: number }
+  | { readonly igdbId: number };
+
+/**
+ * Fuente que corresponde a un grupo de plataformas según sus tiendas. Un grupo solo de PC (todas con
+ * llave de `toStoreKey`) busca en Steam; uno solo de consola (ninguna con esa llave) busca en IGDB; un
+ * grupo mixto —o uno sin plataformas— devuelve `null` y el usuario elige a mano. La portada es una sola
+ * para todo el grupo, así que una fuente no se adivina a partir de la primera fila.
+ */
+export function resolveCoverSource(stores: readonly string[]): CoverSource | null {
+  let hasPc = false;
+  let hasNonPc = false;
+
+  for (const store of stores) {
+    if (toStoreKey(store) !== null) hasPc = true;
+    else hasNonPc = true;
+  }
+
+  if (hasPc && hasNonPc) return null;
+  if (hasPc) return "steam";
+  if (hasNonPc) return "igdb";
+  return null;
+}
+
+// Los dos y únicos campos que el backend acepta en el cuerpo. Cualquier otra llave es 400 allá
+// (`JsonExtensionData` existe solo para rechazarla), así que se descarta aquí antes de gastar el viaje.
+const COVER_PICK_FIELDS = new Set(["steamAppId", "igdbId"]);
+
+function toPositiveId(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+// Un campo "no enviado" es `undefined` o `null`: la misma convención que usa el backend.
+function isAbsent(value: unknown): boolean {
+  return value === undefined || value === null;
+}
+
+/**
+ * Cuerpo válido de una elección manual, o `null`. Es estricto en las dos direcciones: solo los campos
+ * `steamAppId`/`igdbId`, exactamente uno de ellos presente con un id entero positivo (el otro ausente o
+ * nulo) y nada más. Los dos a la vez, ninguno, un id que no sea número entero positivo o un campo
+ * desconocido devuelven `null`, igual que un 400 sin nada escrito en el backend.
+ */
+export function parseCoverPick(input: unknown): CoverPick | null {
   if (!isRecord(input)) return null;
-  const steamAppId = input.steamAppId;
-  return typeof steamAppId === "number" && Number.isSafeInteger(steamAppId) && steamAppId > 0
-    ? { steamAppId }
-    : null;
+
+  for (const key of Object.keys(input)) {
+    if (!COVER_PICK_FIELDS.has(key)) return null;
+  }
+
+  const rawSteamAppId = input.steamAppId;
+  const rawIgdbId = input.igdbId;
+  const hasSteamAppId = !isAbsent(rawSteamAppId);
+  const hasIgdbId = !isAbsent(rawIgdbId);
+
+  // Los dos a la vez es ambiguo y ninguno no elige nada: los dos casos se rechazan, no se recortan.
+  if (hasSteamAppId === hasIgdbId) return null;
+
+  if (hasSteamAppId) {
+    const steamAppId = toPositiveId(rawSteamAppId);
+    return steamAppId === null ? null : { steamAppId };
+  }
+
+  const igdbId = toPositiveId(rawIgdbId);
+  return igdbId === null ? null : { igdbId };
 }
 
 /** URL de portada devuelta por el servidor, o `null` si no vino ninguna. */

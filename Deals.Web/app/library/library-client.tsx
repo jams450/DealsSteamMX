@@ -9,12 +9,15 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/ui/cn";
-import { storeLabel, toStoreKey, type StoreKey } from "@/lib/contracts/stores";
+import { normalizeStore, storeLabel } from "@/lib/contracts/stores";
 import { REVIEW_STATUSES, reviewStatusLabel, type Review, type ReviewStatus } from "@/lib/contracts/reviews";
 import { setFavorite } from "@/lib/api/favorites";
 import { getLibrary, importLibrary, syncLibraryCovers } from "./_lib/library-api";
 import { defaultReviewPlatform, ReviewDrawer, stateLabel } from "./_components/review-drawer";
+import { ManualAddDialog } from "./_components/manual-add-dialog";
+import { ConsoleImportDialog } from "./_components/console-import-dialog";
 import { CoverPicker } from "./_components/cover-picker";
+import { TitleEditor } from "./_components/title-editor";
 import type { LibraryCoverSyncReport } from "@/lib/contracts/library-covers";
 import {
   groupLibraryItems,
@@ -329,6 +332,31 @@ function CoverAction({ game, onPickCover }: { readonly game: LibraryGame; readon
   );
 }
 
+// Acción de título de una fila. Solo aparece con identidad canónica: sin juego en el catálogo no hay
+// nombre compartido que corregir (el texto de una fila suelta es el que importó Playnite, y esta
+// herramienta no lo toca). El editor abre encima de la grilla y luego la recarga entera.
+function TitleAction({
+  game,
+  onEditTitle
+}: {
+  readonly game: LibraryGame;
+  readonly onEditTitle: (game: LibraryGame) => void;
+}) {
+  if (game.gameId === null) return null;
+
+  return (
+    <Button
+      type="button"
+      variant="secondary"
+      className="h-9 whitespace-nowrap px-3 text-xs"
+      aria-label={`Editar el título del catálogo: ${game.title}`}
+      onClick={() => onEditTitle(game)}
+    >
+      Editar título
+    </Button>
+  );
+}
+
 // Reporte de una pasada de sincronización. Los números describen lo que hizo la pasada, no lo que falta en
 // total: "Sin appid" son los juegos que la pasada no puede resolver sola y que necesitan el selector.
 function CoverSyncReportBadges({ report }: { readonly report: LibraryCoverSyncReport }) {
@@ -422,6 +450,8 @@ export function LibraryClient() {
   // Juego cuyo selector de portada está abierto. Solo se abre con identidad canónica, que es donde se
   // guarda la portada.
   const [coverGame, setCoverGame] = useState<LibraryGame | null>(null);
+  // Juego cuyo editor de título canónico está abierto. Igual que la portada, solo existe con `gameId`.
+  const [titleGame, setTitleGame] = useState<LibraryGame | null>(null);
   const [pendingEntries, setPendingEntries] = useState<unknown[] | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
@@ -430,6 +460,8 @@ export function LibraryClient() {
   // La ficha de reseña se abre con el juego agrupado completo: el juego (no la fila) es lo que se
   // reseña, y dentro el usuario elige la plataforma si hay más de una.
   const [drawerGame, setDrawerGame] = useState<LibraryGame | null>(null);
+  const [manualAddOpen, setManualAddOpen] = useState(false);
+  const [consoleImportOpen, setConsoleImportOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function loadLibrary() {
@@ -448,13 +480,13 @@ export function LibraryClient() {
   // sitio cada fila que comparta la misma identidad, sin recargar la biblioteca entera ni perder el
   // scroll. La agrupación se recalcula sola porque `games` es un memo sobre `items`. Un juego puede tener
   // varias reseñas en la misma plataforma: la fila guarda la más reciente, no todas.
-  function applyReview(review: Review | null, gameId: number, platform: StoreKey) {
+  function applyReview(review: Review | null, gameId: number, platform: string) {
     setLibrary((current) =>
       current === null
         ? current
         : {
             items: current.items.map((item) =>
-              item.gameId === gameId && toStoreKey(item.store) === platform ? { ...item, review } : item
+              item.gameId === gameId && normalizeStore(item.store) === platform ? { ...item, review } : item
             )
           }
     );
@@ -623,6 +655,7 @@ export function LibraryClient() {
 
   const onReview = useCallback((game: LibraryGame) => setDrawerGame(game), []);
   const onPickCover = useCallback((game: LibraryGame) => setCoverGame(game), []);
+  const onEditTitle = useCallback((game: LibraryGame) => setTitleGame(game), []);
 
   const columns = useMemo<ColumnDef<LibraryGame>[]>(
     () => [
@@ -720,11 +753,12 @@ export function LibraryClient() {
           <div className="flex flex-wrap items-center gap-2">
             <ReviewAction game={row.original} onReview={onReview} />
             <CoverAction game={row.original} onPickCover={onPickCover} />
+            <TitleAction game={row.original} onEditTitle={onEditTitle} />
           </div>
         )
       }
     ],
-    [favoritePendingId, onPickCover, onReview, onToggleFavorite]
+    [favoritePendingId, onEditTitle, onPickCover, onReview, onToggleFavorite]
   );
 
   function onStoreFilterChange(event: ChangeEvent<HTMLSelectElement>) {
@@ -850,6 +884,24 @@ export function LibraryClient() {
             {gamePassCount > 0 ? (
               <span className="tabler-badge tabler-badge-solid tabler-badge-xbox">{gamePassCount} en Game Pass</span>
             ) : null}
+            <Button
+              type="button"
+              variant="secondary"
+              className="h-8 whitespace-nowrap px-3 text-xs"
+              onClick={() => setManualAddOpen(true)}
+            >
+              <Gamepad2 className="h-4 w-4" aria-hidden="true" />
+              Añadir manual
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              className="h-8 whitespace-nowrap px-3 text-xs"
+              onClick={() => setConsoleImportOpen(true)}
+            >
+              <Upload className="h-4 w-4" aria-hidden="true" />
+              Importar consolas
+            </Button>
           </div>
           <p className="text-xs text-muted">
             Cada fila es un juego, no una entrada de tienda: si el mismo título está en varias plataformas se
@@ -867,6 +919,13 @@ export function LibraryClient() {
             todavía no reconoce no se puede reseñar y la fila lo dice.
           </p>
           <p className="text-xs text-muted">
+            «Editar título» corrige el nombre del juego en el catálogo, y aparece solo en las filas que el
+            catálogo ya reconoce. Ese nombre es <strong>compartido</strong>: al guardarlo cambia a la vez en
+            todas las copias vinculadas al mismo juego, y nunca el texto que Playnite importó. Puedes
+            escribirlo a mano o buscar el título oficial en IGDB y quedarte con el resultado correcto; al
+            elegir un resultado, su id queda vinculado al juego.
+          </p>
+          <p className="text-xs text-muted">
             Cuando el mismo título aparece como dos juegos canónicos distintos, la biblioteca muestra una fila
             por cada uno. Eso se corrige a mano en{" "}
             <Link
@@ -878,11 +937,27 @@ export function LibraryClient() {
             </Link>
             , donde se elige el juego que sobrevive. La fusión es irreversible.
           </p>
+          <p className="text-xs text-muted">
+            Para dar de alta una colección entera de consola, «Importar consolas» acepta el mismo export de Playnite
+            (también con filas de tienda, que se descartan): primero muestra qué entró y qué no, después pide la
+            plataforma de cada juego y si es nuevo o comparte ficha con uno que ya exista, y solo entonces escribe.
+          </p>
         </div>
 
         {favoriteError ? <Alert variant="danger">{favoriteError}</Alert> : null}
         {coverError ? <Alert variant="danger">{coverError}</Alert> : null}
         {coverReport ? <CoverSyncReportBadges report={coverReport} /> : null}
+
+        {manualAddOpen ? (
+          <ManualAddDialog onClose={() => setManualAddOpen(false)} onAdded={() => void loadLibrary()} />
+        ) : null}
+
+        {consoleImportOpen ? (
+          <ConsoleImportDialog
+            onClose={() => setConsoleImportOpen(false)}
+            onImported={() => void loadLibrary()}
+          />
+        ) : null}
 
         {loading ? (
           <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
@@ -975,11 +1050,25 @@ export function LibraryClient() {
         <CoverPicker
           gameId={coverGame.gameId}
           title={coverGame.title}
+          stores={coverGame.stores}
+          linkedRows={coverGame.platforms.length}
           onClose={() => setCoverGame(null)}
           onPicked={(gameId, imageUrl) => {
             applyCover(gameId, imageUrl);
             setCoverGame(null);
           }}
+        />
+      ) : null}
+
+      {titleGame !== null && titleGame.gameId !== null ? (
+        <TitleEditor
+          key={titleGame.key}
+          gameId={titleGame.gameId}
+          title={titleGame.title}
+          linkedRows={titleGame.platforms.length}
+          stores={titleGame.stores}
+          onClose={() => setTitleGame(null)}
+          onSaved={() => void loadLibrary()}
         />
       ) : null}
 

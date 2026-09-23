@@ -25,4 +25,15 @@ public interface ILibraryCoverService
     /// The URL comes from Steam, never from the request: the client sends the appid, not the URL.
     /// </summary>
     Task<string> SetCoverFromSteamAsync(long gameId, int steamAppId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Places the cover of one canonical game from an IGDB id the caller picked, replacing any previous
+    /// cover. The server re-reads the row before opening any transaction and stores only the URL IGDB
+    /// returned on <c>games.image_url</c>: no identity mapping, no title, no release year, no library row,
+    /// no review and no price. Throws <c>GameNotFoundException</c> when the canonical game does not exist,
+    /// <c>GameCoverSourceNotFoundException</c> when IGDB answers without that row or without a cover, and
+    /// <c>GameCoverSourceUnavailableException</c> when IGDB cannot be consulted at all. Every failure writes
+    /// nothing.
+    /// </summary>
+    Task<string> SetCoverFromIgdbAsync(long gameId, long igdbId, CancellationToken cancellationToken = default);
 }

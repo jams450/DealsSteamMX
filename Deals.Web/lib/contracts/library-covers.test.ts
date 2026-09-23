@@ -4,7 +4,8 @@ import {
   normalizeCoverSyncReport,
   normalizeCoverUrl,
   parseCoverPick,
-  parseCoverSyncRequest
+  parseCoverSyncRequest,
+  resolveCoverSource
 } from "./library-covers.ts";
 
 test("parseCoverSyncRequest: sin límite, límite válido o rechazo", () => {
@@ -32,13 +33,53 @@ test("normalizeCoverSyncReport: exige los cinco contadores", () => {
   assert.equal(normalizeCoverSyncReport(null), null);
 });
 
-test("parseCoverPick: un appid entero positivo y nada más", () => {
+test("parseCoverPick: exactamente uno de los dos ids", () => {
   assert.deepEqual(parseCoverPick({ steamAppId: 1091500 }), { steamAppId: 1091500 });
+  assert.deepEqual(parseCoverPick({ igdbId: 101999 }), { igdbId: 101999 });
+
+  // Un campo nulo o ausente cuenta como "no enviado", la misma convención que el backend.
+  assert.deepEqual(parseCoverPick({ steamAppId: 620, igdbId: null }), { steamAppId: 620 });
+  assert.deepEqual(parseCoverPick({ igdbId: 967140, steamAppId: null }), { igdbId: 967140 });
+
+  // Los dos a la vez es ambiguo y ninguno no elige nada: ambos casos se rechazan.
+  assert.equal(parseCoverPick({ steamAppId: 620, igdbId: 967140 }), null);
+  assert.equal(parseCoverPick({}), null);
+  assert.equal(parseCoverPick({ steamAppId: null, igdbId: null }), null);
+
+  // Un id que no sea número entero positivo se rechaza, nunca se recorta ni se convierte.
   assert.equal(parseCoverPick({ steamAppId: 0 }), null);
   assert.equal(parseCoverPick({ steamAppId: -7 }), null);
+  assert.equal(parseCoverPick({ steamAppId: 1.5 }), null);
   assert.equal(parseCoverPick({ steamAppId: "1091500" }), null);
-  assert.equal(parseCoverPick({}), null);
+  assert.equal(parseCoverPick({ igdbId: 0 }), null);
+  assert.equal(parseCoverPick({ igdbId: "967140" }), null);
+
+  // Un campo desconocido es cuerpo inválido: el backend lo devuelve como 400, no lo ignora. Tampoco se
+  // acepta una URL ni una variante PascalCase de los dos campos.
+  assert.equal(parseCoverPick({ steamAppId: 620, imageUrl: "https://cdn.example/a.jpg" }), null);
+  assert.equal(parseCoverPick({ igdbId: 967140, title: "Metroid Dread" }), null);
+  assert.equal(parseCoverPick({ SteamAppId: 620 }), null);
+
+  assert.equal(parseCoverPick([620]), null);
   assert.equal(parseCoverPick(null), null);
+  assert.equal(parseCoverPick("620"), null);
+  assert.equal(parseCoverPick(620), null);
+});
+
+test("resolveCoverSource: solo PC Steam, solo consola IGDB, mixto a mano", () => {
+  assert.equal(resolveCoverSource(["steam"]), "steam");
+  assert.equal(resolveCoverSource(["epic", "gog"]), "steam");
+  assert.equal(resolveCoverSource(["gog"]), "steam");
+
+  assert.equal(resolveCoverSource(["switch"]), "igdb");
+  assert.equal(resolveCoverSource(["ps5", "xbox-one"]), "igdb");
+
+  // Mixto: la portada es una sola y no se adivina de la primera fila, así que elige el usuario.
+  assert.equal(resolveCoverSource(["steam", "ps5"]), null);
+  assert.equal(resolveCoverSource(["gog", "switch"]), null);
+
+  // Sin plataformas no hay fuente que imponer: también se elige a mano.
+  assert.equal(resolveCoverSource([]), null);
 });
 
 test("normalizeCoverUrl: solo una URL no vacía cuenta", () => {

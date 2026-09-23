@@ -9,9 +9,9 @@ using Microsoft.Extensions.Logging;
 namespace Deals.BusinessLogic.Services;
 
 /// <summary>
-/// Cover art for the library, read from Steam and persisted as a URL in <c>games.image_url</c>. Nothing
-/// else is written: the pass never claims identity, never touches prices and never rewrites a library row,
-/// so a wrong cover is a cosmetic mistake the user can replace with the next pick.
+/// Cover art for the library, read from Steam or IGDB and persisted as a URL in <c>games.image_url</c>.
+/// Nothing else is written: the pass never claims identity, never touches prices and never rewrites a library
+/// row, so a wrong cover is a cosmetic mistake the user can replace with the next pick.
 /// </summary>
 public sealed class LibraryCoverService : ILibraryCoverService
 {
@@ -19,15 +19,18 @@ public sealed class LibraryCoverService : ILibraryCoverService
 
     private readonly IRepository _repository;
     private readonly ISteamStoreClient _steamStoreClient;
+    private readonly IManualSearchService _manualSearchService;
     private readonly ILogger<LibraryCoverService> _logger;
 
     public LibraryCoverService(
         IRepository repository,
         ISteamStoreClient steamStoreClient,
+        IManualSearchService manualSearchService,
         ILogger<LibraryCoverService> logger)
     {
         _repository = repository;
         _steamStoreClient = steamStoreClient;
+        _manualSearchService = manualSearchService;
         _logger = logger;
     }
 
@@ -115,6 +118,49 @@ public sealed class LibraryCoverService : ILibraryCoverService
         game.ImageUrl = imageUrl;
         await _repository.SaveChangesAsync();
         return imageUrl;
+    }
+
+    public async Task<string> SetCoverFromIgdbAsync(
+        long gameId,
+        long igdbId,
+        CancellationToken cancellationToken = default)
+    {
+        if (igdbId <= 0)
+        {
+            throw new ArgumentException("El id de IGDB debe ser mayor que cero.", nameof(igdbId));
+        }
+
+        // The provider is re-read before any transaction opens: no external HTTP while a transaction (and the
+        // connections it holds) is open, exactly like the title edit and the manual add. Unavailable and
+        // not-found abort here, so a failed lookup cannot reach a write.
+        var lookup = await _manualSearchService.ArtworkLookupAsync(igdbId, cancellationToken);
+        if (lookup.Source is null)
+        {
+            throw new GameCoverSourceUnavailableException();
+        }
+
+        var imageUrl = lookup.Artwork?.Url;
+        if (string.IsNullOrWhiteSpace(imageUrl))
+        {
+            throw new GameCoverSourceNotFoundException(igdbId);
+        }
+
+        return await _repository.ExecuteInTransactionAsync(async () =>
+        {
+            // The target is re-read under the transaction: a concurrent merge cannot have absorbed it since
+            // the provider read, and a missing row is a 404 with nothing written.
+            var game = await _repository.GetTrack<Game>()
+                .FirstOrDefaultAsync(candidate => candidate.GameId == gameId, cancellationToken)
+                ?? throw new GameNotFoundException(gameId);
+
+            // Only the display column moves. No identity mapping, no title, no release year, no library row:
+            // the pick says which art to paint, never what the game is.
+            game.ImageUrl = imageUrl;
+            await _repository.SaveChangesAsync();
+
+            _logger.LogInformation("Cover of game {GameId} selected from IGDB", game.GameId);
+            return imageUrl;
+        });
     }
 
     /// <summary>

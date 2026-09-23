@@ -99,9 +99,11 @@ test("normalizeReview: el mes es estricto YYYY-MM", () => {
   assert.equal(withMonth(null), null);
 });
 
-test("normalizeReview: plataforma fuera del catálogo se rechaza; alias conocidos se aceptan", () => {
-  assert.equal(normalizeReview({ reviewId: 1, gameId: 2, platform: "origin" }), null);
+test("normalizeReview: slug de plataforma abierto (consolas) y alias de tienda; lo imposible se rechaza", () => {
+  assert.equal(normalizeReview({ reviewId: 1, gameId: 2, platform: "origin store" }), null); // espacio → no slug
   assert.equal(normalizeReview({ reviewId: 1, gameId: 2, platform: "" }), null);
+  assert.equal(normalizeReview({ reviewId: 1, gameId: 2, platform: "switch" })?.platform, "switch");
+  assert.equal(normalizeReview({ reviewId: 1, gameId: 2, platform: "3ds" })?.platform, "3ds");
   assert.equal(normalizeReview({ reviewId: 1, gameId: 2, platform: "gog" })?.platform, "gog");
   assert.equal(normalizeReview({ reviewId: 1, gameId: 2, platform: "Epic Games" })?.platform, "epic");
   assert.equal(normalizeReview({ reviewId: 1, gameId: 2, platform: "Battle.net" })?.platform, "battlenet");
@@ -126,7 +128,7 @@ test("normalizeReviewList: descarta entradas inválidas y conserva las válidas"
 test("parseReviewCreateRequest: exige identidad y rechaza campos presentes inválidos", () => {
   assert.equal(parseReviewCreateRequest(null), null);
   assert.equal(parseReviewCreateRequest({}), null);
-  assert.equal(parseReviewCreateRequest({ gameId: 42, platform: "origin" }), null);
+  assert.equal(parseReviewCreateRequest({ gameId: 42, platform: "origin store" }), null);
   assert.equal(parseReviewCreateRequest({ gameId: 0, platform: "gog" }), null);
   assert.equal(parseReviewCreateRequest({ gameId: 42, platform: "gog", score: 101 }), null);
   assert.equal(parseReviewCreateRequest({ gameId: 42, platform: "gog", score: 60.5 }), null);

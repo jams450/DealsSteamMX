@@ -41,11 +41,11 @@ test("ownership: una forma inválida degrada a vacío, nunca inventa coincidenci
   assert.deepEqual(ownership(42), { ownedStores: [], hasGamePass: false, possibleMatchStores: [] });
 });
 
-test("ownership: solo llaves canónicas, sin duplicados y con alias conocidos mapeados", () => {
+test("ownership: alias de tienda mapeados, slugs de plataforma aceptados, basura descartada", () => {
   assert.deepEqual(ownership({
-    ownedStores: ["gog", "GOG", "gog", "epic games", "ubisoft connect", "battle.net", "origin", "", 7, null]
+    ownedStores: ["gog", "GOG", "gog", "epic games", "ubisoft connect", "battle.net", "switch", "", 7, null]
   }), {
-    ownedStores: ["gog", "epic", "ubisoft", "battlenet"],
+    ownedStores: ["gog", "epic", "ubisoft", "battlenet", "switch"],
     hasGamePass: false,
     possibleMatchStores: []
   });
@@ -89,7 +89,7 @@ test("reviews: normaliza las reseñas del juego y descarta las inválidas", () =
     ...baseGame,
     reviews: [
       { reviewId: 1, gameId: 100, platform: "gog", score: 90, scoreLabel: "obra maestra", isGoty: true },
-      { reviewId: 2, gameId: 100, platform: "origin" }
+      { reviewId: 2, gameId: 100, platform: "origin store" } // espacio → no es slug, se descarta
     ]
   }) as SteamGame;
   assert.equal(game?.reviews.length, 1);

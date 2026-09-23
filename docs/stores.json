@@ -1,0 +1,240 @@
+[
+  {
+    "id": 2,
+    "title": "AllYouPlay",
+    "deals": 766,
+    "games": 5726,
+    "update": "2026-09-20T03:55:26+02:00"
+  },
+  {
+    "id": 4,
+    "title": "Blizzard",
+    "deals": 8,
+    "games": 789,
+    "update": "2026-09-20T03:13:15+02:00"
+  },
+  {
+    "id": 13,
+    "title": "DLGamer",
+    "deals": 753,
+    "games": 4726,
+    "update": "2026-09-20T03:10:52+02:00"
+  },
+  {
+    "id": 15,
+    "title": "Dreamgame",
+    "deals": 1337,
+    "games": 1948,
+    "update": "2026-09-20T00:56:55+02:00"
+  },
+  {
+    "id": 52,
+    "title": "EA Store",
+    "deals": 138,
+    "games": 597,
+    "update": "2026-09-20T04:32:16+02:00"
+  },
+  {
+    "id": 16,
+    "title": "Epic Game Store",
+    "deals": 1146,
+    "games": 14972,
+    "update": "2026-09-20T04:07:05+02:00"
+  },
+  {
+    "id": 6,
+    "title": "Fanatical",
+    "deals": 10088,
+    "games": 16075,
+    "update": "2026-09-20T04:37:41+02:00"
+  },
+  {
+    "id": 17,
+    "title": "FireFlower",
+    "deals": 0,
+    "games": 253,
+    "update": "2026-09-18T01:16:15+02:00"
+  },
+  {
+    "id": 75,
+    "title": "Fortuna Digital",
+    "deals": 367,
+    "games": 450,
+    "update": "2026-09-20T04:16:30+02:00"
+  },
+  {
+    "id": 20,
+    "title": "GameBillet",
+    "deals": 6618,
+    "games": 7047,
+    "update": "2026-09-20T03:55:46+02:00"
+  },
+  {
+    "id": 24,
+    "title": "GamersGate",
+    "deals": 1978,
+    "games": 10326,
+    "update": "2026-09-20T04:15:37+02:00"
+  },
+  {
+    "id": 25,
+    "title": "Gamesload",
+    "deals": 719,
+    "games": 1663,
+    "update": "2026-09-10T15:25:54+02:00"
+  },
+  {
+    "id": 27,
+    "title": "GamesPlanet DE",
+    "deals": 7124,
+    "games": 7978,
+    "update": "2026-09-20T02:17:59+02:00"
+  },
+  {
+    "id": 28,
+    "title": "GamesPlanet FR",
+    "deals": 7150,
+    "games": 8010,
+    "update": "2026-09-20T02:19:12+02:00"
+  },
+  {
+    "id": 26,
+    "title": "GamesPlanet UK",
+    "deals": 7111,
+    "games": 8003,
+    "update": "2026-09-20T02:16:45+02:00"
+  },
+  {
+    "id": 29,
+    "title": "GamesPlanet US",
+    "deals": 7625,
+    "games": 8519,
+    "update": "2026-09-20T02:21:39+02:00"
+  },
+  {
+    "id": 35,
+    "title": "GOG",
+    "deals": 7301,
+    "games": 12503,
+    "update": "2026-09-20T04:22:44+02:00"
+  },
+  {
+    "id": 36,
+    "title": "GreenManGaming",
+    "deals": 3970,
+    "games": 12599,
+    "update": "2026-09-20T01:10:57+02:00"
+  },
+  {
+    "id": 37,
+    "title": "Humble Store",
+    "deals": 1654,
+    "games": 13270,
+    "update": "2026-09-20T04:36:10+02:00"
+  },
+  {
+    "id": 42,
+    "title": "IndieGala Store",
+    "deals": 1456,
+    "games": 8800,
+    "update": "2026-09-20T04:36:14+02:00"
+  },
+  {
+    "id": 65,
+    "title": "JoyBuggy",
+    "deals": 0,
+    "games": 0,
+    "update": "2026-09-20T04:37:32+02:00"
+  },
+  {
+    "id": 47,
+    "title": "MacGameStore",
+    "deals": 672,
+    "games": 4767,
+    "update": "2026-09-19T20:56:10+02:00"
+  },
+  {
+    "id": 48,
+    "title": "Microsoft Store",
+    "deals": 407,
+    "games": 6279,
+    "update": "2026-09-20T03:44:49+02:00"
+  },
+  {
+    "id": 77,
+    "title": "Muve",
+    "deals": 0,
+    "games": 0,
+    "update": null
+  },
+  {
+    "id": 49,
+    "title": "Newegg",
+    "deals": 653,
+    "games": 4807,
+    "update": "2026-09-20T03:05:39+02:00"
+  },
+  {
+    "id": 50,
+    "title": "Nuuvem",
+    "deals": 594,
+    "games": 3060,
+    "update": "2026-09-20T04:36:52+02:00"
+  },
+  {
+    "id": 73,
+    "title": "PlanetPlay",
+    "deals": 507,
+    "games": 4498,
+    "update": "2026-09-20T03:50:51+02:00"
+  },
+  {
+    "id": 74,
+    "title": "PlayerLand",
+    "deals": 1542,
+    "games": 2038,
+    "update": "2026-09-20T04:37:22+02:00"
+  },
+  {
+    "id": 70,
+    "title": "Playsum",
+    "deals": 1387,
+    "games": 3864,
+    "update": "2026-09-20T04:16:15+02:00"
+  },
+  {
+    "id": 61,
+    "title": "Steam",
+    "deals": 37441,
+    "games": 310373,
+    "update": "2026-09-20T04:48:08+02:00"
+  },
+  {
+    "id": 62,
+    "title": "Ubisoft Store",
+    "deals": 410,
+    "games": 784,
+    "update": "2026-09-20T04:30:52+02:00"
+  },
+  {
+    "id": 64,
+    "title": "WinGameStore",
+    "deals": 3016,
+    "games": 6600,
+    "update": "2026-09-19T20:56:32+02:00"
+  },
+  {
+    "id": 78,
+    "title": "Zapagames",
+    "deals": 346,
+    "games": 1782,
+    "update": "2026-09-20T02:57:19+02:00"
+  },
+  {
+    "id": 72,
+    "title": "ZOOM Platform",
+    "deals": 0,
+    "games": 938,
+    "update": "2026-09-17T20:57:15+02:00"
+  }
+]

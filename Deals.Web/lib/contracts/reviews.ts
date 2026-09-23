@@ -1,4 +1,4 @@
-import { toStoreKey, type StoreKey } from "./stores.ts";
+import { normalizeStore } from "./stores.ts";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -28,7 +28,7 @@ export function reviewStatusLabel(status: ReviewStatus | "backlog"): string {
 export type Review = {
   readonly reviewId: number;
   readonly gameId: number;
-  readonly platform: StoreKey;
+  readonly platform: string;
   readonly startedMonth: string | null;
   readonly finishedMonth: string | null;
   readonly score: number | null;
@@ -43,7 +43,7 @@ export type Review = {
 // Alta: incluye la identidad `(gameId, platform)`.
 export type ReviewCreateRequest = {
   readonly gameId: number;
-  readonly platform: StoreKey;
+  readonly platform: string;
   readonly startedMonth: string | null;
   readonly finishedMonth: string | null;
   readonly score: number | null;
@@ -133,7 +133,7 @@ export function normalizeReview(value: unknown): Review | null {
 
   const reviewId = toPositiveInteger(read(value, "reviewId"));
   const gameId = toPositiveInteger(read(value, "gameId"));
-  const platform = toStoreKey(read(value, "platform"));
+  const platform = normalizeStore(read(value, "platform"));
   if (reviewId === null || gameId === null || platform === null) return null;
 
   return {
@@ -231,7 +231,7 @@ export function parseReviewCreateRequest(input: unknown): ReviewCreateRequest | 
   if (!isRecord(input)) return null;
 
   const gameId = toPositiveInteger(read(input, "gameId"));
-  const platform = toStoreKey(read(input, "platform"));
+  const platform = normalizeStore(read(input, "platform"));
   if (gameId === null || platform === null) return null;
 
   const fields = parseWriteFields(input);

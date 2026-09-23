@@ -187,13 +187,13 @@ public class ReviewService : IReviewService
 
     private static string ValidatePlatform(string? platform)
     {
-        var trimmed = platform?.Trim() ?? string.Empty;
-        if (!StoreKeys.IsKnown(trimmed))
+        var normalized = StoreKeys.Normalize(platform);
+        if (normalized is null)
         {
-            throw new ArgumentException("La plataforma no es una tienda conocida", nameof(platform));
+            throw new ArgumentException("La plataforma no es una tienda conocida ni un slug de plataforma válido", nameof(platform));
         }
 
-        return trimmed;
+        return normalized;
     }
 
     // El estado es obligatorio: guardar una reseña sin saber si la partida se terminó o se abandonó deja el
