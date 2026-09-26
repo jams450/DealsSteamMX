@@ -32,7 +32,10 @@ export type MergeRequestPayload = {
   readonly intoGameId: number;
 };
 
-export type CrossStateStoreRow = { readonly store: string; readonly storeGameId: string; readonly state: string; readonly title: string };
+export type CrossStateStoreRow = {
+  readonly store: string; readonly storeGameId: string; readonly state: string; readonly title: string;
+  readonly priority: number | null; readonly isInstalled: boolean | null;
+};
 export type CrossStateExternalId = { readonly namespace: string; readonly externalId: string };
 export type CrossStateMember = {
   readonly gameId: number; readonly title: string; readonly normalizedTitle: string; readonly type: string | null;
@@ -141,7 +144,9 @@ function normalizeCrossStateMember(value: unknown): CrossStateMember | null {
     if (!isRecord(x)) return [];
     const store = toCanonicalStore(read(x, "store")); const id = toBoundedText(read(x, "storeGameId"), MAX_ID_LENGTH);
     const state = toBoundedText(read(x, "state"), 32); const rowTitle = toBoundedText(read(x, "title"), MAX_TITLE_LENGTH);
-    return store && id && state && rowTitle ? [{ store, storeGameId: id, state, title: rowTitle }] : [];
+    const priorityValue = read(x, "priority"); const priority = typeof priorityValue === "number" && Number.isSafeInteger(priorityValue) ? priorityValue : null;
+    const installedValue = read(x, "isInstalled"); const isInstalled = typeof installedValue === "boolean" ? installedValue : null;
+    return store && id && state && rowTitle ? [{ store, storeGameId: id, state, title: rowTitle, priority, isInstalled }] : [];
   }).slice(0, MAX_STORE_REFS) : [];
   const rawIds = read(value, "externalIds");
   const externalIds = Array.isArray(rawIds) ? rawIds.flatMap(x => {

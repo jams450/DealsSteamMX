@@ -47,8 +47,22 @@ export async function removeWishlistCategoryItems(categoryId: number, appIds: re
   if (!response.ok) throw await parseApiError(response, "No se pudieron quitar los juegos de la categoría");
 }
 
-export async function getWishlist(): Promise<WishlistResponse> {
-  const response = await fetch("/api/bff/wishlist", { cache: "no-store" });
+export type WishlistQuery = {
+  readonly page?: number;
+  readonly pageSize?: number;
+  readonly search?: string;
+  readonly categoryId?: number;
+  readonly categoryState?: "all" | "none";
+  readonly sort?: string;
+  readonly direction?: "asc" | "desc";
+};
+
+export async function getWishlist(query: WishlistQuery = {}, signal?: AbortSignal): Promise<WishlistResponse> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== "") params.set(key, String(value));
+  }
+  const response = await fetch(`/api/bff/wishlist${params.size ? `?${params}` : ""}`, { cache: "no-store", signal });
   if (!response.ok) throw await parseApiError(response, "No se pudo cargar la wishlist");
 
   const wishlist = normalizeWishlistResponse(await response.json());

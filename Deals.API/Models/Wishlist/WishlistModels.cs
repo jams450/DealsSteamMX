@@ -43,7 +43,11 @@ public sealed record WishlistResponse(
     DateTime? SyncedAt,
     IReadOnlyList<WishlistItemResponse> Items,
     int MinViableDiscountPercent,
-    IReadOnlyList<WishlistCategorySummary> Categories);
+    IReadOnlyList<WishlistCategorySummary> Categories,
+    int Page = 1,
+    int PageSize = 50,
+    int TotalItems = 0,
+    int TotalPages = 0);
 
 public sealed record WishlistCategoryRequest(string? Name);
 public sealed record WishlistCategoryRenameRequest(string? Name);

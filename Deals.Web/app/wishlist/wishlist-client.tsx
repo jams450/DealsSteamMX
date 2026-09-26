@@ -12,14 +12,14 @@ import { refreshSteamGame } from "@/app/steam/_lib/steam-api";
 import { cn } from "@/lib/ui/cn";
 import { ToastStack } from "@/components/feedback/toast-stack";
 import { useToasts } from "@/components/feedback/use-toasts";
-import { assignWishlistCategory, createWishlistCategory, getWishlist, previewWishlistPackage, removeWishlistCategoryItems, replaceWishlistItemCategories, syncWishlist, updateWishlistPreferences } from "./_lib/wishlist-api";
+import { assignWishlistCategory, createWishlistCategory, getWishlist, previewWishlistPackage, removeWishlistCategoryItems, replaceWishlistItemCategories, syncWishlist, updateWishlistPreferences, type WishlistQuery } from "./_lib/wishlist-api";
+import type { PaginationState, SortingState } from "@tanstack/react-table";
 import { dealScore, discountPercent } from "./_lib/wishlist-metrics";
 import {
   MAX_PACKAGE_APP_IDS,
   exceedsPackageLimit,
   packageRequestAppIds,
   pageSelectionState,
-  reconcileAppIds,
   setAppIds,
   toggleAppId
 } from "./_lib/wishlist-package";
@@ -682,9 +682,18 @@ function CategoryModal({
 
 interface WishlistDataGridProps {
   readonly columns: ColumnDef<WishlistItem>[];
-  readonly rows: WishlistItem[];
+  readonly rows: readonly WishlistItem[];
   readonly minViableDiscountPercent: number;
   readonly onThresholdCommit: (next: number) => Promise<void>;
+  readonly pagination: PaginationState;
+  readonly onPaginationChange: (next: PaginationState) => void;
+  readonly sorting: SortingState;
+  readonly onSortingChange: (next: SortingState) => void;
+  readonly search: string;
+  readonly onSearchChange: (value: string) => void;
+  readonly rowCount: number;
+  readonly loading: boolean;
+  readonly error: string | null;
 }
 
 function wishlistFilter(row: Parameters<FilterFn<WishlistItem>>[0], _columnId: string, value: unknown) {
@@ -698,12 +707,31 @@ const WishlistDataGrid = memo(function WishlistDataGrid({
   columns,
   rows,
   minViableDiscountPercent,
-  onThresholdCommit
+  onThresholdCommit,
+  pagination,
+  onPaginationChange,
+  sorting,
+  onSortingChange,
+  search,
+  onSearchChange,
+  rowCount,
+  loading,
+  error
 }: WishlistDataGridProps) {
   return (
     <DataGrid
       columns={columns}
       rows={rows}
+      mode="server"
+      loading={loading}
+      errorMessage={error}
+      manualPagination
+      pagination={pagination}
+      onPaginationChange={onPaginationChange}
+      rowCount={rowCount}
+      manualSorting
+      sorting={sorting}
+      onSortingChange={onSortingChange}
       density="compact"
       stickyHeader
       stickyActionsColumn
@@ -711,6 +739,8 @@ const WishlistDataGrid = memo(function WishlistDataGrid({
       allowAllPageSize
       pageSizeStorageKey={PAGE_SIZE_STORAGE_KEY}
       enableGlobalFilter
+      globalFilter={search}
+      onGlobalFilterChange={onSearchChange}
       globalFilterPlaceholder="Buscar por nombre o AppID"
       globalFilterFn={wishlistFilter}
       enableColumnVisibility
@@ -735,6 +765,18 @@ interface WishlistItemsProps {
   readonly minViableDiscountPercent: number;
   readonly onThresholdCommit: (next: number) => Promise<void>;
   readonly onRefresh: (item: WishlistItem) => void;
+  readonly search: string;
+  readonly onSearchChange: (value: string) => void;
+  readonly pagination: PaginationState;
+  readonly onPaginationChange: (next: PaginationState) => void;
+  readonly sorting: SortingState;
+  readonly onSortingChange: (next: SortingState) => void;
+  readonly totalItems: number;
+  readonly loading: boolean;
+  readonly tableError: string | null;
+  readonly categoryFilter: number | "all" | "none";
+  readonly onCategoryChange: (value: number | "all" | "none") => void;
+  readonly onClearFilters: () => void;
 }
 
 function WishlistItems({
@@ -748,10 +790,21 @@ function WishlistItems({
   rowErrors,
   minViableDiscountPercent,
   onThresholdCommit,
-  onRefresh
+  onRefresh,
+  search,
+  onSearchChange,
+  pagination,
+  onPaginationChange,
+  sorting,
+  onSortingChange,
+  totalItems,
+  loading,
+  tableError,
+  categoryFilter,
+  onCategoryChange,
+  onClearFilters
 }: WishlistItemsProps) {
-  const [filter, setFilter] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState<number | "all" | "none">("all");
+
   const [selectedAppIds, setSelectedAppIds] = useState<ReadonlySet<number>>(() => new Set<number>());
   const [categoryFeedback, setCategoryFeedback] = useState("");
   const [categoryFormOpen, setCategoryFormOpen] = useState(false);
@@ -770,24 +823,14 @@ function WishlistItems({
   const [reconciledAppIds, setReconciledAppIds] = useState<readonly number[]>([]);
   // Los descartes de peticiones viejas no se pintan: la última selección es la que manda.
   const previewRequestRef = useRef(0);
-  const query = filter.trim().toLocaleLowerCase("es-MX");
-  const filteredItems = useMemo(
-    () => items.filter((item) => {
-      const matchesText = item.name.toLocaleLowerCase("es-MX").includes(query) || String(item.appId).includes(query);
-      const matchesCategory = categoryFilter === "all" || (categoryFilter === "none" ? item.categories.length === 0 : item.categories.some((category) => category.id === categoryFilter));
-      return matchesText && matchesCategory;
-    }),
-    [items, query, categoryFilter]
-  );
+  // The API already applied search/category filters to the page; never filter the partial page again.
+  const filteredItems = items;
+  const rangeStart = totalItems === 0 ? 0 : pagination.pageIndex * pagination.pageSize + 1;
+  const rangeEnd = Math.min((pagination.pageIndex + 1) * pagination.pageSize, totalItems);
 
   // Un juego puede salir de la wishlist entre la selección y el cálculo (el sync lo sacó). La selección se
   // poda contra lo que la lista tiene hoy para que el total no cuente una fila que ya no existe.
-  useEffect(() => {
-    const knownAppIds = new Set(items.map((item) => item.appId));
-    const { selection, removed } = reconcileAppIds(selectedAppIds, knownAppIds);
-    if (removed.length === 0) return;
-    setSelectedAppIds(selection);
-  }, [items, selectedAppIds]);
+  // La selección persiste entre páginas. Solo el preview servidor confirma AppIDs eliminados.
 
   useEffect(() => {
     const appIds = packageRequestAppIds(selectedAppIds);
@@ -1011,7 +1054,7 @@ function WishlistItems({
       <div className="space-y-1">
         <p className="text-xs font-semibold uppercase tracking-widest text-muted">Juegos seguidos</p>
         <h2 id="wishlist-items-heading" className="text-xl font-semibold tracking-tight text-primary">En tu wishlist</h2>
-        <p className="tabler-badge tabler-badge-muted">{filteredItems.length} de {items.length} juegos</p>
+        <p className="tabler-badge tabler-badge-muted">{items.length === 0 ? "0 juegos" : `${pagination.pageIndex * pagination.pageSize + 1}-${Math.min((pagination.pageIndex + 1) * pagination.pageSize, totalItems)} de ${totalItems} juegos`}</p>
         {selectedAppIds.size > 0 ? (
           <p className="tabler-badge tabler-badge-info">
             {selectedAppIds.size === 1 ? "1 seleccionado" : `${selectedAppIds.size} seleccionados`}
@@ -1022,7 +1065,7 @@ function WishlistItems({
       </div>
       <div className="flex flex-wrap items-center gap-2" aria-label="Filtro de categorías">
         <label htmlFor="wishlist-category-filter" className="text-xs font-medium text-secondary">Categoría</label>
-        <select id="wishlist-category-filter" value={String(categoryFilter)} onChange={(event) => setCategoryFilter(event.target.value === "all" || event.target.value === "none" ? event.target.value : Number(event.target.value))} className="input-semantic h-8 text-xs">
+        <select id="wishlist-category-filter" value={String(categoryFilter)} onChange={(event) => onCategoryChange(event.target.value === "all" || event.target.value === "none" ? event.target.value : Number(event.target.value))} className="input-semantic h-8 text-xs">
           <option value="all">Todas</option>
           <option value="none">Sin categoría</option>
           {categories.map((category) => <option key={category.id} value={category.id}>{category.name} ({category.itemCount})</option>)}
@@ -1039,7 +1082,7 @@ function WishlistItems({
       </div>
       <div className="md:hidden">
         <label className="sr-only" htmlFor="wishlist-filter-mobile">Buscar por nombre o AppID</label>
-        <input id="wishlist-filter-mobile" type="search" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Buscar por nombre o AppID" className="input-semantic h-8 w-full text-xs" />
+        <input id="wishlist-filter-mobile" type="search" value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="Buscar por nombre o AppID" className="input-semantic h-8 w-full text-xs" />
       </div>
       <ul className="space-y-3 md:hidden">
         {filteredItems.map((item) => (
@@ -1058,12 +1101,33 @@ function WishlistItems({
           </li>
         ))}
       </ul>
-      {filteredItems.length === 0 ? <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">{items.length === 0 ? "La wishlist está vacía." : "Ningún juego coincide con la búsqueda."}</p> : null}
+      {filteredItems.length === 0 ? (
+        <div className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
+          <p>{items.length === 0 ? "La wishlist está vacía." : "Ningún juego coincide con los filtros actuales."}</p>
+          {items.length === 0 && (search.trim() || categoryFilter !== "all") ? (
+            <Button type="button" variant="secondary" className="mt-3 h-8 px-3 text-xs" onClick={onClearFilters}>
+              Limpiar filtros
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      <p className="text-xs text-muted" aria-live="polite">
+        {rangeStart}-{rangeEnd} de {totalItems}
+      </p>
       <WishlistDataGrid
         columns={columns}
         rows={filteredItems}
         minViableDiscountPercent={minViableDiscountPercent}
         onThresholdCommit={onThresholdCommit}
+        pagination={pagination}
+        onPaginationChange={onPaginationChange}
+        sorting={sorting}
+        onSortingChange={onSortingChange}
+        search={search}
+        onSearchChange={onSearchChange}
+        rowCount={totalItems}
+        loading={loading}
+        error={tableError ?? null}
       />
       <CategoryModal item={categoryItem} categories={categories} disabled={categoryBusy} onClose={closeCategoryModal} onSaved={onCategoriesChanged} onItemCategoriesChanged={onItemCategoriesChanged} onError={(message) => { setCategoryFeedback(message); onToast(message, "error"); }} />
       {selectedAppIds.size > 0 ? (
@@ -1086,29 +1150,84 @@ export function WishlistClient() {
   const { toasts, dismissToast, success, error: toastError } = useToasts();
   const [wishlist, setWishlist] = useState<WishlistResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [tableLoading, setTableLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [tableError, setTableError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [report, setReport] = useState<WishlistSyncResponse | null>(null);
   const [refreshingAppId, setRefreshingAppId] = useState<number | null>(null);
   const [rowErrors, setRowErrors] = useState<Readonly<Record<number, string>>>({});
+  const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState<number | "all" | "none">("all");
+  const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 50 });
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const requestRef = useRef(0);
+  const hasLoadedRef = useRef(false);
 
-  async function loadWishlist() {
-    setLoading(true);
-    setError(null);
-    try {
-      setWishlist(await getWishlist());
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "No se pudo cargar la wishlist.");
-    } finally {
-      setLoading(false);
+  const wishlistQuery = useMemo<WishlistQuery>(() => ({
+    page: pagination.pageIndex + 1,
+    pageSize: pagination.pageSize,
+    search: search.trim() || undefined,
+    categoryId: typeof categoryFilter === "number" ? categoryFilter : undefined,
+    categoryState: categoryFilter === "none" ? "none" : "all",
+    sort: sorting[0]?.id === "name" || sorting[0]?.id === "priority" || sorting[0]?.id === "addedAt" ? sorting[0].id : undefined,
+    direction: sorting[0]?.desc ? "desc" : sorting.length > 0 ? "asc" : undefined
+  }), [categoryFilter, pagination, search, sorting]);
+
+  const loadWishlist = useCallback(async (query: WishlistQuery = wishlistQuery, signal?: AbortSignal) => {
+    const requestId = ++requestRef.current;
+    const initialLoad = !hasLoadedRef.current;
+    setTableLoading(true);
+    setTableError(null);
+    if (initialLoad) {
+      setLoading(true);
+      setError(null);
     }
-  }
+    try {
+      const result = await getWishlist(query, signal);
+      if (requestId === requestRef.current) {
+        setWishlist(result);
+        hasLoadedRef.current = true;
+      }
+    } catch (cause) {
+      if (requestId === requestRef.current) {
+        const message = cause instanceof Error ? cause.message : "No se pudo cargar la wishlist.";
+        if (initialLoad) setError(message);
+        else setTableError(message);
+      }
+    } finally {
+      if (requestId === requestRef.current) {
+        setTableLoading(false);
+        if (initialLoad) setLoading(false);
+      }
+    }
+  }, [wishlistQuery]);
 
   useEffect(() => {
-    void loadWishlist();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const controller = new AbortController();
+    const timer = setTimeout(() => void loadWishlist(wishlistQuery, controller.signal), search.trim() ? 300 : 0);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [loadWishlist, wishlistQuery, search]);
+
+  function changeSearch(value: string) {
+    setSearch(value);
+    setPagination((current) => ({ ...current, pageIndex: 0 }));
+  }
+
+  function changeCategory(value: number | "all" | "none") {
+    setCategoryFilter(value);
+    setPagination((current) => ({ ...current, pageIndex: 0 }));
+  }
+
+  function changeSorting(next: SortingState) {
+    setSorting(next);
+    setPagination((current) => ({ ...current, pageIndex: 0 }));
+  }
+
 
   // Sincronizar la lista no vuelve a `loading`: la lista ya cargada se queda en pantalla mientras corre.
   async function runSync() {
@@ -1276,7 +1395,7 @@ export function WishlistClient() {
         </div>
       ) : null}
 
-      {items.length > 0 ? (
+      {items.length > 0 || search.trim() || categoryFilter !== "all" ? (
         <WishlistItems
           items={items}
           categories={wishlist.categories}
@@ -1295,6 +1414,22 @@ export function WishlistClient() {
           minViableDiscountPercent={wishlist.minViableDiscountPercent}
           onThresholdCommit={updateThreshold}
           onRefresh={(item) => void refreshItem(item)}
+          search={search}
+          onSearchChange={changeSearch}
+          pagination={pagination}
+          onPaginationChange={setPagination}
+          sorting={sorting}
+          onSortingChange={changeSorting}
+          totalItems={wishlist.totalItems}
+          loading={tableLoading}
+          tableError={tableError}
+          categoryFilter={categoryFilter}
+          onCategoryChange={changeCategory}
+          onClearFilters={() => {
+            setSearch("");
+            setCategoryFilter("all");
+            setPagination((current) => ({ ...current, pageIndex: 0 }));
+          }}
         />
       ) : null}
     </div>

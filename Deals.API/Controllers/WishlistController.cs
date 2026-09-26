@@ -58,18 +58,69 @@ public class WishlistController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> Get(CancellationToken cancellationToken)
+    public async Task<IActionResult> Get(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 50,
+        [FromQuery] string? search = null,
+        [FromQuery] long? categoryId = null,
+        [FromQuery] string? categoryState = null,
+        [FromQuery] string? sort = null,
+        [FromQuery] string? direction = null,
+        CancellationToken cancellationToken = default)
     {
+        if (page < 1) throw new ArgumentException("page must be positive", nameof(page));
+        if (pageSize is < 1 or > 100) throw new ArgumentException("pageSize must be between 1 and 100", nameof(pageSize));
+        if (categoryState is not null && categoryState is not ("all" or "none")) throw new ArgumentException("categoryState must be all or none", nameof(categoryState));
+        if (categoryId is <= 0) throw new ArgumentException("categoryId must be positive", nameof(categoryId));
+        if (sort is not null && sort is not ("name" or "priority" or "addedAt")) throw new ArgumentException("sort is invalid", nameof(sort));
+        if (direction is not null && direction is not ("asc" or "desc")) throw new ArgumentException("direction must be asc or desc", nameof(direction));
+
         var userId = GetUserId();
-        var user = await _repository.Get<User>()
-            .FirstOrDefaultAsync(candidate => candidate.UserId == userId, cancellationToken);
-        if (user is null)
+        var user = await _repository.Get<User>().FirstOrDefaultAsync(candidate => candidate.UserId == userId, cancellationToken);
+        if (user is null) return NotFound();
+
+        var rowsQuery = _repository.Get<UserLibrary>().Where(entry => entry.UserId == userId && entry.Store == SteamStore && entry.State == WishedState);
+        if (!string.IsNullOrWhiteSpace(search))
         {
-            return NotFound();
+            var term = search.Trim();
+            rowsQuery = rowsQuery.Where(entry => entry.Title.Contains(term) || entry.StoreGameId.Contains(term));
+        }
+        if (categoryId is not null)
+        {
+            var id = categoryId.Value;
+            rowsQuery = rowsQuery.Where(entry => _repository.Get<WishlistCategoryItem>().Any(item => item.UserId == userId && item.WishlistCategoryId == id && item.UserLibraryId == entry.UserLibraryId));
+        }
+        else if (categoryState == "none")
+        {
+            rowsQuery = rowsQuery.Where(entry => !_repository.Get<WishlistCategoryItem>().Any(item => item.UserId == userId && item.UserLibraryId == entry.UserLibraryId));
         }
 
         var state = WishlistStates.Compose(user.SteamId64, user.WishlistSyncedAt, user.WishlistState);
-        var items = await LoadItemsAsync(userId, null, cancellationToken);
+        var totalItems = await rowsQuery.CountAsync(cancellationToken);
+        var ordered = sort switch
+        {
+            "name" => direction == "desc" ? rowsQuery.OrderByDescending(entry => entry.Title) : rowsQuery.OrderBy(entry => entry.Title),
+            "addedAt" => direction == "desc" ? rowsQuery.OrderByDescending(entry => entry.AddedAt) : rowsQuery.OrderBy(entry => entry.AddedAt),
+            _ => direction == "desc"
+                ? rowsQuery.OrderByDescending(entry => entry.Priority).ThenByDescending(entry => entry.Title).ThenByDescending(entry => entry.StoreGameId)
+                : rowsQuery.OrderBy(entry => entry.Priority).ThenBy(entry => entry.Title).ThenBy(entry => entry.StoreGameId)
+        };
+        var totalPages = totalItems == 0 ? 0 : (int)Math.Ceiling(totalItems / (double)pageSize);
+        var pageStoreGameIds = await ordered
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(entry => entry.StoreGameId)
+            .ToListAsync(cancellationToken);
+        var pageAppIds = pageStoreGameIds
+            .Select(ParseAppId)
+            .Where(appId => appId > 0)
+            .ToList();
+        var loadedItems = await LoadItemsAsync(userId, pageAppIds, cancellationToken);
+        var itemsByAppId = loadedItems.ToDictionary(item => item.AppId);
+        var items = pageAppIds
+            .Where(itemsByAppId.ContainsKey)
+            .Select(appId => itemsByAppId[appId])
+            .ToList();
         var categoryRows = await _repository.Get<WishlistCategory>()
             .Where(category => category.UserId == userId)
             .Select(category => new
@@ -85,7 +136,7 @@ public class WishlistController : ControllerBase
             .Select(category => new WishlistCategorySummary(category.WishlistCategoryId, category.Name, category.ItemCount))
             .ToList();
 
-        return Ok(new WishlistResponse(state, user.WishlistSyncedAt, items, user.MinViableDiscountPercent, categories));
+        return Ok(new WishlistResponse(state, user.WishlistSyncedAt, items, user.MinViableDiscountPercent, categories, page, pageSize, totalItems, totalPages));
     }
 
     [HttpGet("categories")]

@@ -178,21 +178,22 @@ public sealed class GameMergeService : IGameMergeService
                     locked.Count == 0 ? absorbedGameId : survivorGameId);
             }
 
-            // 3. One canonical game can own at most one ('steam', appid): two different appids across the
-            //    pair would make the survivor's price binding ambiguous.
-            var steamIds = await _repository.SqlQueryAsync<ExternalIdRow>(
+            // A single canonical game may still own only one Steam appid. Different appids on the two
+            // candidate games are an explicit operator decision; preserve both mappings instead of selecting
+            // one arbitrarily. The reconciliation UI displays this warning before the sequential merge.
+            var steamIdsByGame = await _repository.SqlQueryAsync<GameSteamIdsRow>(
                 """
-                SELECT DISTINCT e.external_id AS "ExternalId"
+                SELECT e.game_id AS "GameId", COUNT(DISTINCT e.external_id)::int AS "Count"
                 FROM public.game_external_ids e
                 WHERE e.game_id IN ({0},{1}) AND e.namespace = 'steam'
+                GROUP BY e.game_id
                 """,
                 absorbedGameId,
                 survivorGameId);
-
-            if (steamIds.Count > 1)
+            if (steamIdsByGame.Any(row => row.Count > 1))
             {
                 return GameMergeOutcome.Blocked(
-                    "Los dos juegos tienen appids de Steam distintos; no se pueden fusionar sin dejar el precio ambiguo.");
+                    "Un juego canónico tiene más de un appid de Steam; la identidad sigue siendo ambigua.");
             }
 
             var thirdPartyConflicts = await _repository.SqlQueryAsync<ConflictRow>(
@@ -410,6 +411,12 @@ public sealed class GameMergeService : IGameMergeService
     private sealed class GameIdRow
     {
         public long GameId { get; set; }
+    }
+
+    private sealed class GameSteamIdsRow
+    {
+        public long GameId { get; set; }
+        public int Count { get; set; }
     }
 
     private sealed class ExternalIdRow

@@ -43,6 +43,10 @@ export type WishlistResponse = {
   // Umbral del score de la wishlist. El backend lo manda; si todavía no lo manda (o llega inválido) se
   // usa el default y la página sigue funcionando.
   readonly minViableDiscountPercent: number;
+  readonly page: number;
+  readonly pageSize: number;
+  readonly totalItems: number;
+  readonly totalPages: number;
 };
 
 export type WishlistPreferences = {
@@ -244,7 +248,11 @@ export function normalizeWishlistResponse(input: unknown): WishlistResponse | nu
     minViableDiscountPercent:
       toDiscountThreshold(read(input, "minViableDiscountPercent")) ?? MIN_VIABLE_DISCOUNT_PERCENT_DEFAULT,
     items,
-    categories: toCategoryList(read(input, "categories"))
+    categories: toCategoryList(read(input, "categories")),
+    page: toPositiveInteger(read(input, "page")) ?? 1,
+    pageSize: toPositiveInteger(read(input, "pageSize")) ?? 50,
+    totalItems: toCount(read(input, "totalItems")) ?? items.length,
+    totalPages: toCount(read(input, "totalPages")) ?? (items.length > 0 ? 1 : 0)
   };
 }
 

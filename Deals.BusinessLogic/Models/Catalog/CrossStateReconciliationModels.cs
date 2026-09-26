@@ -1,6 +1,12 @@
 namespace Deals.BusinessLogic.Models.Catalog;
 
-public sealed record CrossStateStoreRow(string Store, string StoreGameId, string State, string Title);
+public sealed record CrossStateStoreRow(
+    string Store,
+    string StoreGameId,
+    string State,
+    string Title,
+    int? Priority,
+    bool? IsInstalled);
 
 public sealed record CrossStateExternalId(string Namespace, string ExternalId);
 

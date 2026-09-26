@@ -51,7 +51,6 @@ function movedSummary(result: MergeApplied): string {
 export function ReconciliationClient() {
   const [groups, setGroups] = useState<readonly CrossStateCandidateGroup[] | null>(null);
   const [selectedSurvivors, setSelectedSurvivors] = useState<Record<string, number>>({});
-  const [selectedAbsorbed, setSelectedAbsorbed] = useState<Record<string, Record<number, boolean>>>({});
   const [confirm, setConfirm] = useState<readonly ReconciliationJob[] | null>(null);
   const [operation, setOperation] = useState<OperationState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -103,20 +102,13 @@ export function ReconciliationClient() {
       if (groupBlocked(group) !== null) return [];
       const survivor = group.members.find((member) => member.gameId === selectedSurvivors[group.candidateKey]);
       if (!survivor) return [];
-      const absorbedIds = selectedAbsorbed[group.candidateKey] ?? {};
-      const absorbed = group.members.filter((member) => member.gameId !== survivor.gameId && absorbedIds[member.gameId] === true);
+      const absorbed = group.members.filter((member) => member.gameId !== survivor.gameId);
       return absorbed.length > 0 ? [{ candidateKey: group.candidateKey, survivor, absorbed }] : [];
     });
   }
 
   function selectSurvivor(candidateKey: string, gameId: number) {
     setSelectedSurvivors((current) => ({ ...current, [candidateKey]: gameId }));
-    setSelectedAbsorbed((current) => {
-      const existing = current[candidateKey] ?? {};
-      const next: Record<number, boolean> = {};
-      for (const [id, selected] of Object.entries(existing)) if (Number(id) !== gameId && selected) next[Number(id)] = true;
-      return { ...current, [candidateKey]: next };
-    });
   }
 
   function renderOperation() {
@@ -153,7 +145,7 @@ export function ReconciliationClient() {
           <span className="tabler-badge tabler-badge-primary">{groups?.length ?? 0} candidatos</span>
           {loading ? <span className="tabler-badge tabler-badge-muted">Cargando</span> : null}
         </div>
-        <p className="text-xs text-muted">Selecciona un superviviente y uno o más miembros absorbidos por candidato. Las fusiones requieren confirmación y se ejecutan una por una.</p>
+        <p className="text-xs text-muted">Selecciona un superviviente por candidato. Todos los demás miembros se absorberán automáticamente; las fusiones requieren confirmación y se ejecutan una por una.</p>
         <div className="flex flex-wrap gap-2">
           <Button type="button" variant="secondary" onClick={() => void loadCandidates()} disabled={loading || busy}>Recargar</Button>
           <Button type="button" variant="danger" disabled={busy || jobs.length === 0} onClick={() => setConfirm(jobs)}>Confirmar fusiones seleccionadas ({jobs.reduce((count, job) => count + job.absorbed.length, 0)})</Button>
@@ -167,7 +159,6 @@ export function ReconciliationClient() {
       {(groups ?? []).map((group) => {
         const groupReason = groupBlocked(group);
         const survivorId = selectedSurvivors[group.candidateKey] ?? null;
-        const absorbed = selectedAbsorbed[group.candidateKey] ?? {};
         return (
           <section key={group.candidateKey} className="app-card space-y-3 p-4" aria-labelledby={`reconciliation-${group.candidateKey}`}>
             <div className="flex flex-wrap gap-2"><h2 id={`reconciliation-${group.candidateKey}`} className="font-semibold text-primary">{group.candidateKey}</h2><span className="tabler-badge tabler-badge-info">{group.confidence}</span>{groupReason ? <span className="tabler-badge tabler-badge-warning">Bloqueado</span> : <span className="tabler-badge tabler-badge-success">Fusionable</span>}</div>
@@ -176,18 +167,16 @@ export function ReconciliationClient() {
             <div className="grid gap-2 md:grid-cols-2">
               {group.members.map((member) => {
                 const isSurvivor = survivorId === member.gameId;
-                const isAbsorbed = absorbed[member.gameId] === true;
                 return <article key={member.gameId} className="rounded border border-default p-3 text-sm">
                   <div className="flex items-start gap-2">
                     <input type="radio" name={`survivor-${group.candidateKey}`} checked={isSurvivor} disabled={busy || groupReason !== null || member.blocked} onChange={() => selectSurvivor(group.candidateKey, member.gameId)} aria-label={`Elegir ${member.title} como superviviente`} />
-                    <div className="min-w-0 flex-1"><p className="font-semibold text-primary">{member.title} <span className="text-xs text-muted">gameId {member.gameId}</span></p><p className="text-xs text-secondary">Estados: {member.states.join(", ") || "—"}</p><p className="text-xs text-secondary">Tiendas: {member.storeRows.map((row) => `${row.store}:${row.storeGameId} (${row.state})`).join(", ") || "—"}</p><p className="text-xs text-secondary">Evidencia: {member.evidence.join(", ") || "—"}</p></div>
+                    <div className="min-w-0 flex-1"><p className="font-semibold text-primary">{member.title} <span className="text-xs text-muted">gameId {member.gameId}</span></p><p className="text-xs text-secondary">Estados: {member.states.join(", ") || "—"}</p><p className="text-xs text-secondary">user_library: {member.storeRows.map((row) => `${row.store}:${row.storeGameId} [${row.state}${row.isInstalled === null ? "" : row.isInstalled ? ", instalada" : ", no instalada"}${row.priority === null ? "" : `, prioridad ${row.priority}`}]`).join(", ") || "—"}</p><p className="text-xs text-secondary">Steam: {member.steamAppIds.join(", ") || "sin appid"}</p><p className="text-xs text-secondary">Evidencia: {member.evidence.join(", ") || "—"}</p></div>
                   </div>
-                  <label className="mt-2 inline-flex items-center gap-2 text-xs text-secondary"><input type="checkbox" checked={isAbsorbed} disabled={busy || groupReason !== null || member.blocked || isSurvivor || survivorId === null} onChange={(event) => setSelectedAbsorbed((current) => ({ ...current, [group.candidateKey]: { ...(current[group.candidateKey] ?? {}), [member.gameId]: event.target.checked } }))} /> Absorber este miembro</label>
                   {member.blocked ? <p className="mt-1 text-[11px] text-secondary"><span className="font-semibold text-primary">Bloqueado: </span>{member.blockReason ?? "El backend no informó el motivo."}</p> : null}
                 </article>;
               })}
             </div>
-            <p className="text-xs text-muted">{groupReason ? "La acción está deshabilitada por el bloqueo informado." : survivorId === null ? "Elige exactamente un superviviente." : "Marca los miembros que se absorberán."}</p>
+            <p className="text-xs text-muted">{groupReason ? "La acción está deshabilitada por el bloqueo informado." : survivorId === null ? "Elige exactamente un superviviente." : "Los demás miembros se absorberán automáticamente."}</p>
           </section>
         );
       })}
@@ -199,6 +188,6 @@ export function ReconciliationClient() {
 
 function ConfirmDialog({ jobs, busy, onCancel, onConfirm }: { readonly jobs: readonly ReconciliationJob[]; readonly busy: boolean; readonly onCancel: () => void; readonly onConfirm: () => void }) {
   return <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="reconciliation-confirm-title">
-    <div className="app-card max-w-lg space-y-4 p-5"><h2 id="reconciliation-confirm-title" className="text-lg font-semibold text-primary">Confirmar fusiones</h2><p className="text-sm text-secondary">Esta operación es irreversible. Se ejecutarán {jobs.reduce((count, job) => count + job.absorbed.length, 0)} POST secuenciales.</p><ul className="list-disc space-y-1 pl-5 text-sm text-secondary">{jobs.map((job) => <li key={job.candidateKey}>{job.absorbed.map((member) => `${member.title} → ${job.survivor.title}`).join(", ")}</li>)}</ul><div className="flex justify-end gap-2"><Button type="button" variant="secondary" onClick={onCancel} disabled={busy}>Cancelar</Button><Button type="button" variant="danger" onClick={onConfirm} disabled={busy}>Confirmar y ejecutar</Button></div></div>
+    <div className="app-card max-w-lg space-y-4 p-5"><h2 id="reconciliation-confirm-title" className="text-lg font-semibold text-primary">Confirmar fusiones</h2><p className="text-sm text-secondary">Esta operación es irreversible. Se ejecutarán {jobs.reduce((count, job) => count + job.absorbed.length, 0)} POST secuenciales. Los appids Steam distintos son advertencias: se conservarán literalmente, sin elegir uno automáticamente.</p><ul className="list-disc space-y-1 pl-5 text-sm text-secondary">{jobs.map((job) => <li key={job.candidateKey}>{job.absorbed.map((member) => `${member.title} → ${job.survivor.title}`).join(", ")}</li>)}</ul><div className="flex justify-end gap-2"><Button type="button" variant="secondary" onClick={onCancel} disabled={busy}>Cancelar</Button><Button type="button" variant="danger" onClick={onConfirm} disabled={busy}>Confirmar y ejecutar</Button></div></div>
   </div>;
 }

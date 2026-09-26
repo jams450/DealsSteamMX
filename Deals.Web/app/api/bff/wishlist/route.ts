@@ -9,7 +9,12 @@ export async function GET(request: Request) {
   const session = await getServerSession();
   if (!session) return unauthorized(request);
 
-  const { response, session: updatedSession } = await fetchApiWithAutoRefresh(session, `${getApiBaseUrl()}/api/wishlist`, {
+  const upstreamUrl = new URL("/api/wishlist", getApiBaseUrl());
+  for (const key of ["page", "pageSize", "search", "categoryId", "categoryState", "sort", "direction"]) {
+    const value = new URL(request.url).searchParams.get(key);
+    if (value !== null) upstreamUrl.searchParams.set(key, value);
+  }
+  const { response, session: updatedSession } = await fetchApiWithAutoRefresh(session, upstreamUrl.toString(), {
     method: "GET",
     cache: "no-store"
   });

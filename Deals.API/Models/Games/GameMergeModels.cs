@@ -8,7 +8,8 @@ namespace Deals.API.Models.Games;
 /// </summary>
 public sealed record GameMergeRequest(long IntoGameId);
 
-public sealed record CrossStateStoreRowResponse(string Store, string StoreGameId, string State, string Title);
+public sealed record CrossStateStoreRowResponse(
+    string Store, string StoreGameId, string State, string Title, int? Priority, bool? IsInstalled);
 public sealed record CrossStateExternalIdResponse(string Namespace, string ExternalId);
 public sealed record CrossStateMemberResponse(
     long GameId, string Title, string NormalizedTitle, string? Type, int? ReleaseYear,
@@ -18,7 +19,7 @@ public sealed record CrossStateMemberResponse(
 {
     public static CrossStateMemberResponse From(CrossStateMember member) => new(
         member.GameId, member.Title, member.NormalizedTitle, member.Type, member.ReleaseYear,
-        member.States, member.StoreRows.Select(x => new CrossStateStoreRowResponse(x.Store, x.StoreGameId, x.State, x.Title)).ToList(),
+        member.States, member.StoreRows.Select(x => new CrossStateStoreRowResponse(x.Store, x.StoreGameId, x.State, x.Title, x.Priority, x.IsInstalled)).ToList(),
         member.ExternalIds.Select(x => new CrossStateExternalIdResponse(x.Namespace, x.ExternalId)).ToList(),
         member.SteamAppIds, member.Evidence, member.Blocked, member.BlockReason);
 }

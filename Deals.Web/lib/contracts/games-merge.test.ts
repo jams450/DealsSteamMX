@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  normalizeCrossStateCandidates,
   normalizeDuplicateGroups,
   normalizeMergeResult,
   parseMergeRequest,
@@ -61,6 +62,25 @@ test("normalizeDuplicateGroups: una tienda fuera del vocabulario conserva su tex
     { ...group, members: [group.members[0], { ...group.members[1], stores: [{ store: "ITAD", storeGameId: "abc" }] }] }
   ]) as DuplicateGroup[];
   assert.deepEqual(first?.members[1]?.stores, [{ store: "itad", storeGameId: "abc" }]);
+});
+
+test("normalizeCrossStateCandidates: typeMissing stays actionable and preserves warning", () => {
+  const candidates = normalizeCrossStateCandidates([{
+    candidateKey: "normalized:absolum",
+    confidence: "medium",
+    reasons: ["sameNormalizedTitle", "crossState"],
+    warnings: ["typeMissing"],
+    blocked: false,
+    blockReason: null,
+    members: [
+      { gameId: 10, title: "Absolum", normalizedTitle: "absolum", type: null, releaseYear: null, states: ["owned"], storeRows: [], externalIds: [], steamAppIds: ["1"], evidence: [], blocked: false, blockReason: null },
+      { gameId: 11, title: "Absolum", normalizedTitle: "absolum", type: "game", releaseYear: null, states: ["wished"], storeRows: [], externalIds: [], steamAppIds: ["2"], evidence: [], blocked: false, blockReason: null }
+    ]
+  }]);
+
+  assert.equal(candidates?.[0]?.blocked, false);
+  assert.deepEqual(candidates?.[0]?.warnings, ["typeMissing"]);
+  assert.deepEqual(candidates?.[0]?.members.map((member) => member.gameId), [10, 11]);
 });
 
 test("normalizeMergeResult: `applied: true` es la rama aplicada y cuenta lo movido", () => {

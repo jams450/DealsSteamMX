@@ -59,7 +59,9 @@ internal sealed class WindowGovernor : IDisposable
             {
                 var now = DateTime.UtcNow;
                 Expire(now);
-                var next = now + minDelay - lastRequestAt;
+                var next = lastRequestAt == DateTime.MinValue
+                    ? TimeSpan.Zero
+                    : now + minDelay - lastRequestAt;
                 var available = windows.Select(window =>
                     (window.Limit - history.Where(item => now - item.At < window.Window).Sum(item => item.Units)) >= units);
                 if (next <= TimeSpan.Zero && available.All(value => value))

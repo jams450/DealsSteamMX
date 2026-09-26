@@ -8,7 +8,7 @@ import { Logo } from "@/components/brand/logo";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/ui/cn";
-import { isRouteActive, productNavItems } from "./nav-config";
+import { appNavItems, isRouteActive } from "./nav-config";
 
 type ProductShellProps = {
   title: string;
@@ -69,9 +69,9 @@ export function ProductShell({ title, subtitle, meta, wide = false, children }: 
     return (
       <nav
         aria-label={mobile ? "Navegación móvil principal" : "Navegación principal"}
-        className={cn("flex items-center gap-1", mobile && "flex-col items-stretch")}
+        className={cn("flex items-center gap-1 overflow-x-auto", mobile && "grid items-stretch gap-1 overflow-visible sm:grid-cols-2")}
       >
-        {productNavItems.map((item) => {
+        {appNavItems.map((item) => {
           const Icon = item.icon;
           const active = isRouteActive(pathname, item.href);
           return (

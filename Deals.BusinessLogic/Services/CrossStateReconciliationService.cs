@@ -21,6 +21,7 @@ public sealed class CrossStateReconciliationService : ICrossStateReconciliationS
             SELECT DISTINCT g.game_id AS "GameId", g.title AS "Title", g.normalized_title AS "NormalizedTitle",
                    g.type AS "Type", g.release_year AS "ReleaseYear",
                    ul.store AS "Store", ul.store_game_id AS "StoreGameId", ul.state AS "State", ul.title AS "LibraryTitle",
+                   ul.priority AS "Priority", ul.is_installed AS "IsInstalled",
                    e.namespace AS "Namespace", e.external_id AS "ExternalId"
             FROM public.user_library ul
             JOIN public.games g ON g.game_id = ul.game_id
@@ -33,7 +34,7 @@ public sealed class CrossStateReconciliationService : ICrossStateReconciliationS
         {
             var first = group.First();
             var storeRows = group.Where(x => x.Store is not null && x.StoreGameId is not null)
-                .Select(x => new CrossStateStoreRow(x.Store!, x.StoreGameId!, x.State, x.LibraryTitle))
+                .Select(x => new CrossStateStoreRow(x.Store!, x.StoreGameId!, x.State, x.LibraryTitle, x.Priority, x.IsInstalled))
                 .Distinct().OrderBy(x => x.Store).ThenBy(x => x.StoreGameId).ThenBy(x => x.State).ToList();
             var ids = group.Where(x => x.Namespace is not null && x.ExternalId is not null)
                 .Select(x => new CrossStateExternalId(x.Namespace!, x.ExternalId!))
@@ -62,12 +63,23 @@ public sealed class CrossStateReconciliationService : ICrossStateReconciliationS
             var warnings = new List<string>();
             if (stateCount > 1) reasons.Add("crossState");
             if (steamIds.Count > 1) warnings.Add("steamAppIdConflict");
-            if (memberList.Any(x => !string.IsNullOrWhiteSpace(x.Type)) && memberList.Select(x => x.Type).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
-                warnings.Add("typeConflict");
-            var blocked = steamIds.Count > 1 || memberList.Any(x => x.Blocked) || warnings.Contains("typeConflict");
-            var blockReason = steamIds.Count > 1
-                ? "Appids de Steam distintos; la fusión dejaría precio ambiguo."
-                : warnings.Contains("typeConflict") ? "Los tipos canónicos son incompatibles." : null;
+
+            var canonicalTypes = memberList
+                .Select(x => CanonicalType(x.Type))
+                .Where(x => x is not null)
+                .Select(x => x!)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            if (memberList.Any(x => CanonicalType(x.Type) is null)) warnings.Add("typeMissing");
+            // Missing/unknown type is uncertainty, not evidence that two canonical games are incompatible.
+            // Only distinct, known canonical types can make this candidate unsafe to merge.
+            if (canonicalTypes.Count > 1) warnings.Add("typeConflict");
+
+            // Different appids across candidate games are an explicit operator warning, not a block.
+            // A member with multiple appids remains blocked: its own canonical identity is ambiguous.
+            var blocked = memberList.Any(x => x.Blocked) || warnings.Contains("typeConflict");
+            var blockReason = memberList.FirstOrDefault(x => x.Blocked)?.BlockReason
+                ?? (warnings.Contains("typeConflict") ? "Los tipos canónicos son incompatibles." : null);
             var confidence = stateCount > 1 && memberList.Any(x => x.ExternalIds.Any(id => id.Namespace.Equals("itad", StringComparison.OrdinalIgnoreCase))) ? "high"
                 : stateCount > 1 ? "medium" : "low";
             result.Add(new CrossStateCandidateGroup(
@@ -75,6 +87,16 @@ public sealed class CrossStateReconciliationService : ICrossStateReconciliationS
                 memberList.Select(member => member with { Evidence = reasons }).ToList()));
         }
         return result;
+    }
+
+    private static string? CanonicalType(string? value)
+    {
+        var type = value?.Trim().ToLowerInvariant();
+        return type switch
+        {
+            "game" or "dlc" or "demo" or "soundtrack" or "bundle" => type,
+            _ => null
+        };
     }
 
     private sealed class CandidateRow
@@ -90,5 +112,7 @@ public sealed class CrossStateReconciliationService : ICrossStateReconciliationS
         public string LibraryTitle { get; set; } = string.Empty;
         public string? Namespace { get; set; }
         public string? ExternalId { get; set; }
+        public int? Priority { get; set; }
+        public bool? IsInstalled { get; set; }
     }
 }

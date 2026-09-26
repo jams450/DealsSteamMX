@@ -85,6 +85,10 @@ public static class ServiceCollectionExtensions
             return new GgDealsRequestGovernor(budget.RecordsPerMinute, budget.RecordsPerHour, budget.MaxBurstRecords, budget.MinDelayMilliseconds);
         });
 
+        // Direct store clients share a lightweight concurrency governor. Register it explicitly because typed
+        // HttpClient activation resolves EpicStoreClient/MicrosoftStoreClient through DI at request time.
+        services.AddSingleton<ProviderRequestGovernor>();
+
         services.AddHttpClient<IItadClient, ItadClient>((serviceProvider, client) =>
         {
             var options = serviceProvider.GetRequiredService<IOptions<ItadOptions>>().Value;

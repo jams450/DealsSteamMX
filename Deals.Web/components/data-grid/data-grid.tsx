@@ -23,7 +23,7 @@ export type DataGridDensity = "compact" | "normal";
 
 type DataGridProps<TData> = {
   columns: ColumnDef<TData>[];
-  rows: TData[];
+  rows: readonly TData[];
   mode?: DataGridMode;
   density?: DataGridDensity;
   allowDensityToggle?: boolean;
@@ -55,6 +55,8 @@ type DataGridProps<TData> = {
   stickyHeader?: boolean;
   stickyActionsColumn?: boolean;
   enableGlobalFilter?: boolean;
+  globalFilter?: string;
+  onGlobalFilterChange?: (value: string) => void;
   globalFilterPlaceholder?: string;
   globalFilterFn?: FilterFn<TData>;
 };
@@ -97,6 +99,8 @@ export function DataGrid<TData>({
   columnVisibilityStorageKey,
   initialColumnVisibility,
   enableColumnFilters = false,
+  globalFilter,
+  onGlobalFilterChange,
   toolbar,
   stickyHeader = true,
   stickyActionsColumn = true,
@@ -129,6 +133,14 @@ export function DataGrid<TData>({
       setInternalDensity(persistedDensity);
     }
   }, [density, densityStorageKey]);
+
+  useEffect(() => {
+    if (!enableGlobalFilter || globalFilter === undefined) {
+      return;
+    }
+
+    setInternalGlobalFilter(globalFilter);
+  }, [enableGlobalFilter, globalFilter]);
 
   useEffect(() => {
     if (!enableColumnVisibility || !columnVisibilityStorageKey) {
@@ -180,13 +192,15 @@ export function DataGrid<TData>({
   const effectiveSorting = sorting ?? internalSorting;
   const effectivePagination = pagination ?? internalPagination;
   const effectiveDensity = density ?? internalDensity;
-  const effectiveGlobalFilter = enableGlobalFilter ? internalGlobalFilter : undefined;
+  const effectiveGlobalFilter = enableGlobalFilter ? (globalFilter ?? internalGlobalFilter) : undefined;
   // `getFilteredRowModel` sirve a la búsqueda global y a los filtros por columna: se activa con
   // cualquiera de los dos y sigue apagado cuando ninguno se usa.
-  const filteringEnabled = enableGlobalFilter || enableColumnFilters;
+  // Server grids expose filter controls but filtering itself belongs to the server; applying TanStack
+  // filtering here would search only the current page and falsify the server total.
+  const filteringEnabled = mode !== "server" && (enableGlobalFilter || enableColumnFilters);
 
   const table = useReactTable({
-    data: rows,
+    data: [...rows],
     columns,
     state: {
       sorting: effectiveSorting,
@@ -284,7 +298,9 @@ export function DataGrid<TData>({
   // El paginador existe solo en modo cliente con más de una página (o cuando se ofrece "Todos"). Se
   // calcula una vez porque lo consultan dos ramas del render: la tabla, para pegarse a él, y el propio
   // paginador, para decidir si se pinta.
-  const showPaginator = !resolvedManualPagination && (table.getPageCount() > 1 || allowAllPageSize);
+  const showPaginator = resolvedManualPagination
+    ? (rowCount ?? rows.length) > 0
+    : table.getPageCount() > 1 || allowAllPageSize;
 
   return (
       <div className="space-y-2">
@@ -334,7 +350,11 @@ export function DataGrid<TData>({
                   id={globalFilterInputId}
                   type="search"
                   value={internalGlobalFilter}
-                  onChange={(event) => setInternalGlobalFilter(event.target.value)}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setInternalGlobalFilter(value);
+                    onGlobalFilterChange?.(value);
+                  }}
                   placeholder={globalFilterPlaceholder}
                   className="input-semantic h-8 w-full pl-7 pr-7 text-xs"
                 />
@@ -342,7 +362,10 @@ export function DataGrid<TData>({
                   <button
                     type="button"
                     aria-label="Limpiar búsqueda"
-                    onClick={() => setInternalGlobalFilter("")}
+                    onClick={() => {
+                      setInternalGlobalFilter("");
+                      onGlobalFilterChange?.("");
+                    }}
                     className="absolute right-1 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-muted hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
                   >
                     <X className="h-3.5 w-3.5" aria-hidden="true" />
