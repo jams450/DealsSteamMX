@@ -171,6 +171,8 @@ Solo hay tasa USD→MXN. Cualquier otra moneda queda `unconverted`. Es aceptable
 
 Si aparece una oferta en EUR o BRL, se muestra sin convertir y con el badge correspondiente. Ampliar el par exige decidir si se cambia el proveedor primario a Frankfurter.
 
+Nota GOG: la tienda de GOG ya muestra y cobra en MXN, pero ITAD sigue entregando sus ofertas de GOG en USD para `country=MX`. Se mantiene la conversión propia USD→MXN con clasificación `fx_estimate`: el importe mostrado puede diferir del precio final en caja de GOG. Sin separación de precios por tienda ni cambio de lógica.
+
 ### 3.4 `FxRateRefreshJob` no está alineado con Banxico
 
 El intervalo corre **desde el arranque** y sin jitter. Banxico publica el FIX ~12:00 CDMX en días hábiles. En un arranque desfasado, el job puede correr sistemáticamente antes de la publicación y quedarse con el valor del día anterior.

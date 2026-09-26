@@ -42,19 +42,16 @@ function formatDateTime(value: string | null) {
 
 // La prioridad de Steam sigue en la tabla (por si algún día se usa) pero nace oculta: está disponible
 // en el menú «Columnas» y no aparece en la línea meta de las tiles móviles.
-// `refreshSteamGame` solo propaga el mensaje del BFF: el status (429 del limitador o 503 por defecto
-// del middleware) se pierde en el helper. El aviso de espera se muestra siempre y el copy de límite
-// solo cuando el propio mensaje ya lo delata.
-const RATE_LIMIT_PATTERN = /429|503|demasiad|l[ií]mite|rate|too many/i;
 const RATE_LIMIT_HINT =
   "Los refrescos por juego están limitados a 6 por minuto por IP: si se alcanzó el límite, espera un minuto y vuelve a intentar.";
 
 function rowRefreshError(cause: unknown): string {
-  const message = cause instanceof Error ? cause.message.trim() : "";
-  if (RATE_LIMIT_PATTERN.test(message)) {
-    return "Se alcanzó el límite de refrescos (6 por minuto por IP). Espera un minuto y vuelve a intentar.";
+  if (cause && typeof cause === "object" && "code" in cause && cause.code === "RATE_LIMITED") {
+    return RATE_LIMIT_HINT;
   }
-  return message ? `${message} ${RATE_LIMIT_HINT}` : `No se pudieron actualizar los precios. ${RATE_LIMIT_HINT}`;
+
+  const message = cause instanceof Error ? cause.message.trim() : "";
+  return message || "No se pudieron actualizar los precios.";
 }
 
 function withoutRowError(current: Readonly<Record<number, string>>, appId: number) {

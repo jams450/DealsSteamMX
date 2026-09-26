@@ -73,5 +73,11 @@ public sealed record WishlistListSyncReport(
     int FetchedFromSteam = 0,
     int FetchFailed = 0);
 
-/// <summary>Result of the paced per-game price refresh.</summary>
-public sealed record WishlistRefreshReport(int Refreshed, int Failed);
+/// <summary>Read-only provider telemetry for the background price refresh pass.</summary>
+public sealed record WishlistProviderRefreshOutcome(int Attempted, int Succeeded, int Failed, int Skipped);
+
+/// <summary>Result of the paced per-game price refresh, including provider-level telemetry.</summary>
+public sealed record WishlistRefreshReport(
+    int Refreshed,
+    int Failed,
+    IReadOnlyDictionary<string, WishlistProviderRefreshOutcome>? Providers = null);

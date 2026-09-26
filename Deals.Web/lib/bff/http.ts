@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-type ErrorCode = "UNAUTHORIZED" | "SESSION_EXPIRED" | "FORBIDDEN" | "BAD_REQUEST" | "UPSTREAM_ERROR" | "CSRF_REJECTED";
+type ErrorCode = "UNAUTHORIZED" | "SESSION_EXPIRED" | "FORBIDDEN" | "BAD_REQUEST" | "UPSTREAM_ERROR" | "CSRF_REJECTED" | "RATE_LIMITED";
 
 type ErrorPayload = {
   code: ErrorCode;
@@ -46,7 +46,12 @@ export function badRequest(requestOrTraceId: Request | string | undefined, messa
   return errorResponse(400, { code: "BAD_REQUEST", message, traceId: resolveTraceId(requestOrTraceId) });
 }
 
-export function upstreamError(requestOrTraceId: Request | string | undefined, status: number, message: string) {
-  const code: ErrorCode = status === 401 ? "SESSION_EXPIRED" : status === 403 ? "FORBIDDEN" : "UPSTREAM_ERROR";
-  return errorResponse(status, { code, message, traceId: resolveTraceId(requestOrTraceId) });
+export function upstreamError(requestOrTraceId: Request | string | undefined, status: number, message: string, headers?: HeadersInit) {
+  const code: ErrorCode = status === 429 ? "RATE_LIMITED" : status === 401 ? "SESSION_EXPIRED" : status === 403 ? "FORBIDDEN" : "UPSTREAM_ERROR";
+  const response = errorResponse(status, { code, message, traceId: resolveTraceId(requestOrTraceId) });
+  if (headers) {
+    const retryAfter = new Headers(headers).get("retry-after");
+    if (retryAfter) response.headers.set("Retry-After", retryAfter);
+  }
+  return response;
 }

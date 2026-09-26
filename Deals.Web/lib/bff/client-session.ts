@@ -1,5 +1,19 @@
 type ApiErrorBody = { code?: string; message?: string; Message?: string } | null;
 
+export class ApiError extends Error {
+  readonly code?: string;
+  readonly status: number;
+  readonly retryAfter: string | null;
+
+  constructor(message: string, response: Response, code?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.code = code;
+    this.status = response.status;
+    this.retryAfter = response.headers.get("retry-after");
+  }
+}
+
 const SESSION_EXPIRED_CODES = new Set(["SESSION_EXPIRED", "UNAUTHORIZED"]);
 
 export function redirectToLoginOnSessionExpired(response: Response, body?: ApiErrorBody): boolean {
@@ -23,5 +37,5 @@ export function redirectToLoginOnSessionExpired(response: Response, body?: ApiEr
 export async function parseApiError(response: Response, fallback: string): Promise<Error> {
   const body = (await response.json().catch(() => null)) as ApiErrorBody;
   redirectToLoginOnSessionExpired(response, body);
-  return new Error(body?.message ?? body?.Message ?? fallback);
+  return new ApiError(body?.message ?? body?.Message ?? fallback, response, body?.code);
 }

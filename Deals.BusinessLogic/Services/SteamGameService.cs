@@ -620,6 +620,8 @@ public sealed class SteamGameService(
                 OffersStale = offersStale,
                 GgDealsRefreshedAt = game.GgDealsRefreshedAt,
                 GgDealsStale = ggDealsStale,
+                EpicRefreshedAt = game.EpicRefreshedAt,
+                MicrosoftRefreshedAt = game.MicrosoftRefreshedAt,
                  Bundles = game.BundleLinks
                      .Where(link => !removedLinks.Contains(link) &&
                          link.Bundle is not null &&

@@ -120,7 +120,15 @@ public sealed class WishlistSyncService(
                  game.GgDealsRefreshedAt == null || game.GgDealsRefreshedAt < refreshCutoff ||
                  game.EpicRefreshedAt == null || game.EpicRefreshedAt < refreshCutoff ||
                  game.MicrosoftRefreshedAt == null || game.MicrosoftRefreshedAt < refreshCutoff))
-            .Select(game => new { game.AppId, game.OffersRefreshedAt, game.GgDealsRefreshedAt })
+            .Select(game => new
+            {
+                game.AppId,
+                game.ObservedAt,
+                game.OffersRefreshedAt,
+                game.GgDealsRefreshedAt,
+                game.EpicRefreshedAt,
+                game.MicrosoftRefreshedAt
+            })
             .ToListAsync(cancellationToken);
         var candidateAppIds = candidateGames.Select(game => game.AppId).ToHashSet();
 
@@ -158,6 +166,14 @@ public sealed class WishlistSyncService(
         var pacing = TimeSpan.FromMilliseconds(3_600_000.0 / Math.Max(1, settings.MaxRefreshesPerHour));
         var refreshed = 0;
         var failed = 0;
+        var providerStats = new Dictionary<string, ProviderCounters>(StringComparer.Ordinal)
+        {
+            ["steam"] = new(),
+            ["itad"] = new(),
+            ["ggdeals"] = new(),
+            ["epic"] = new(),
+            ["microsoft"] = new()
+        };
         var sinceSave = 0;
 
         // One refresh per app id: the detail snapshot is shared, so the same game on several users' lists
@@ -174,13 +190,21 @@ public sealed class WishlistSyncService(
             {
                 // forceRefresh: false keeps the shared TTL, so interactive traffic already refreshed today
                 // is not paid for again.
+                var before = candidateGames.FirstOrDefault(game => game.AppId == appId);
                 var details = await steamGameService.GetByAppIdAsync(appId, forceRefresh: false, cancellationToken);
                 if (details is null)
                 {
                     failed++;
+                    foreach (var stats in providerStats.Values) stats.Failed++;
                 }
                 else
                 {
+                    ClassifyProvider(providerStats["steam"], before?.ObservedAt, details.ObservedAt, stale: false);
+                    ClassifyProvider(providerStats["itad"], before?.OffersRefreshedAt, details.OffersRefreshedAt, details.OffersStale);
+                    ClassifyProvider(providerStats["ggdeals"], before?.GgDealsRefreshedAt, details.GgDealsRefreshedAt, details.GgDealsStale);
+                    ClassifyProvider(providerStats["epic"], before?.EpicRefreshedAt, details.EpicRefreshedAt, false);
+                    ClassifyProvider(providerStats["microsoft"], before?.MicrosoftRefreshedAt, details.MicrosoftRefreshedAt, false);
+
                     foreach (var entry in group)
                     {
                         entry.Title = details.Name;
@@ -212,7 +236,54 @@ public sealed class WishlistSyncService(
 
         await repository.SaveChangesAsync();
 
-        return new WishlistRefreshReport(refreshed, failed);
+        return new WishlistRefreshReport(
+            refreshed,
+            failed,
+            providerStats.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.ToReport(),
+                StringComparer.Ordinal));
+    }
+
+    private sealed class ProviderCounters
+    {
+        public int Attempted { get; set; }
+        public int Succeeded { get; set; }
+        public int Failed { get; set; }
+        public int Skipped { get; set; }
+
+        public WishlistProviderRefreshOutcome ToReport() =>
+            new(Attempted, Succeeded, Failed, Skipped);
+    }
+
+    private static void ClassifyProvider(
+        ProviderCounters counters,
+        DateTime? before,
+        DateTime? after,
+        bool stale)
+    {
+        if (before is null)
+        {
+            counters.Attempted++;
+        }
+        else if (after == before && !stale)
+        {
+            counters.Skipped++;
+            return;
+        }
+        else
+        {
+            counters.Attempted++;
+        }
+
+        if (after is not null && !stale && (before is null || after > before))
+        {
+            counters.Succeeded++;
+        }
+        else
+        {
+            counters.Failed++;
+        }
     }
 
     private static int ParseAppId(string storeGameId) =>

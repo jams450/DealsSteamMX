@@ -40,7 +40,12 @@ async function buildResponse(
 ) {
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { message?: string; Message?: string } | null;
-    const result = upstreamError(request, response.status, body?.message ?? body?.Message ?? "No se pudo cargar el juego");
+    const result = upstreamError(
+      request,
+      response.status,
+      body?.message ?? body?.Message ?? "No se pudo cargar el juego",
+      response.headers
+    );
     await attachSessionCookie(result, updatedSession, session);
     return result;
   }

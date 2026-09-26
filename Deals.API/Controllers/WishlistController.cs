@@ -34,12 +34,18 @@ public class WishlistController : ControllerBase
     private readonly IRepository _repository;
     private readonly IWishlistSyncService _wishlistSyncService;
     private readonly JobRunLog _jobRunLog;
+    private readonly ILogger<WishlistController> _logger;
 
-    public WishlistController(IRepository repository, IWishlistSyncService wishlistSyncService, JobRunLog jobRunLog)
+    public WishlistController(
+        IRepository repository,
+        IWishlistSyncService wishlistSyncService,
+        JobRunLog jobRunLog,
+        ILogger<WishlistController> logger)
     {
         _repository = repository;
         _wishlistSyncService = wishlistSyncService;
         _jobRunLog = jobRunLog;
+        _logger = logger;
     }
 
     [HttpGet]
@@ -101,7 +107,7 @@ public class WishlistController : ControllerBase
         // background job; letting it run here would hang the request.
         // Recorded as a manual run so job_runs stays a truthful history, but excluded from the background
         // job's gate: it does not do the expensive price pass, so it must not delay one.
-        var jobRunId = await _jobRunLog.StartAsync(JobRunLog.WishlistSync, JobRunLog.ManualTrigger, cancellationToken);
+        var jobRunId = await TryStartRunAsync(cancellationToken);
 
         WishlistListSyncReport report;
         try
@@ -110,11 +116,11 @@ public class WishlistController : ControllerBase
         }
         catch
         {
-            await _jobRunLog.FinishAsync(jobRunId, JobRunStatuses.Failed, null, CancellationToken.None);
+            await TryFinishRunAsync(jobRunId, JobRunStatuses.Failed, null, CancellationToken.None);
             throw;
         }
 
-        await _jobRunLog.FinishAsync(jobRunId, JobRunStatuses.Ok, new
+        await TryFinishRunAsync(jobRunId, JobRunStatuses.Ok, new
         {
             report.State,
             report.ItemCount,
@@ -136,6 +142,33 @@ public class WishlistController : ControllerBase
             report.SyncedAt,
             report.FetchedFromSteam,
             report.FetchFailed));
+    }
+
+    private async Task<long> TryStartRunAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _jobRunLog.StartAsync(JobRunLog.WishlistSync, JobRunLog.ManualTrigger, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            // Fail open: a log write must never break the manual sync. 0 means "not recorded", so FinishAsync
+            // then finds no row and returns.
+            _logger.LogWarning(exception, "[wishlist.sync] could not record the manual run");
+            return 0L;
+        }
+    }
+
+    private async Task TryFinishRunAsync(long jobRunId, string status, object? details, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _jobRunLog.FinishAsync(jobRunId, status, details, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(exception, "[wishlist.sync] could not record the manual run outcome");
+        }
     }
 
     private async Task<IReadOnlyList<WishlistItemResponse>> LoadItemsAsync(int userId, CancellationToken cancellationToken)

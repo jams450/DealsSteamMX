@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Threading.RateLimiting;
 using Deals.API.Security;
 using Microsoft.AspNetCore.RateLimiting;
@@ -13,6 +14,15 @@ public static class RateLimitingExtensions
             // A rate limit is not a server failure: without this the middleware replies 503 and clients
             // cannot tell "wait a minute" from "the API is down".
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            options.OnRejected = async (context, cancellationToken) =>
+            {
+                context.HttpContext.Response.Headers.RetryAfter = "60";
+                context.HttpContext.Response.ContentType = "application/problem+json";
+                await JsonSerializer.SerializeAsync(
+                    context.HttpContext.Response.Body,
+                    new { code = "RATE_LIMITED", message = "Rate limit exceeded; retry after one minute." },
+                    cancellationToken: cancellationToken);
+            };
 
             options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
                 context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
@@ -33,7 +43,7 @@ public static class RateLimitingExtensions
                 }));
 
             options.AddPolicy("steam-refresh", context => RateLimitPartition.GetFixedWindowLimiter(
-                GetClientKey(context),
+                GetClientIp(context),
                 _ => new FixedWindowRateLimiterOptions
                 {
                     PermitLimit = 6,

@@ -194,11 +194,12 @@ public sealed class WishlistSyncJob(
             try
             {
                 var refresh = await service.RefreshWishedGamesAsync(cancellationToken);
-                outcome["refresh"] = new { refresh.Refreshed, refresh.Failed };
+                outcome["refresh"] = new { refresh.Refreshed, refresh.Failed, refresh.Providers };
                 logger.LogInformation(
-                    "[wishlist.sync] refresh refreshed={Refreshed} failed={Failed}",
+                    "[wishlist.sync] refresh refreshed={Refreshed} failed={Failed} providers={@Providers}",
                     refresh.Refreshed,
-                    refresh.Failed);
+                    refresh.Failed,
+                    refresh.Providers);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

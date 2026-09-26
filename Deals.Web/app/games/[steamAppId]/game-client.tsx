@@ -1149,6 +1149,10 @@ export function GameClient({ appId }: GameClientProps) {
               <span aria-hidden="true">·</span>
               <AttributionLink href={GGDEALS_ATTRIBUTION_URL} label="GG.deals" />
             </p>
+            <p className="text-xs text-muted">
+              GOG ya cobra en MXN en su tienda, pero su importe aquí llega vía ITAD en USD convertido a
+              MXN (≈) y puede diferir del precio final en caja.
+            </p>
           </div>
           <div className="flex flex-col items-start gap-1 sm:items-end">
             <Button

@@ -100,6 +100,8 @@ public sealed record SteamGameDetails(
     bool OffersStale = false,
     DateTime? GgDealsRefreshedAt = null,
     bool GgDealsStale = false,
+    DateTime? EpicRefreshedAt = null,
+    DateTime? MicrosoftRefreshedAt = null,
     IReadOnlyList<SteamGameBundle>? Bundles = null,
     DateTime? BundlesRefreshedAt = null,
     bool BundlesStale = false);
