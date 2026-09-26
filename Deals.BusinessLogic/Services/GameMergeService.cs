@@ -150,9 +150,6 @@ public sealed class GameMergeService : IGameMergeService
         string actorName,
         CancellationToken cancellationToken = default)
     {
-        // actorUserId is part of the contract for audit callers; the log stores the human name only.
-        _ = actorUserId;
-
         if (absorbedGameId <= 0 || survivorGameId <= 0)
         {
             throw new ArgumentException("Los identificadores de juego deben ser positivos.", nameof(absorbedGameId));
@@ -198,14 +195,62 @@ public sealed class GameMergeService : IGameMergeService
                     "Los dos juegos tienen appids de Steam distintos; no se pueden fusionar sin dejar el precio ambiguo.");
             }
 
+            var thirdPartyConflicts = await _repository.SqlQueryAsync<ConflictRow>(
+                """
+                SELECT e.namespace AS "Namespace", e.external_id AS "ExternalId"
+                FROM public.game_external_ids e
+                WHERE e.game_id = {0}
+                  AND EXISTS (SELECT 1 FROM public.game_external_ids other
+                              WHERE other.game_id NOT IN ({0},{1})
+                                AND other.namespace = e.namespace AND other.external_id = e.external_id)
+                """, absorbedGameId, survivorGameId);
+            if (thirdPartyConflicts.Count > 0)
+                return GameMergeOutcome.Blocked("Un identificador externo del juego absorbido apunta a un tercer juego canónico.");
+
+            var libraryCollisions = await _repository.SqlQueryAsync<ConflictRow>(
+                """
+                SELECT a.store AS "Namespace", a.store_game_id AS "ExternalId"
+                FROM public.user_library a JOIN public.user_library b
+                  ON a.user_id = b.user_id AND a.store = b.store AND a.store_game_id = b.store_game_id AND a.state = b.state
+                WHERE a.game_id = {0} AND b.game_id = {1}
+                """, survivorGameId, absorbedGameId);
+            if (libraryCollisions.Count > 0)
+                return GameMergeOutcome.Blocked("Existen filas de biblioteca duplicadas; la deduplicación requiere una decisión explícita.");
+
             // 4. Reviews always move: game_reviews has no unique key on (user_id, game_id, platform) any
             //    more, so a review of each game on the same platform is simply two reviews of the
             //    survivor. Nothing is dropped and therefore nothing blocks the merge.
 
-            // Snapshot BEFORE any write: only what is destroyed and cannot be rebuilt — the absorbed games
-            // row and its external ids. Repointed rows (steam_games, user_library, game_reviews,
-            // user_game_favorites) are not copied: they still exist.
-            var snapshot = await CaptureSnapshotAsync(absorbedGameId);
+            // Capture every affected row before writes. This is the rollback/audit boundary: rows that are
+            // deduplicated or destroyed must be reconstructible, not inferred from the absorbed id.
+            var snapshot = await CaptureSnapshotAsync(absorbedGameId, survivorGameId);
+            var mergeAudit = await _repository.SqlQueryAsync<MergeAuditRow>(
+                """
+                INSERT INTO public.game_merges
+                    (survivor_game_id, absorbed_game_id, absorbed_snapshot, moved_external_ids,
+                     moved_steam_games, moved_library_rows, dropped_reviews, merged_at, merged_by, actor_user_id)
+                VALUES ({0}, {1}, {2}::jsonb, 0, 0, 0, 0, NOW(), {3}, {4})
+                RETURNING game_merge_id AS "GameMergeId"
+                """, survivorGameId, absorbedGameId, snapshot,
+                (object?)(string.IsNullOrWhiteSpace(actorName) ? null : actorName.Trim()[..Math.Min(actorName.Trim().Length, 100)]) ?? DBNull.Value,
+                actorUserId);
+            var auditId = mergeAudit.Single().GameMergeId;
+            await _repository.ExecuteSqlRawAsync(
+                """
+                INSERT INTO public.game_merge_details (game_merge_id, entity_type, entity_id, row_snapshot, action)
+                VALUES ({0}, 'merge_snapshot', NULL, {1}::jsonb, 'pre_write')
+                """, auditId, snapshot);
+
+            // Identical external identities are a safe deduplication, not a third-party conflict. Keep
+            // survivor's row deterministically and account for the removed absorbed rows in the audit.
+            var deduplicatedExternalIds = await _repository.ExecuteSqlRawAsync(
+                """
+                DELETE FROM public.game_external_ids absorbed
+                USING public.game_external_ids survivor
+                WHERE absorbed.game_id = {1} AND survivor.game_id = {0}
+                  AND absorbed.namespace = survivor.namespace
+                  AND absorbed.external_id = survivor.external_id
+                """, survivorGameId, absorbedGameId);
 
             // 5.-9. Repoint every referrer, then delete the absorbed row. Order matters: steam_games and
             //        user_library are NO ACTION and game_reviews.game_id is CASCADE.
@@ -222,18 +267,26 @@ public sealed class GameMergeService : IGameMergeService
             // Offers move with the game because game_offers.game_id is a NO ACTION FK: leaving them behind
             // would make the DELETE below raise 23503. A Steam-less offer (source='microsoft', Fase 2) is
             // keyed by (game_id, region, source, offer_key) instead of by a steam_game_id, so the survivor
-            // can already own the absorbed game's key and the repoint would raise 23505. The collision is
-            // deleted first, exactly as favorites do it a few lines below: the survivor's row loses, which
-            // is arbitrary but self-healing, because the refresh gate rewrites it on the next look.
-            await _repository.ExecuteSqlRawAsync(
+            // can already own the absorbed game's key and the repoint would raise 23505. Collisions are
+            // resolved below by a total freshness/order rule before the repoint.
+            // Keep newest offer; game_offer_id breaks timestamp ties. Delete either side explicitly so
+            // the absorbed UPDATE can never hit uq_game_offers_canonical, regardless of row age.
+            var droppedSurvivorOffers = await _repository.ExecuteSqlRawAsync(
                 """
                 DELETE FROM public.game_offers a
                 USING public.game_offers b
                 WHERE a.game_id = {0} AND b.game_id = {1}
                   AND a.region = b.region AND a.source = b.source AND a.offer_key = b.offer_key
-                """,
-                survivorGameId,
-                absorbedGameId);
+                  AND (a.observed_at, a.game_offer_id) < (b.observed_at, b.game_offer_id)
+                """, survivorGameId, absorbedGameId);
+            var droppedAbsorbedOffers = await _repository.ExecuteSqlRawAsync(
+                """
+                DELETE FROM public.game_offers a
+                USING public.game_offers b
+                WHERE a.game_id = {1} AND b.game_id = {0}
+                  AND a.region = b.region AND a.source = b.source AND a.offer_key = b.offer_key
+                  AND (a.observed_at, a.game_offer_id) <= (b.observed_at, b.game_offer_id)
+                """, survivorGameId, absorbedGameId);
 
             await _repository.ExecuteSqlRawAsync(
                 "UPDATE public.game_offers SET game_id = {0}, updated_at = NOW() WHERE game_id = {1}",
@@ -274,19 +327,19 @@ public sealed class GameMergeService : IGameMergeService
 
             await _repository.ExecuteSqlRawAsync(
                 """
-                INSERT INTO public.game_merges
-                    (survivor_game_id, absorbed_game_id, absorbed_snapshot, moved_external_ids,
-                     moved_steam_games, moved_library_rows, dropped_reviews, merged_at, merged_by)
-                VALUES ({0}, {1}, {2}::jsonb, {3}, {4}, {5}, {6}, NOW(), {7})
-                """,
-                survivorGameId,
-                absorbedGameId,
-                snapshot,
-                movedExternalIds,
-                movedSteamGames,
-                movedLibraryRows,
-                0,
-                (object?)mergedBy ?? DBNull.Value);
+                UPDATE public.game_merges
+                SET moved_external_ids = {1}, moved_steam_games = {2}, moved_library_rows = {3}, dropped_reviews = 0
+                WHERE game_merge_id = {0}
+                """, auditId, movedExternalIds + deduplicatedExternalIds, movedSteamGames, movedLibraryRows);
+
+            await _repository.ExecuteSqlRawAsync(
+                """
+                INSERT INTO public.game_merge_details (game_merge_id, entity_type, entity_id, row_snapshot, action)
+                VALUES ({0}, 'merge_counters', NULL, jsonb_build_object(
+                    'deduplicated_external_ids', {1},
+                    'dropped_survivor_offers', {2},
+                    'dropped_absorbed_offers', {3}), 'post_write')
+                """, auditId, deduplicatedExternalIds, droppedSurvivorOffers, droppedAbsorbedOffers);
 
             // 11. Both NO ACTION referrers are already repointed, so this cannot raise 23503.
             await _repository.ExecuteSqlRawAsync(
@@ -306,20 +359,24 @@ public sealed class GameMergeService : IGameMergeService
     /// Full JSONB snapshot of the absorbed game's destroyed rows. <c>to_jsonb</c> keeps every column, so
     /// the snapshot cannot silently lose one when the schema grows.
     /// </summary>
-    private async Task<string> CaptureSnapshotAsync(long absorbedGameId)
+    private async Task<string> CaptureSnapshotAsync(long absorbedGameId, long survivorGameId)
     {
         var rows = await _repository.SqlQueryAsync<SnapshotRow>(
             """
-            SELECT jsonb_build_object(
-                'game', (SELECT to_jsonb(g) FROM public.games g WHERE g.game_id = {0}),
-                'external_ids', COALESCE((
-                    SELECT jsonb_agg(to_jsonb(e) ORDER BY e.game_external_id)
-                    FROM public.game_external_ids e WHERE e.game_id = {0}), '[]'::jsonb)
-            )::text AS "Snapshot"
-            """,
-            absorbedGameId);
-
-        return rows.Count == 0 ? "{}" : rows[0].Snapshot;
+            SELECT jsonb_agg(jsonb_build_object(
+                'entity_type', entity_type, 'entity_id', entity_id, 'row_snapshot', row_snapshot, 'action', action
+            ) ORDER BY entity_type, entity_id)::text AS "Snapshot"
+            FROM (
+                SELECT 'game' entity_type, g.game_id entity_id, to_jsonb(g) row_snapshot, 'destroy' action FROM public.games g WHERE g.game_id = {0}
+                UNION ALL SELECT 'game_external_id', e.game_external_id, to_jsonb(e), 'repoint' FROM public.game_external_ids e WHERE e.game_id IN ({0},{1})
+                UNION ALL SELECT 'steam_game', s.steam_game_id, to_jsonb(s), 'repoint' FROM public.steam_games s WHERE s.game_id IN ({0},{1})
+                UNION ALL SELECT 'user_library', u.user_library_id, to_jsonb(u), 'repoint' FROM public.user_library u WHERE u.game_id IN ({0},{1})
+                UNION ALL SELECT 'game_offer', o.game_offer_id, to_jsonb(o), 'repoint_or_deduplicate' FROM public.game_offers o WHERE o.game_id IN ({0},{1})
+                UNION ALL SELECT 'game_review', r.game_review_id, to_jsonb(r), 'repoint' FROM public.game_reviews r WHERE r.game_id IN ({0},{1})
+                UNION ALL SELECT 'favorite', NULL, to_jsonb(f), 'repoint_or_deduplicate' FROM public.user_game_favorites f WHERE f.game_id IN ({0},{1})
+            ) captured
+            """, absorbedGameId, survivorGameId);
+        return rows.Count == 0 || string.IsNullOrWhiteSpace(rows[0].Snapshot) ? "[]" : rows[0].Snapshot;
     }
 
     /// <summary>Parses the comma-joined id list produced by <c>array_to_string(array_agg(...))</c>.</summary>
@@ -360,8 +417,19 @@ public sealed class GameMergeService : IGameMergeService
         public string ExternalId { get; set; } = string.Empty;
     }
 
+    private sealed class ConflictRow
+    {
+        public string Namespace { get; set; } = string.Empty;
+        public string ExternalId { get; set; } = string.Empty;
+    }
+
     private sealed class SnapshotRow
     {
         public string Snapshot { get; set; } = string.Empty;
+    }
+
+    private sealed class MergeAuditRow
+    {
+        public long GameMergeId { get; set; }
     }
 }

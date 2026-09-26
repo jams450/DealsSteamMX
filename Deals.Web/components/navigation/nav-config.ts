@@ -12,7 +12,8 @@ export const productNavItems: NavItem[] = [
   { href: "/wishlist", label: "Wishlist", icon: Bookmark },
   { href: "/library", label: "Biblioteca", icon: Library },
   // Mantenimiento del catálogo: separado de la Biblioteca porque fusionar es irreversible.
-  { href: "/library/duplicates", label: "Duplicados", icon: GitMerge }
+  { href: "/library/duplicates", label: "Duplicados", icon: GitMerge },
+  { href: "/library/reconciliation", label: "Reconciliación", icon: GitMerge }
 ];
 
 export const adminNavItems: NavItem[] = [

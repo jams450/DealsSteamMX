@@ -18,15 +18,18 @@ namespace Deals.API.Controllers;
 public class GamesController : ControllerBase
 {
     private readonly IGameMergeService _gameMergeService;
+    private readonly ICrossStateReconciliationService _crossStateReconciliationService;
     private readonly ILibraryCoverService _libraryCoverService;
     private readonly IGameTitleEditService _gameTitleEditService;
 
     public GamesController(
         IGameMergeService gameMergeService,
+        ICrossStateReconciliationService crossStateReconciliationService,
         ILibraryCoverService libraryCoverService,
         IGameTitleEditService gameTitleEditService)
     {
         _gameMergeService = gameMergeService;
+        _crossStateReconciliationService = crossStateReconciliationService;
         _libraryCoverService = libraryCoverService;
         _gameTitleEditService = gameTitleEditService;
     }
@@ -85,6 +88,15 @@ public class GamesController : ControllerBase
     {
         var groups = await _gameMergeService.FindDuplicateGroupsAsync(GetUserId(), cancellationToken);
         return Ok(groups.Select(DuplicateGroupResponse.From));
+    }
+
+    /// <summary>Cross-state reconciliation candidates. Read-only; never creates or changes identity.</summary>
+    [HttpGet("cross-state-reconciliation")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    public async Task<IActionResult> GetCrossStateReconciliation(CancellationToken cancellationToken)
+    {
+        var groups = await _crossStateReconciliationService.FindCandidatesAsync(GetUserId(), cancellationToken);
+        return Ok(groups.Select(CrossStateCandidateGroupResponse.From));
     }
 
     /// <summary>

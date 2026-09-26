@@ -352,10 +352,24 @@ CREATE TABLE IF NOT EXISTS public.game_merges (
     moved_library_rows INT NOT NULL,
     dropped_reviews    INT NOT NULL,
     merged_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    merged_by          VARCHAR(100)
+    merged_by          VARCHAR(100),
+    actor_user_id      INT
 );
 
 CREATE INDEX IF NOT EXISTS idx_game_merges_survivor ON public.game_merges(survivor_game_id);
+
+-- Versioned pre-write detail for rollback/audit. The merge service writes one row per affected or
+-- deduplicated entity before destructive changes; snapshots contain data only, never secrets.
+CREATE TABLE IF NOT EXISTS public.game_merge_details (
+    game_merge_detail_id BIGSERIAL PRIMARY KEY,
+    game_merge_id BIGINT NOT NULL REFERENCES public.game_merges(game_merge_id) ON DELETE CASCADE,
+    entity_type VARCHAR(32) NOT NULL,
+    entity_id BIGINT,
+    row_snapshot JSONB NOT NULL,
+    action VARCHAR(32) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_game_merge_details_merge ON public.game_merge_details(game_merge_id, game_merge_detail_id);
 
 -- Execution log of the periodic HostedServices (see SQL/migrations/2026-10-01_job_runs.sql). Event log:
 -- no audit columns, the row's whole audit is started_at/finished_at. One row per cycle, whatever its

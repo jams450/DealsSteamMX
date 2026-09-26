@@ -99,9 +99,8 @@ export function DuplicatesClient() {
   const [groups, setGroups] = useState<readonly DuplicateGroup[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // Superviviente elegido por grupo, indexado por posición de la lista (los grupos no traen id propio).
-  const [survivors, setSurvivors] = useState<Record<number, number>>({});
-  const [selectedGroups, setSelectedGroups] = useState<Record<number, boolean>>({});
+  // Los grupos no traen una clave dedicada; el título plegado es el identificador estable del contrato.
+  const [survivors, setSurvivors] = useState<Record<string, number>>({});
   const [confirm, setConfirm] = useState<readonly MergeJob[] | null>(null);
   const [op, setOp] = useState<MergeOperation | null>(null);
 
@@ -155,7 +154,6 @@ export function DuplicatesClient() {
   async function startMerge(jobs: readonly MergeJob[]) {
     setConfirm(null);
     setSurvivors({});
-    setSelectedGroups({});
     setOp({ phase: "merging", jobs, applied: [], error: null });
     await runQueue(jobs, []);
   }
@@ -263,11 +261,14 @@ export function DuplicatesClient() {
           <Button
             type="button"
             variant="danger"
-            disabled={busy || Object.keys(selectedGroups).length === 0}
+            disabled={busy || (groups ?? []).every((group) => {
+              const survivor = group.members.find((member) => member.gameId === survivors[group.foldedTitle]);
+              return groupBlockReason(group) !== null || survivor === undefined;
+            })}
             onClick={() => {
-              const jobs = (groups ?? []).flatMap((group, index) => {
-                if (!selectedGroups[index] || groupBlockReason(group) !== null) return [];
-                const survivor = group.members.find((member) => member.gameId === survivors[index]);
+              const jobs = (groups ?? []).flatMap((group) => {
+                if (groupBlockReason(group) !== null) return [];
+                const survivor = group.members.find((member) => member.gameId === survivors[group.foldedTitle]);
                 return survivor ? [{ survivor, absorbed: group.members.filter((member) => member.gameId !== survivor.gameId) }] : [];
               });
               if (jobs.length > 0) setConfirm(jobs);
@@ -299,8 +300,9 @@ export function DuplicatesClient() {
       ) : null}
 
       {(groups ?? []).map((group, index) => {
+        const groupKey = group.foldedTitle;
         const blockReason = groupBlockReason(group);
-        const survivorId = survivors[index] ?? null;
+        const survivorId = survivors[groupKey] ?? null;
         const survivor = survivorId === null ? null : (group.members.find((member) => member.gameId === survivorId) ?? null);
         const absorbed = survivor === null ? [] : group.members.filter((member) => member.gameId !== survivor.gameId);
         const canMerge = blockReason === null && survivor !== null && absorbed.length > 0 && !busy;
@@ -365,7 +367,7 @@ export function DuplicatesClient() {
                             value={member.gameId}
                             checked={survivorId === member.gameId}
                             disabled={!selectable || busy}
-                            onChange={() => setSurvivors((current) => ({ ...current, [index]: member.gameId }))}
+                            onChange={() => setSurvivors((current) => ({ ...current, [groupKey]: member.gameId }))}
                             aria-label={`Elegir «${member.title}» como el juego que sobrevive`}
                             className="h-4 w-4 accent-[var(--color-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
                           />
@@ -402,17 +404,6 @@ export function DuplicatesClient() {
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
-              <label className="inline-flex items-center gap-2 text-xs text-secondary">
-                <input
-                  type="checkbox"
-                  checked={selectedGroups[index] === true}
-                  disabled={busy || blockReason !== null || survivor === null}
-                  onChange={(event) => setSelectedGroups((current) => ({ ...current, [index]: event.target.checked }))}
-                  aria-label={`Seleccionar grupo ${group.foldedTitle} para fusión por cola`}
-                  className="h-4 w-4 accent-[var(--color-accent)]"
-                />
-                Seleccionar grupo
-              </label>
               <Button
                 type="button"
                 variant="danger"

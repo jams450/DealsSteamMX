@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS public.game_merges (
     moved_library_rows INT NOT NULL,
     dropped_reviews    INT NOT NULL,
     merged_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    merged_by          VARCHAR(100)
+    merged_by          VARCHAR(100),
+    actor_user_id      INT
 );
 
 CREATE INDEX IF NOT EXISTS idx_game_merges_survivor ON public.game_merges(survivor_game_id);

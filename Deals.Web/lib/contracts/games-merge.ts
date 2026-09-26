@@ -32,6 +32,19 @@ export type MergeRequestPayload = {
   readonly intoGameId: number;
 };
 
+export type CrossStateStoreRow = { readonly store: string; readonly storeGameId: string; readonly state: string; readonly title: string };
+export type CrossStateExternalId = { readonly namespace: string; readonly externalId: string };
+export type CrossStateMember = {
+  readonly gameId: number; readonly title: string; readonly normalizedTitle: string; readonly type: string | null;
+  readonly releaseYear: number | null; readonly states: readonly string[]; readonly storeRows: readonly CrossStateStoreRow[];
+  readonly externalIds: readonly CrossStateExternalId[]; readonly steamAppIds: readonly string[];
+  readonly evidence: readonly string[]; readonly blocked: boolean; readonly blockReason: string | null;
+};
+export type CrossStateCandidateGroup = {
+  readonly candidateKey: string; readonly confidence: string; readonly reasons: readonly string[]; readonly warnings: readonly string[];
+  readonly blocked: boolean; readonly blockReason: string | null; readonly members: readonly CrossStateMember[];
+};
+
 // 200: la fusión se aplicó. 409: el backend la bloqueó (solo por ambigüedad de identidad de Steam).
 export type MergeApplied = {
   readonly kind: "applied";
@@ -113,6 +126,35 @@ function toSteamAppId(value: unknown): string | null {
   return toBoundedText(value, MAX_ID_LENGTH);
 }
 
+function normalizeCrossStateMember(value: unknown): CrossStateMember | null {
+  if (!isRecord(value)) return null;
+  const gameId = toPositiveInteger(read(value, "gameId"));
+  const title = toBoundedText(read(value, "title"), MAX_TITLE_LENGTH);
+  const normalizedTitle = toBoundedText(read(value, "normalizedTitle"), MAX_TITLE_LENGTH);
+  if (gameId === null || title === null || normalizedTitle === null) return null;
+  const list = (key: string, max: number): string[] => {
+    const raw = read(value, key); if (!Array.isArray(raw)) return [];
+    return raw.filter((x): x is string => typeof x === "string" && x.trim().length > 0).map(x => x.trim().slice(0, MAX_REASON_LENGTH)).slice(0, max);
+  };
+  const rawStores = read(value, "storeRows");
+  const storeRows = Array.isArray(rawStores) ? rawStores.flatMap(x => {
+    if (!isRecord(x)) return [];
+    const store = toCanonicalStore(read(x, "store")); const id = toBoundedText(read(x, "storeGameId"), MAX_ID_LENGTH);
+    const state = toBoundedText(read(x, "state"), 32); const rowTitle = toBoundedText(read(x, "title"), MAX_TITLE_LENGTH);
+    return store && id && state && rowTitle ? [{ store, storeGameId: id, state, title: rowTitle }] : [];
+  }).slice(0, MAX_STORE_REFS) : [];
+  const rawIds = read(value, "externalIds");
+  const externalIds = Array.isArray(rawIds) ? rawIds.flatMap(x => {
+    if (!isRecord(x)) return [];
+    const namespace = toBoundedText(read(x, "namespace"), 32); const externalId = toBoundedText(read(x, "externalId"), MAX_ID_LENGTH);
+    return namespace && externalId ? [{ namespace, externalId }] : [];
+  }).slice(0, MAX_STORE_REFS) : [];
+  const year = read(value, "releaseYear");
+  return { gameId, title, normalizedTitle, type: toBoundedText(read(value, "type"), 32), releaseYear: typeof year === "number" && Number.isInteger(year) ? year : null,
+    states: list("states", 8), storeRows, externalIds, steamAppIds: list("steamAppIds", MAX_STEAM_APP_IDS), evidence: list("evidence", 16),
+    blocked: read(value, "blocked") === true, blockReason: toBoundedText(read(value, "blockReason"), MAX_REASON_LENGTH) };
+}
+
 function normalizeMember(value: unknown): DuplicateMember | null {
   if (!isRecord(value)) return null;
 
@@ -183,6 +225,25 @@ function normalizeGroup(value: unknown): DuplicateGroup | null {
  * lista vacía: para una herramienta de mantenimiento, una forma rota no puede leerse como "no hay
  * duplicados". Los grupos malformados o con menos de dos miembros válidos se descartan uno a uno.
  */
+export function normalizeCrossStateCandidates(input: unknown): CrossStateCandidateGroup[] | null {
+  if (!Array.isArray(input)) return null;
+  const result: CrossStateCandidateGroup[] = [];
+  for (const item of input) {
+    if (!isRecord(item)) continue;
+    const candidateKey = toBoundedText(read(item, "candidateKey"), MAX_ID_LENGTH);
+    const confidence = toBoundedText(read(item, "confidence"), 16);
+    const rawMembers = read(item, "members");
+    if (!candidateKey || !confidence || !Array.isArray(rawMembers)) continue;
+    const members = rawMembers.flatMap((entry): CrossStateMember[] => { const member = normalizeCrossStateMember(entry); return member ? [member] : []; }).slice(0, MAX_MEMBERS);
+    if (members.length < 2) continue;
+    const strings = (key: string) => { const raw = read(item, key); return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string").map(x => x.slice(0, MAX_REASON_LENGTH)).slice(0, 32) : []; };
+    result.push({ candidateKey, confidence, reasons: strings("reasons"), warnings: strings("warnings"), blocked: read(item, "blocked") === true,
+      blockReason: toBoundedText(read(item, "blockReason"), MAX_REASON_LENGTH), members });
+    if (result.length === MAX_GROUPS) break;
+  }
+  return result;
+}
+
 export function normalizeDuplicateGroups(input: unknown): DuplicateGroup[] | null {
   if (!Array.isArray(input)) return null;
 

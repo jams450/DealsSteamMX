@@ -1,6 +1,6 @@
 # DealExt: plan de reconciliación canónica entre estados y tiendas
 
-Estado: **plan propuesto**. No implementa cambios.
+Estado: **implementación parcial verificada en código**. La reconciliación read-only, contrato BFF, pantalla de revisión y detalle versionado de merge están implementados; ejecución de fusión debe seguir endureciéndose antes de producción. Aplicación de migración y smoke de base siguen pendientes.
 
 Objetivo: permitir que mantenimiento encuentre candidatos cuando una misma obra aparece en estados distintos —por ejemplo, Steam `wished` y GOG `owned`— y que una fusión manual conserve todas las filas de biblioteca, sus estados y sus tiendas bajo una sola identidad canónica.
 
@@ -278,8 +278,8 @@ El snapshot actual de `game_merges` solo incluye `games` e ids externos. Para ro
 ### Rollback
 
 - Cada merge debe seguir siendo una transacción atómica: si falla una FK, unique key o validación, no queda escritura parcial.
-- El rollback operativo de una fusión aplicada requiere procedimiento explícito que restaure `games`, ids y todas las filas afectadas desde snapshot/detalle; queda como tarea de esta iniciativa si se exige reversión de producción.
-- Hasta contar con rollback implementado, la UI debe mostrar “fusión irreversible desde esta pantalla” y exigir confirmación.
+- El rollback operativo NO está implementado: el snapshot/detalle permite identificar filas y contadores afectados, pero no existe replayer ejecutable ni endpoint de reversión.
+- La UI no debe ofrecer una acción de merge ni afirmar reversión; la superficie permanece de solo lectura hasta que exista un flujo candidate-bound con confirmación y rollback operativo.
 - Hacer backup/rollback previo en producción según el procedimiento existente antes de aplicar migraciones o cambios de merge.
 
 No loguear títulos completos si se consideran datos innecesarios, payloads de proveedores, tokens, credenciales ni valores de entorno.
@@ -428,9 +428,9 @@ Este caso debe quedar como fixture de integración o smoke manual sanitizado, si
 
 ### Fase 3 — UI de revisión y multi-select
 
-- Mostrar estados, tiendas, ids, confianza, razones y warnings.
-- Añadir selección de grupo/superviviente/absorbidos y confirmación explícita.
-- Reutilizar endpoint por absorbido; detener lote ante error y mostrar progreso.
+- Mostrar estados, tiendas, ids, confianza, razones y warnings en modo solo lectura.
+- No añadir acción de merge hasta que la solicitud esté vinculada a un `candidateKey`/evidencia vigente y exista rollback operativo.
+- La selección/multi-select y el endpoint de escritura quedan pendientes; no se simula una acción de UI.
 
 **Aceptación:** un operador puede revisar y fusionar varios grupos sin perder la selección ni ocultar operaciones aplicadas.
 

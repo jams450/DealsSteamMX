@@ -22,6 +22,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISteamGameService, SteamGameService>();
         services.AddScoped<IGameIdentityResolver, GameIdentityResolver>();
         services.AddScoped<IGameMergeService, GameMergeService>();
+        services.AddScoped<ICrossStateReconciliationService, CrossStateReconciliationService>();
         services.AddScoped<IGameTitleEditService, GameTitleEditService>();
         services.AddScoped<ILibraryPriceBindingService, LibraryPriceBindingService>();
         services.AddScoped<IGameOwnershipService, GameOwnershipService>();

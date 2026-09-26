@@ -8,6 +8,30 @@ namespace Deals.API.Models.Games;
 /// </summary>
 public sealed record GameMergeRequest(long IntoGameId);
 
+public sealed record CrossStateStoreRowResponse(string Store, string StoreGameId, string State, string Title);
+public sealed record CrossStateExternalIdResponse(string Namespace, string ExternalId);
+public sealed record CrossStateMemberResponse(
+    long GameId, string Title, string NormalizedTitle, string? Type, int? ReleaseYear,
+    IReadOnlyList<string> States, IReadOnlyList<CrossStateStoreRowResponse> StoreRows,
+    IReadOnlyList<CrossStateExternalIdResponse> ExternalIds, IReadOnlyList<string> SteamAppIds,
+    IReadOnlyList<string> Evidence, bool Blocked, string? BlockReason)
+{
+    public static CrossStateMemberResponse From(CrossStateMember member) => new(
+        member.GameId, member.Title, member.NormalizedTitle, member.Type, member.ReleaseYear,
+        member.States, member.StoreRows.Select(x => new CrossStateStoreRowResponse(x.Store, x.StoreGameId, x.State, x.Title)).ToList(),
+        member.ExternalIds.Select(x => new CrossStateExternalIdResponse(x.Namespace, x.ExternalId)).ToList(),
+        member.SteamAppIds, member.Evidence, member.Blocked, member.BlockReason);
+}
+
+public sealed record CrossStateCandidateGroupResponse(
+    string CandidateKey, string Confidence, IReadOnlyList<string> Reasons, IReadOnlyList<string> Warnings,
+    bool Blocked, string? BlockReason, IReadOnlyList<CrossStateMemberResponse> Members)
+{
+    public static CrossStateCandidateGroupResponse From(CrossStateCandidateGroup group) => new(
+        group.CandidateKey, group.Confidence, group.Reasons, group.Warnings, group.Blocked, group.BlockReason,
+        group.Members.Select(CrossStateMemberResponse.From).ToList());
+}
+
 /// <summary>One store entry of a duplicate member.</summary>
 public sealed record DuplicateStoreRefResponse(string Store, string StoreGameId)
 {
