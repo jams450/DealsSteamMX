@@ -1,0 +1,12 @@
+"use client";
+import { useEffect, useState } from "react";
+import { AdminShell } from "@/components/navigation/admin-shell";
+import { Card } from "@/components/ui/card";
+import { normalizeJobs, type JobsResponse } from "@/lib/contracts/jobs";
+
+export function JobsClient({ username }: { username: string }) {
+  const [data, setData] = useState<JobsResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { fetch("/api/bff/jobs?page=1&pageSize=25", { cache: "no-store" }).then(async r => { if (!r.ok) throw new Error("No se pudieron cargar los jobs"); setData(normalizeJobs(await r.json())); }).catch(e => setError(e instanceof Error ? e.message : "Error")); }, []);
+  return <AdminShell username={username} section="Administración" title="Jobs" subtitle="Historial de ejecuciones y estado operativo"><div className="space-y-4"><Card className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-5">{[["Total", data?.summary.total], ["Running", data?.summary.running], ["OK", data?.summary.ok], ["Failed", data?.summary.failed], ["Último", data?.summary.lastStartedAt ? new Date(data.summary.lastStartedAt).toLocaleString() : "—"]].map(([label, value]) => <div key={String(label)}><p className="text-xs text-muted">{label}</p><p className="text-lg font-semibold text-primary">{value ?? "—"}</p></div>)}</Card><Card className="overflow-x-auto p-3"><table className="w-full text-left text-sm"><thead><tr className="border-b border-strong text-muted"><th className="p-2">Job</th><th className="p-2">Trigger</th><th className="p-2">Estado</th><th className="p-2">Inicio</th><th className="p-2">Duración</th><th className="p-2">Detalle</th></tr></thead><tbody>{error ? <tr><td colSpan={6} className="p-4 text-danger">{error}</td></tr> : data?.items.map(run => <tr key={run.jobRunId} className="border-b border-subtle"><td className="p-2 font-medium">{run.job}</td><td className="p-2">{run.trigger}</td><td className="p-2">{run.status}</td><td className="p-2">{new Date(run.startedAt).toLocaleString()}</td><td className="p-2">{run.durationMilliseconds == null ? "—" : `${Math.round(run.durationMilliseconds)} ms`}</td><td className="max-w-xs truncate p-2 font-mono text-xs">{run.details ? JSON.stringify(run.details) : "—"}</td></tr>)}</tbody></table>{data && data.totalPages > 1 ? <p className="p-3 text-xs text-muted">Página {data.page} de {data.totalPages}</p> : null}</Card></div></AdminShell>;
+}
