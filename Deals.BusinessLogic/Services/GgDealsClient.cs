@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.GgDeals;
 
@@ -8,7 +9,11 @@ namespace Deals.BusinessLogic.Services;
 
 public sealed record GgDealsClientSettings(string ApiKey, string Region);
 
-public sealed class GgDealsClient(HttpClient httpClient, GgDealsClientSettings settings, ProviderRequestGovernor governor)
+public sealed class GgDealsClient(
+    HttpClient httpClient,
+    GgDealsClientSettings settings,
+    GgDealsRequestGovernor governor,
+    ILogger<GgDealsClient> logger)
     : IGgDealsClient
 {
     private const string PricesPath = "prices/by-steam-app-id/";
@@ -228,12 +233,17 @@ public sealed class GgDealsClient(HttpClient httpClient, GgDealsClientSettings s
         // The governor is shared with ITAD. When the shared bucket is empty it throws
         // HttpRequestException, which is not swallowed here: the caller must degrade this provider
         // on its own without taking the other one down.
-        using var lease = await governor.AcquireAsync(ct);
+        using var lease = await governor.AcquireAsync(appIds.Count, ct);
         using var request = new HttpRequestMessage(HttpMethod.Get, BuildPath(appIds));
-
-        // ResponseContentRead (default) buffers the body, so disposing the request and its
-        // content before the caller reads the response is safe.
-        return await httpClient.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
+        var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
+        logger.LogInformation(
+            "[provider.rate-limit] provider={Provider} requestedRecords={RequestedRecords} limit={Limit} remaining={Remaining} reset={Reset}",
+            "ggdeals",
+            appIds.Count,
+            ReadHeader(response, "x-ratelimit-limit"),
+            ReadHeader(response, "x-ratelimit-remaining"),
+            ReadHeader(response, "x-ratelimit-reset"));
+        return response;
     }
 
     /// <summary>
@@ -247,6 +257,9 @@ public sealed class GgDealsClient(HttpClient httpClient, GgDealsClientSettings s
         var region = Uri.EscapeDataString(settings.Region);
         return $"{PricesPath}?ids={ids}&key={key}&region={region}";
     }
+
+    private static string? ReadHeader(HttpResponseMessage response, string name) =>
+        response.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;
 
     private static void EnsureSuccess(HttpResponseMessage response)
     {

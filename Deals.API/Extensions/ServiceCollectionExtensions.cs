@@ -73,8 +73,16 @@ public static class ServiceCollectionExtensions
             return new SteamOffersSettings(options.RefreshAfterDays);
         });
 
-        // Shared in-process provider budget (1 req/s, burst 10, no queueing) across every price provider and request.
-        services.AddSingleton<ProviderRequestGovernor>();
+        services.AddSingleton(serviceProvider =>
+        {
+            var budget = serviceProvider.GetRequiredService<IOptions<JobBudgetOptions>>().Value.Itad;
+            return new ItadRequestGovernor(budget.RequestsPerFiveMinutes, budget.MaxBurst, budget.MinDelayMilliseconds);
+        });
+        services.AddSingleton(serviceProvider =>
+        {
+            var budget = serviceProvider.GetRequiredService<IOptions<JobBudgetOptions>>().Value.GgDeals;
+            return new GgDealsRequestGovernor(budget.RecordsPerMinute, budget.RecordsPerHour, budget.MaxBurstRecords, budget.MinDelayMilliseconds);
+        });
 
         services.AddHttpClient<IItadClient, ItadClient>((serviceProvider, client) =>
         {
@@ -288,15 +296,15 @@ public static class ServiceCollectionExtensions
         services.AddScoped<JobRunLog>();
         services.AddScoped<JobRunQueryService>();
         services.AddOptions<JobBudgetOptions>()
-            .Validate(options => ValidateBudget(options.Itad) && ValidateBudget(options.GgDeals), "JobBudgets values must be positive and MinDelayMilliseconds must not be negative.")
+            .Validate(options => options.RetentionDays > 0 && options.PurgeBatchSize > 0, "JobBudgets retention and purge batch must be positive.")
+            .Validate(options => options.Itad.RequestsPerFiveMinutes > 0 && options.Itad.MaxBurst > 0 && options.Itad.MinDelayMilliseconds >= 0, "JobBudgets:Itad values are invalid.")
+            .Validate(options => options.GgDeals.RecordsPerMinute > 0 && options.GgDeals.RecordsPerHour > 0 && options.GgDeals.MaxBurstRecords > 0 && options.GgDeals.MinDelayMilliseconds >= 0, "JobBudgets:GgDeals values are invalid.")
             .ValidateOnStart();
         services.AddHostedService<WishlistSyncJob>();
+        services.AddHostedService<JobRunPurgeJob>();
 
         return services;
     }
-
-    private static bool ValidateBudget(ProviderBudgetOptions budget) =>
-        budget.Minute > 0 && budget.Hour > 0 && budget.Day > 0 && budget.Burst > 0 && budget.MinDelayMilliseconds >= 0;
 
     private static IReadOnlySet<string> ParseShopIds(string officialShopIds) =>
         officialShopIds

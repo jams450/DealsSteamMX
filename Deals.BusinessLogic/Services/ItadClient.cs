@@ -2,7 +2,6 @@ using System.Globalization;
 using System.Net;
 using System.Text;
 using System.Text.Json;
-using System.Threading.RateLimiting;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Itad;
 
@@ -10,41 +9,7 @@ namespace Deals.BusinessLogic.Services;
 
 public sealed record ItadClientSettings(string ApiKey, string Country, IReadOnlySet<string> OfficialShopIds);
 
-/// <summary>
-/// Shared, provider-agnostic request budget for every price provider (ITAD, gg.deals, ...):
-/// 1 request/second sustained, burst of 10, no queueing. Registered as a singleton so every caller
-/// shares one bucket.
-/// </summary>
-public sealed class ProviderRequestGovernor : IDisposable
-{
-    private readonly TokenBucketRateLimiter limiter = new(new TokenBucketRateLimiterOptions
-    {
-        TokenLimit = 10,
-        TokensPerPeriod = 1,
-        ReplenishmentPeriod = TimeSpan.FromSeconds(1),
-        AutoReplenishment = true,
-        QueueLimit = 0
-    });
-
-    /// <summary>
-    /// Takes a permit without queueing. Throws <see cref="HttpRequestException"/> when the bucket is empty.
-    /// </summary>
-    public async ValueTask<RateLimitLease> AcquireAsync(CancellationToken cancellationToken)
-    {
-        var lease = await limiter.AcquireAsync(1, cancellationToken);
-        if (!lease.IsAcquired)
-        {
-            lease.Dispose();
-            throw new HttpRequestException("Shared price provider request budget is exhausted.");
-        }
-
-        return lease;
-    }
-
-    public void Dispose() => limiter.Dispose();
-}
-
-public sealed class ItadClient(HttpClient httpClient, ItadClientSettings settings, ProviderRequestGovernor governor)
+public sealed class ItadClient(HttpClient httpClient, ItadClientSettings settings, ItadRequestGovernor governor)
     : IItadClient
 {
     private const string ApiKeyHeader = "ITAD-API-Key";
