@@ -1,4 +1,4 @@
-import { Bookmark, GitMerge, Home, Library, Search, Users } from "lucide-react";
+import { Bookmark, GitMerge, Home, Library, Search, Users, Activity } from "lucide-react";
 
 export type NavItem = {
   href: string;
@@ -16,7 +16,8 @@ export const productNavItems: NavItem[] = [
 ];
 
 export const adminNavItems: NavItem[] = [
-  { href: "/users", label: "Usuarios", icon: Users }
+  { href: "/users", label: "Usuarios", icon: Users },
+  { href: "/jobs", label: "Jobs", icon: Activity }
 ];
 
 export const appNavItems: NavItem[] = [...productNavItems, ...adminNavItems];

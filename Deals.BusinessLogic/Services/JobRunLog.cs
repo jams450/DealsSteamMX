@@ -14,6 +14,7 @@ namespace Deals.BusinessLogic.Services;
 public sealed class JobRunLog(IRepository repository)
 {
     public const string WishlistSync = "wishlist.sync";
+    public const string FxRateRefresh = "fx.rate-refresh";
 
     /// <summary>Recovery pass right after the host started.</summary>
     public const string StartupTrigger = "startup";

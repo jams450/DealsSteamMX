@@ -45,18 +45,23 @@ public sealed class FxRateRefreshJob(
 
     private async Task RefreshAsync(string baseCurrency, string quoteCurrency, CancellationToken cancellationToken)
     {
+        long jobRunId = 0;
         try
         {
             using var scope = scopeFactory.CreateAsyncScope();
+            var jobLog = scope.ServiceProvider.GetRequiredService<Deals.BusinessLogic.Services.JobRunLog>();
+            jobRunId = await jobLog.StartAsync(Deals.BusinessLogic.Services.JobRunLog.FxRateRefresh, Deals.BusinessLogic.Services.JobRunLog.ScheduledTrigger, cancellationToken);
             var service = scope.ServiceProvider.GetRequiredService<IFxRateService>();
             var rate = await service.GetRateAsync(baseCurrency, quoteCurrency, cancellationToken);
 
             if (rate == null)
             {
                 logger.LogWarning("[fx.refresh] no rate returned for {Base}/{Quote}", baseCurrency, quoteCurrency);
+                await jobLog.FinishAsync(jobRunId, Deals.Models.Entities.JobRunStatuses.Failed, new { reason = "no_rate" }, CancellationToken.None);
                 return;
             }
 
+            await jobLog.FinishAsync(jobRunId, Deals.Models.Entities.JobRunStatuses.Ok, new { rate.Base, rate.Quote, rate.RateDate, rate.Source }, CancellationToken.None);
             logger.LogInformation(
                 "[fx.refresh] {Base}/{Quote} {RateDate} from {Source}",
                 rate.Base,
@@ -71,6 +76,18 @@ public sealed class FxRateRefreshJob(
         catch (Exception ex)
         {
             // Message only: provider exceptions never carry credentials.
+            if (jobRunId != 0)
+            {
+                try
+                {
+                    using var failureScope = scopeFactory.CreateScope();
+                    await failureScope.ServiceProvider.GetRequiredService<Deals.BusinessLogic.Services.JobRunLog>().FinishAsync(jobRunId, Deals.Models.Entities.JobRunStatuses.Failed, new { reason = "exception" }, CancellationToken.None);
+                }
+                catch (Exception logException)
+                {
+                    logger.LogWarning(logException, "[fx.refresh] could not record failed run {JobRunId}", jobRunId);
+                }
+            }
             logger.LogError(ex, "[fx.refresh] failed for {Base}/{Quote}", baseCurrency, quoteCurrency);
         }
     }

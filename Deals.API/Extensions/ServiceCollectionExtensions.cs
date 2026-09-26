@@ -286,10 +286,17 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<IWishlistSyncService, WishlistSyncService>();
         services.AddScoped<JobRunLog>();
+        services.AddScoped<JobRunQueryService>();
+        services.AddOptions<JobBudgetOptions>()
+            .Validate(options => ValidateBudget(options.Itad) && ValidateBudget(options.GgDeals), "JobBudgets values must be positive and MinDelayMilliseconds must not be negative.")
+            .ValidateOnStart();
         services.AddHostedService<WishlistSyncJob>();
 
         return services;
     }
+
+    private static bool ValidateBudget(ProviderBudgetOptions budget) =>
+        budget.Minute > 0 && budget.Hour > 0 && budget.Day > 0 && budget.Burst > 0 && budget.MinDelayMilliseconds >= 0;
 
     private static IReadOnlySet<string> ParseShopIds(string officialShopIds) =>
         officialShopIds

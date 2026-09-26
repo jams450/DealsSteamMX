@@ -16,6 +16,7 @@ builder.Services.Configure<ItadOptions>(builder.Configuration.GetSection(ItadOpt
 builder.Services.Configure<GgDealsOptions>(builder.Configuration.GetSection(GgDealsOptions.SectionName));
 builder.Services.Configure<FxOptions>(builder.Configuration.GetSection(FxOptions.SectionName));
 builder.Services.Configure<WishlistOptions>(builder.Configuration.GetSection(WishlistOptions.SectionName));
+builder.Services.Configure<JobBudgetOptions>(builder.Configuration.GetSection(JobBudgetOptions.SectionName));
 
 builder.Services
     .AddApiMvc()
