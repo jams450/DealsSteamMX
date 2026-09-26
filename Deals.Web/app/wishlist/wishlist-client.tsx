@@ -1,19 +1,34 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ColumnDef, FilterFn, SortingFn } from "@tanstack/react-table";
-import { Gamepad2, RefreshCw } from "lucide-react";
+import { Gamepad2, RefreshCw, X } from "lucide-react";
 import { DataGrid } from "@/components/data-grid/data-grid";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { PriceFact, PriceValue } from "@/components/ui/price-value";
+import { PriceFact, PriceValue, formatMinor } from "@/components/ui/price-value";
 import { refreshSteamGame } from "@/app/steam/_lib/steam-api";
 import { cn } from "@/lib/ui/cn";
-import { getWishlist, syncWishlist, updateWishlistPreferences } from "./_lib/wishlist-api";
+import { getWishlist, previewWishlistPackage, syncWishlist, updateWishlistPreferences } from "./_lib/wishlist-api";
 import { dealScore, discountPercent } from "./_lib/wishlist-metrics";
+import {
+  MAX_PACKAGE_APP_IDS,
+  exceedsPackageLimit,
+  packageRequestAppIds,
+  pageSelectionState,
+  reconcileAppIds,
+  setAppIds,
+  toggleAppId
+} from "./_lib/wishlist-package";
 import { SYNC_STORES, latestSyncTime, syncStamp } from "./_lib/wishlist-sync";
-import type { WishlistItem, WishlistResponse, WishlistState, WishlistSyncResponse } from "./_lib/wishlist-contract";
+import type {
+  WishlistItem,
+  WishlistPackagePreview,
+  WishlistResponse,
+  WishlistState,
+  WishlistSyncResponse
+} from "./_lib/wishlist-contract";
 
 const dateFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
 const shortDateFormatter = new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short" });
@@ -97,30 +112,45 @@ function WishlistThumb({ src, className }: { readonly src: string | null; readon
 // badge «Identificado en ITAD»: la identidad del juego es una de las cosas que esta columna informa.
 // El mapeo proveedor → campo vive en `_lib/wishlist-sync.ts`, con test propio.
 
-// Fecha corta (día y mes) porque la celda lleva cinco sellos y un ancho mayor desborda la tabla.
+// Short date keeps the five-provider matrix readable without widening the table.
 function formatShortDate(value: string | null) {
   if (!value) return null;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : shortDateFormatter.format(date);
 }
 
+const SYNC_SHORT_LABELS = {
+  steam: "St",
+  itad: "IT",
+  ggdeals: "GG",
+  epic: "Ep",
+  microsoft: "MS"
+} as const;
+
 function SyncBadges({ item }: { readonly item: WishlistItem }) {
   return (
-    <span className="flex flex-wrap items-center gap-1">
-      {SYNC_STORES.map((store) => {
-        const stamp = formatShortDate(syncStamp(item, store));
-        return (
-          <span
-            key={store.key}
-            className={cn("tabler-badge", stamp ? "tabler-badge-info" : "tabler-badge-muted")}
-            title={stamp ? `${store.label}: última sincronización` : `${store.label}: sin sincronizar`}
-          >
-            {store.label} {stamp ?? "—"}
-            <span className="sr-only"> {stamp ? `última sincronización ${stamp}` : "sin sincronización"}</span>
-          </span>
-        );
-      })}
-    </span>
+    <div className="w-fit min-w-[13rem]" aria-label="Fechas de sincronización por proveedor">
+      <div className="grid grid-cols-5 gap-x-1 text-center text-[0.625rem] font-semibold leading-4 text-muted" aria-hidden="true">
+        {SYNC_STORES.map((store) => (
+          <span key={store.key}>{SYNC_SHORT_LABELS[store.key]}</span>
+        ))}
+      </div>
+      <div className="grid grid-cols-5 gap-x-1 text-center text-[0.625rem] tabular-nums leading-4">
+        {SYNC_STORES.map((store) => {
+          const stamp = formatShortDate(syncStamp(item, store));
+          return (
+            <span
+              key={store.key}
+              className={cn("rounded-sm px-0.5", stamp ? "text-secondary" : "text-muted")}
+              title={stamp ? `${store.label}: última sincronización ${stamp}` : `${store.label}: sin sincronizar`}
+            >
+              {stamp ?? "—"}
+              <span className="sr-only">{`${store.label}: ${stamp ? `última sincronización ${stamp}` : "sin sincronización"}`}</span>
+            </span>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -402,6 +432,147 @@ function RowRefreshButton({ item, refreshing, blocked, onRefresh }: RowRefreshBu
   );
 }
 
+// El cálculo del paquete lo hace el servidor, con debounce: marcar varios juegos seguidos no debe
+// convertirse en una petición por clic. Mientras llega, la barra no muestra el importe anterior como si
+// fuera el nuevo.
+const PACKAGE_DEBOUNCE_MS = 350;
+
+interface PackageScenario {
+  readonly subtotalMinor: number | null;
+  readonly quoted: number;
+  readonly missing: number;
+}
+
+// Un escenario del paquete. `scenario === null` es "todavía no se sabe" (cálculo en vuelo): no se pinta el
+// número viejo ni un 0. Un subtotal `null` con escenario resuelto es "ningún juego cotizado", que se lee
+// literal, nunca como un importe.
+function PackageScenarioValue({
+  label,
+  scenario,
+  currency
+}: {
+  readonly label: string;
+  readonly scenario: PackageScenario | null;
+  readonly currency: string;
+}) {
+  const display = scenario === null ? null : formatMinor(scenario.subtotalMinor, currency);
+  const total = scenario === null ? null : scenario.quoted + scenario.missing;
+
+  return (
+    <div className="min-w-0 rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-3">
+      <p className="text-xs font-semibold uppercase tracking-widest text-muted">{label}</p>
+      {scenario === null ? (
+        <p className="text-lg font-semibold text-muted">Calculando...</p>
+      ) : display === null ? (
+        <p className="text-lg font-semibold text-muted">Sin cotizar</p>
+      ) : (
+        <p className="deal-price text-lg font-semibold text-primary">{display}</p>
+      )}
+      <p className="text-xs text-muted">
+        {scenario === null
+          ? "Contando juegos..."
+          : `${scenario.quoted} de ${total} cotizados${scenario.missing > 0 ? ` · ${scenario.missing} sin cotizar` : ""}`}
+      </p>
+    </div>
+  );
+}
+
+interface PackageSummaryBarProps {
+  readonly selectedCount: number;
+  readonly preview: WishlistPackagePreview | null;
+  readonly loading: boolean;
+  readonly error: string | null;
+  readonly reconciledAppIds: readonly number[];
+  readonly onClear: () => void;
+}
+
+// Los dos subtotales son escenarios ALTERNATIVOS, no parciales de un total: nunca se suman entre sí. Por eso
+// no hay campo combinado, cada uno vive en su tarjeta y la nota lo dice con palabras.
+function PackageSummaryBar({
+  selectedCount,
+  preview,
+  loading,
+  error,
+  reconciledAppIds,
+  onClear
+}: PackageSummaryBarProps) {
+  const currency = preview?.currency ?? MXN;
+  const pricedAt = preview ? formatDateTime(preview.pricedAt) : null;
+  const scenariosReady = preview !== null && !loading;
+
+  return (
+    <section
+      className="app-card-accent space-y-3 p-4"
+      aria-labelledby="wishlist-package-heading"
+      aria-live="polite"
+      aria-busy={loading}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="space-y-0.5">
+          <p className="text-xs font-semibold uppercase tracking-widest text-muted">Paquete seleccionado</p>
+          <h3 id="wishlist-package-heading" className="text-base font-semibold tracking-tight text-primary">
+            {selectedCount === 1 ? "1 juego seleccionado" : `${selectedCount} juegos seleccionados`}
+          </h3>
+        </div>
+        <Button type="button" variant="secondary" className="h-8 px-3 text-xs" onClick={onClear}>
+          <X className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          Limpiar selección
+        </Button>
+      </div>
+
+      {error ? <Alert variant="danger">{error}</Alert> : null}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <PackageScenarioValue
+          label="Todo en oficial"
+          currency={currency}
+          scenario={
+            scenariosReady
+              ? {
+                  subtotalMinor: preview.officialSubtotalMinor,
+                  quoted: preview.officialQuoted,
+                  missing: preview.officialMissing
+                }
+              : null
+          }
+        />
+        <PackageScenarioValue
+          label="Todo en keys"
+          currency={currency}
+          scenario={
+            scenariosReady
+              ? {
+                  subtotalMinor: preview.keyshopSubtotalMinor,
+                  quoted: preview.keyshopQuoted,
+                  missing: preview.keyshopMissing
+                }
+              : null
+          }
+        />
+      </div>
+
+      {reconciledAppIds.length > 0 ? (
+        <p className="text-xs text-muted">
+          {reconciledAppIds.length === 1
+            ? "1 juego de la selección ya no está en tu wishlist y salió del cálculo."
+            : `${reconciledAppIds.length} juegos de la selección ya no están en tu wishlist y salieron del cálculo.`}
+        </p>
+      ) : null}
+
+      <p className="text-xs text-muted">
+        Son dos escenarios alternativos, no dos parciales de un total: el paquete cuesta una cifra si se
+        compra todo en tiendas oficiales, u otra si se compra todo en keys. Nunca la suma de las dos.
+      </p>
+      <p className="text-xs text-muted">
+        {pricedAt
+          ? `Precios leídos el ${pricedAt}.`
+          : "Todavía no se informó cuándo se leyeron los precios."}
+        {" "}Ambos mínimos ya están convertidos a MXN.
+      </p>
+    </section>
+  );
+}
+
 interface WishlistItemsProps {
   readonly items: readonly WishlistItem[];
   readonly refreshingAppId: number | null;
@@ -420,11 +591,89 @@ function WishlistItems({
   onRefresh
 }: WishlistItemsProps) {
   const [filter, setFilter] = useState("");
+  const [selectedAppIds, setSelectedAppIds] = useState<ReadonlySet<number>>(() => new Set<number>());
+  const [preview, setPreview] = useState<WishlistPackagePreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [reconciledAppIds, setReconciledAppIds] = useState<readonly number[]>([]);
+  // Los descartes de peticiones viejas no se pintan: la última selección es la que manda.
+  const previewRequestRef = useRef(0);
   const query = filter.trim().toLocaleLowerCase("es-MX");
   const filteredItems = useMemo(
     () => items.filter((item) => item.name.toLocaleLowerCase("es-MX").includes(query) || String(item.appId).includes(query)),
     [items, query]
   );
+
+  // Un juego puede salir de la wishlist entre la selección y el cálculo (el sync lo sacó). La selección se
+  // poda contra lo que la lista tiene hoy para que el total no cuente una fila que ya no existe.
+  useEffect(() => {
+    const knownAppIds = new Set(items.map((item) => item.appId));
+    const { selection, removed } = reconcileAppIds(selectedAppIds, knownAppIds);
+    if (removed.length === 0) return;
+    setSelectedAppIds(selection);
+  }, [items, selectedAppIds]);
+
+  useEffect(() => {
+    const appIds = packageRequestAppIds(selectedAppIds);
+    const requestId = previewRequestRef.current + 1;
+    previewRequestRef.current = requestId;
+
+    if (appIds.length === 0) {
+      setPreview(null);
+      setPreviewError(null);
+      setPreviewLoading(false);
+      return;
+    }
+
+    if (exceedsPackageLimit(selectedAppIds)) {
+      setPreview(null);
+      setPreviewError(
+        `Puedes calcular hasta ${MAX_PACKAGE_APP_IDS} juegos a la vez. Quita algunos de la selección para ver el total del paquete.`
+      );
+      setPreviewLoading(false);
+      return;
+    }
+
+    setPreviewLoading(true);
+    setPreviewError(null);
+
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await previewWishlistPackage(appIds);
+          if (previewRequestRef.current !== requestId) return;
+          setPreview(result);
+          // El servidor dice qué AppIDs no son de tu wishlist: se quitan del set y se avisa, en vez de
+          // dejar una selección que suma juegos que el cálculo ignoró.
+          if (result.unmatchedAppIds.length > 0) {
+            setReconciledAppIds(result.unmatchedAppIds);
+            setSelectedAppIds((current) => setAppIds(current, result.unmatchedAppIds, false));
+          }
+        } catch (cause) {
+          if (previewRequestRef.current !== requestId) return;
+          setPreview(null);
+          setPreviewError(
+            cause instanceof Error && cause.message ? cause.message : "No se pudo calcular el paquete."
+          );
+        } finally {
+          if (previewRequestRef.current === requestId) setPreviewLoading(false);
+        }
+      })();
+    }, PACKAGE_DEBOUNCE_MS);
+
+    return () => clearTimeout(timer);
+  }, [selectedAppIds]);
+
+  function clearSelection() {
+    // Sube el contador para invalidar cualquier respuesta en vuelo: sin esto, una petición ya enviada
+    // podría repintar la barra después de limpiar la selección.
+    previewRequestRef.current += 1;
+    setSelectedAppIds(new Set<number>());
+    setPreview(null);
+    setPreviewError(null);
+    setPreviewLoading(false);
+    setReconciledAppIds([]);
+  }
 
   const wishlistFilter: FilterFn<WishlistItem> = (row, _columnId, value) => {
     const text = String(value).trim().toLocaleLowerCase("es-MX");
@@ -442,10 +691,47 @@ function WishlistItems({
 
   const columns = useMemo<ColumnDef<WishlistItem>[]>(() => {
     return [
+    {
+      // La selección vive en la columna y no en el DataGrid: el grid es compartido con /users y no necesita
+      // saber de paquetes. La identidad es el AppID, así que ordenar o filtrar no mueve la marca.
+      id: "select",
+      enableSorting: false,
+      enableHiding: false,
+      header: ({ table }) => {
+        const pageAppIds = table.getRowModel().rows.map((row) => row.original.appId);
+        const state = pageSelectionState(selectedAppIds, pageAppIds);
+        return (
+          <input
+            type="checkbox"
+            aria-label="Seleccionar los juegos de esta página"
+            checked={state === "all"}
+            ref={(node) => {
+              if (node) node.indeterminate = state === "some";
+            }}
+            disabled={pageAppIds.length === 0}
+            onChange={(event) =>
+              setSelectedAppIds((current) => setAppIds(current, pageAppIds, event.target.checked))
+            }
+            className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+          />
+        );
+      },
+      cell: ({ row }) => (
+        <input
+          type="checkbox"
+          aria-label={`Seleccionar ${row.original.name}`}
+          checked={selectedAppIds.has(row.original.appId)}
+          onChange={(event) =>
+            setSelectedAppIds((current) => toggleAppId(current, row.original.appId, event.target.checked))
+          }
+          className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+        />
+      )
+    },
     { id: "cover", header: "Portada", enableSorting: false, cell: ({ row }) => <WishlistThumb src={row.original.imageUrl} /> },
     {
       accessorKey: "name", header: "Juego", sortingFn: (rowA, rowB, id) => String(rowA.getValue(id)).localeCompare(String(rowB.getValue(id)), "es-MX"),
-      cell: ({ row }) => <div className="min-w-48"><Link href={`/games/${row.original.appId}`} className="text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{row.original.name}</Link><p className="text-xs text-muted">AppID {row.original.appId}</p>{rowErrors[row.original.appId] ? <p role="alert" className="mt-1 text-xs text-danger">{rowErrors[row.original.appId]}</p> : null}</div>
+      cell: ({ row }) => <div className="min-w-48"><Link href={`/games/${row.original.appId}`} className="text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{row.original.name}</Link><p className="text-xs text-muted">AppID {row.original.appId}</p>{row.original.ownedStores.length > 0 ? <p className="text-xs font-medium text-success">Ya adquirido en: {row.original.ownedStores.join(", ")}</p> : null}{rowErrors[row.original.appId] ? <p role="alert" className="mt-1 text-xs text-danger">{rowErrors[row.original.appId]}</p> : null}</div>
     },
     { id: "priority", accessorFn: (item) => item.priority ?? undefined, header: "Prioridad", sortingFn: numericSort, sortUndefined: "last" },
     { id: "addedAt", accessorFn: (item) => item.addedAt ? new Date(item.addedAt).getTime() : undefined, header: "Alta", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => formatDateTime(row.original.addedAt) ?? "—" },
@@ -455,7 +741,14 @@ function WishlistItems({
     {
       id: "sync",
       accessorFn: latestSyncTime,
-      header: "Sincronización",
+      header: () => (
+        <div className="space-y-0.5">
+          <span className="block">Sincronización</span>
+          <span className="grid grid-cols-5 gap-x-1 text-center text-[0.625rem] font-normal leading-3 text-muted" aria-label="St Steam, IT ITAD, GG GG.deals, Ep Epic, MS Microsoft">
+            <span>St</span><span>IT</span><span>GG</span><span>Ep</span><span>MS</span>
+          </span>
+        </div>
+      ),
       enableSorting: true,
       sortingFn: numericSort,
       sortUndefined: "last",
@@ -499,7 +792,7 @@ function WishlistItems({
     { id: "bestKeyshopMinor", accessorFn: (item) => item.bestKeyshopMinor ?? undefined, header: "Mín. keys", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.bestKeyshopMinor} currency={MXN} /> },
     { id: "actions", header: "Acciones", enableSorting: false, cell: ({ row }) => <RowRefreshButton item={row.original} refreshing={refreshingAppId === row.original.appId} blocked={refreshingAppId !== null && refreshingAppId !== row.original.appId} onRefresh={onRefresh} /> }
     ];
-  }, [minViableDiscountPercent, onRefresh, refreshingAppId, rowErrors]);
+  }, [minViableDiscountPercent, onRefresh, refreshingAppId, rowErrors, selectedAppIds]);
 
   return (
     <section className="app-card space-y-4 p-5" aria-labelledby="wishlist-items-heading">
@@ -507,6 +800,11 @@ function WishlistItems({
         <p className="text-xs font-semibold uppercase tracking-widest text-muted">Juegos seguidos</p>
         <h2 id="wishlist-items-heading" className="text-xl font-semibold tracking-tight text-primary">En tu wishlist</h2>
         <p className="tabler-badge tabler-badge-muted">{filteredItems.length} de {items.length} juegos</p>
+        {selectedAppIds.size > 0 ? (
+          <p className="tabler-badge tabler-badge-info">
+            {selectedAppIds.size === 1 ? "1 seleccionado" : `${selectedAppIds.size} seleccionados`}
+          </p>
+        ) : null}
         <p className="text-xs text-muted">«Mín. oficial» y «Mín. keys» ya están en MXN. El precio base y el mínimo histórico se muestran en la moneda del proveedor, sin convertir.</p>
         <p className="text-xs text-muted">«% dto.» se calcula contra el precio de lista de Steam (precio base) y «Deal» es un score híbrido de 0 a 10: 7 puntos por la escala del descuento frente al mínimo viable y 3 por la cercanía al mínimo histórico.</p>
       </div>
@@ -516,8 +814,14 @@ function WishlistItems({
       </div>
       <ul className="space-y-3 md:hidden">
         {filteredItems.map((item) => (
-          <li key={item.appId} className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-3">
-            <div className="flex items-start gap-2"><WishlistThumb src={item.imageUrl} /><div className="min-w-0"><Link href={`/games/${item.appId}`} className="text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{item.name}</Link><p className="text-xs text-muted">AppID {item.appId}</p></div></div>
+          <li key={item.appId} className={cn("rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-3", selectedAppIds.has(item.appId) && "border-[color:var(--color-accent)]")}>
+            <div className="flex items-start gap-2"><input
+                type="checkbox"
+                aria-label={`Seleccionar ${item.name}`}
+                checked={selectedAppIds.has(item.appId)}
+                onChange={(event) => setSelectedAppIds((current) => toggleAppId(current, item.appId, event.target.checked))}
+                className="mt-1 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+              /><WishlistThumb src={item.imageUrl} /><div className="min-w-0"><Link href={`/games/${item.appId}`} className="text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{item.name}</Link><p className="text-xs text-muted">AppID {item.appId}</p></div></div>
             <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2"><PriceFact label="Precio base" amountMinor={item.basePriceMinor} currency={item.baseCurrency} /><PriceFact label="Mínimo histórico" amountMinor={item.historyLowMinor} currency={item.historyLowCurrency} /><PriceFact label="Mín. oficial" amountMinor={item.bestOfficialMinor} currency={MXN} /><PriceFact label="Mín. keys" amountMinor={item.bestKeyshopMinor} currency={MXN} /><MobileMetrics item={item} minViableDiscountPercent={minViableDiscountPercent} /></div>
             <div className="mt-3"><WishlistRowMeta item={item} /></div>
             <div className="mt-3"><RowRefreshButton item={item} refreshing={refreshingAppId === item.appId} blocked={refreshingAppId !== null && refreshingAppId !== item.appId} onRefresh={onRefresh} /></div>
@@ -545,6 +849,18 @@ function WishlistItems({
         toolbar={<ThresholdControl value={minViableDiscountPercent} onCommit={onThresholdCommit} />}
         emptyMessage={items.length === 0 ? "La wishlist está vacía." : "Ningún juego coincide con la búsqueda."}
       />
+      {selectedAppIds.size > 0 ? (
+        <div className="sticky bottom-2 z-10">
+          <PackageSummaryBar
+            selectedCount={selectedAppIds.size}
+            preview={preview}
+            loading={previewLoading}
+            error={previewError}
+            reconciledAppIds={reconciledAppIds}
+            onClear={clearSelection}
+          />
+        </div>
+      ) : null}
     </section>
   );
 }

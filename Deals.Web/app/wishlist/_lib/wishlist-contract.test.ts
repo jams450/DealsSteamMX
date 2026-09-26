@@ -31,6 +31,12 @@ test("cada sello de proveedor se normaliza desde su propio campo", () => {
   assert.equal(item.microsoftSyncedAt, "2026-10-05T10:00:00Z");
 });
 
+test("la propiedad ownedStores admite multiples tiendas y descarta valores invalidos", () => {
+  const parsed = normalizeWishlistResponse(envelope({ ownedStores: ["epic", "xbox", ""] }));
+  assert.ok(parsed);
+  assert.deepEqual(parsed.items[0].ownedStores, ["epic", "xbox"]);
+});
+
 test("un proveedor sin sincronizar es null y no rompe al resto de la fila", () => {
   const parsed = normalizeWishlistResponse(envelope({ ...stamps, epicSyncedAt: null }));
   assert.ok(parsed);

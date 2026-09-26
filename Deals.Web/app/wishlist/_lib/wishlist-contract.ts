@@ -28,6 +28,7 @@ export type WishlistItem = {
   readonly historyLowCurrency: string | null;
   readonly bestOfficialMinor: number | null;
   readonly bestKeyshopMinor: number | null;
+  readonly ownedStores: readonly string[];
 };
 
 export type WishlistResponse = {
@@ -109,6 +110,11 @@ function toText(value: unknown): string | null {
 }
 
 // Igual que `toText`, pero acotado: los textos vienen del proveedor y no deben inflar la respuesta.
+function toStoreList(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string" && /^[a-z0-9][a-z0-9._-]{1,31}$/.test(entry));
+}
+
 function toBoundedText(value: unknown, maxLength: number): string | null {
   const text = toText(value);
   return text === null ? null : text.slice(0, maxLength);
@@ -187,7 +193,8 @@ function normalizeWishlistItem(value: unknown): WishlistItem | null {
     historyLowCurrency: toCurrencyCode(read(value, "historyLowCurrency")),
     // Los mínimos de tiendas llegan ya convertidos a MXN, así que no traen moneda propia.
     bestOfficialMinor: toPriceMinor(read(value, "bestOfficialMinor")),
-    bestKeyshopMinor: toPriceMinor(read(value, "bestKeyshopMinor"))
+    bestKeyshopMinor: toPriceMinor(read(value, "bestKeyshopMinor")),
+    ownedStores: toStoreList(read(value, "ownedStores"))
   };
 }
 
@@ -265,5 +272,101 @@ export function normalizeWishlistSyncResponse(input: unknown): WishlistSyncRespo
     syncedAt: toIsoDateTime(read(input, "syncedAt")),
     fetchedFromSteam,
     fetchFailed
+  };
+}
+
+// Los subtotales del paquete son la única moneda del flujo: MXN. Un código distinto se rechaza en vez de
+// rotular con el símbolo equivocado un importe que el cliente divide entre 100.
+const MXN_CURRENCY = "MXN";
+
+export type WishlistPackagePreview = {
+  readonly requestedCount: number;
+  readonly selectedCount: number;
+  // AppIDs que el servidor no reconoció como parte de la wishlist del usuario. Son la conciliación de la
+  // selección: sin ellos una fila que desapareció encogería el total sin que nadie lo note.
+  readonly unmatchedAppIds: readonly number[];
+  // Cada escenario es alternativo, no un parcial: `null` significa "ningún juego cotizado", no 0.
+  readonly officialSubtotalMinor: number | null;
+  readonly officialQuoted: number;
+  readonly officialMissing: number;
+  readonly officialMissingAppIds: readonly number[];
+  readonly keyshopSubtotalMinor: number | null;
+  readonly keyshopQuoted: number;
+  readonly keyshopMissing: number;
+  readonly keyshopMissingAppIds: readonly number[];
+  readonly currency: string;
+  readonly pricedAt: string | null;
+};
+
+// Lista de AppIDs del contrato. Si el campo no es un arreglo de enteros positivos, la respuesta entera se
+// rechaza: la conciliación de la selección no es un adorno.
+function toAppIdList(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+
+  const appIds: number[] = [];
+  for (const entry of value) {
+    const appId = toPositiveInteger(entry);
+    if (appId === null) return null;
+    appIds.push(appId);
+  }
+
+  return appIds;
+}
+
+// El preview es dinero que el usuario está a punto de gastar, así que no se rellena nada: si un campo del
+// contrato falta o no valida, se devuelve null y la barra dice que no se pudo calcular, en vez de pintar un
+// total inventado. Los subtotales se validan contra su propio conteo de cotizados: un escenario con juegos
+// contados y sin importe está roto, no "sin cotizar".
+export function normalizeWishlistPackagePreview(input: unknown): WishlistPackagePreview | null {
+  if (!isRecord(input)) return null;
+
+  const requestedCount = toCount(read(input, "requestedCount"));
+  const selectedCount = toCount(read(input, "selectedCount"));
+  const officialQuoted = toCount(read(input, "officialQuoted"));
+  const officialMissing = toCount(read(input, "officialMissing"));
+  const keyshopQuoted = toCount(read(input, "keyshopQuoted"));
+  const keyshopMissing = toCount(read(input, "keyshopMissing"));
+  const unmatchedAppIds = toAppIdList(read(input, "unmatchedAppIds"));
+  const officialMissingAppIds = toAppIdList(read(input, "officialMissingAppIds"));
+  const keyshopMissingAppIds = toAppIdList(read(input, "keyshopMissingAppIds"));
+  const currency = toCurrencyCode(read(input, "currency"));
+
+  if (
+    requestedCount === null ||
+    selectedCount === null ||
+    officialQuoted === null ||
+    officialMissing === null ||
+    keyshopQuoted === null ||
+    keyshopMissing === null ||
+    unmatchedAppIds === null ||
+    officialMissingAppIds === null ||
+    keyshopMissingAppIds === null ||
+    currency !== MXN_CURRENCY
+  ) {
+    return null;
+  }
+
+  const officialSubtotalMinor = toPriceMinor(read(input, "officialSubtotalMinor"));
+  const keyshopSubtotalMinor = toPriceMinor(read(input, "keyshopSubtotalMinor"));
+
+  // Un escenario cotizado siempre tiene importe, y uno sin cotizados nunca lo tiene. Esto separa "vinieron
+  // precios" de "el número llegó corrupto" en lugar de mostrar el segundo como si fuera el primero.
+  if ((officialQuoted > 0) !== (officialSubtotalMinor !== null)) return null;
+  if ((keyshopQuoted > 0) !== (keyshopSubtotalMinor !== null)) return null;
+
+  return {
+    requestedCount,
+    selectedCount,
+    unmatchedAppIds,
+    officialSubtotalMinor,
+    officialQuoted,
+    officialMissing,
+    officialMissingAppIds,
+    keyshopSubtotalMinor,
+    keyshopQuoted,
+    keyshopMissing,
+    keyshopMissingAppIds,
+    currency,
+    pricedAt: toIsoDateTime(read(input, "pricedAt"))
   };
 }

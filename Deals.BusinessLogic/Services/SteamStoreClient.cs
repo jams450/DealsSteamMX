@@ -44,8 +44,21 @@ public sealed class SteamStoreClient(HttpClient httpClient) : ISteamStoreClient
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        if (!document.RootElement.TryGetProperty(appId.ToString(), out var app) ||
-            !app.TryGetProperty("success", out var success) || !success.GetBoolean() ||
+        // Steam normally uses the requested AppID as the top-level key, but some valid responses
+        // use another package/DLC key while the actual game AppID is present in data.steam_appid.
+        // Resolve by the payload's canonical AppID before treating the response as a missing game.
+        var app = document.RootElement.TryGetProperty(appId.ToString(), out var requestedApp)
+            ? requestedApp
+            : document.RootElement.EnumerateObject()
+                .Select(property => property.Value)
+                .FirstOrDefault(candidate =>
+                    candidate.TryGetProperty("success", out var candidateSuccess) &&
+                    candidateSuccess.ValueKind == JsonValueKind.True &&
+                    candidate.TryGetProperty("data", out var candidateData) &&
+                    GetInt32(candidateData, "steam_appid") == appId);
+
+        if (app.ValueKind != JsonValueKind.Object ||
+            !app.TryGetProperty("success", out var success) || success.ValueKind != JsonValueKind.True ||
             !app.TryGetProperty("data", out var data))
         {
             return null;

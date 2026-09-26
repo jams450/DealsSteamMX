@@ -33,7 +33,7 @@ when it was last observed.
 | `/` | `app/page.tsx` | Product | Home: search as the central CTA, how-it-works, price source note |
 | `/search` | `app/search/page.tsx`, `app/search/search-client.tsx` | Product | Text search; `?q=` pre-runs the query; local suggestions while typing (≥2 chars) |
 | `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: cover, Steam price block, ownership line (`ownership`), local-low row, Steam source table, multi-store offers grouped by provider (ITAD / gg.deals) |
-| `/wishlist` | `app/wishlist/{page,wishlist-client}.tsx`, `app/wishlist/_lib/*` | Product | Steam wishlist: four explicit states, "Sincronizar ahora" with its report, a price-reference table (base, historical low, MXN official/keyshop minimums) with a per-row refresh, per-band discount % and a hybrid 0-10 deal score driven by a backend viable-minimum threshold |
+| `/wishlist` | `app/wishlist/{page,wishlist-client}.tsx`, `app/wishlist/_lib/*` | Product | Steam wishlist: four explicit states, "Sincronizar ahora" with its report, a price-reference table (base, historical low, MXN official/keyshop minimums) with a per-row refresh, per-band discount % and a hybrid 0-10 deal score driven by a backend viable-minimum threshold; a multi-game selection (by AppID) with a sticky bar showing the package total under two alternative scenarios (official / keys) |
 | `/library` | `app/library/{page,library-client}.tsx`, `app/library/_lib/*` | Admin | Playnite library import (manual JSON upload of ≤10 MiB) plus the owned/subscription list grouped by store, with the Game Pass tag and the explicit "Sin precios vinculados" state |
 | `/login` | `app/login/page.tsx` | Public | Only public page, plus `/api/auth/{login,refresh,session}` |
 | `/users` | `app/users/*` | Admin | Reference admin slice (`AdminShell` + `DataGrid`), admin role only; consumes the same tokens, cards, badges and `Button` variants as the product surface |
@@ -78,6 +78,14 @@ when it was last observed.
   `PUT /api/wishlist/preferences` (BFF `PUT /api/bff/wishlist/preferences`) and only feeds the two deal
   scores. The list uses the shared `DataGrid` in client mode for sorting, global filtering, per-column
   filtering and pagination; mobile tiles consume the same name/AppID filter state.
+- **Wishlist package preview:** the same page supports selecting several games at once (by AppID, never by
+  row index) and asking what that set would cost under two **alternative** scenarios: everything bought from
+  a legitimate shop, or everything bought from the keyshop aggregate. The two subtotals never add up — there
+  is no combined field on purpose — and a game with no price in a scenario is counted in that scenario's
+  `missing` count instead of being priced at 0. `POST /api/wishlist/package-preview`
+  (BFF `POST /api/bff/wishlist/package-preview`) is read-only and stateless: the client sends only AppIDs,
+  never amounts, and the server re-reads the same snapshot the rows read and stamps `pricedAt`. Nothing is
+  persisted, no bundle is applied, and no figure from here enters `game_offers` or any savings math.
 - **Library reality:** `/library` is fed by the API's `GET /api/library` (BFF `GET /api/bff/library`) and
   `POST /api/library/import` (BFF `POST /api/bff/library/import`), both `AdminWithId` on the API. The list is
   the `user_library` snapshot imported by hand from a Playnite JSON export: the read answers `{ items: [...] }`
@@ -405,7 +413,7 @@ ITAD store against a gg.deals row.
   <fecha>" (`tabler-badge-info`) or "Sin fecha de sincronización" (`tabler-badge-warning`). Tone is never
   the only signal: every badge carries its words.
 - Items: a `ul` of bordered tiles below `md` and a `.table-shell` table from `md` up
-  (`Portada | Juego | Precio base | % dto. oficial | % dto. keys | Deal oficial | Deal keys |
+  (`Sel. | Portada | Juego | Precio base | % dto. oficial | % dto. keys | Deal oficial | Deal keys |
   Mínimo histórico | Mín. oficial | Mín. keys | Prioridad | Alta | Actualizado | Acciones`), so the row
   works at 360px and the desktop table is never squashed. `Prioridad` stays in the column menu but is
   hidden by default (the user does not use Steam's rank) and it is not part of the mobile meta line. The game
@@ -451,9 +459,23 @@ ITAD store against a gg.deals row.
   a compact native input tied to the same global filter state before mapping its tiles, so filtering never
   disappears at 360px. There is no server-side filter, pagination or reordering.
 
+- **Package selection and subtotals:** the first column is a checkbox (its header checkbox selects the
+  current page from `table.getRowModel()`, with `indeterminate` when the page is partially selected) and the
+  mobile tiles carry the same checkbox and an accent border while selected. Selection is keyed by AppID in a
+  `Set`, so sorting, filtering or paginating never moves a mark onto another game.
+  `app/wishlist/_lib/wishlist-package.ts` (pure module, no imports) owns `toggleAppId`, `setAppIds`,
+  `pageSelectionState`, `reconcileAppIds`, `packageRequestAppIds` and `exceedsPackageLimit`; it is covered by
+  `wishlist-package.test.ts` (`node --test`). Selecting at least one game reveals a sticky
+  `app-card-accent` bar with one card per scenario (`Todo en oficial` / `Todo en keys`), each printing its
+  own MXN subtotal, its `N de M cotizados` count and its missing count, plus `Limpiar selección`, the
+  `pricedAt` stamp and the note that the two figures are alternatives and never add up. The bar is
+  `aria-live="polite"` and never shows a stale amount as current: while the request is in flight both cards
+  read `Calculando...` and a scenario with nothing quoted reads `Sin cotizar`, never `MX$0.00`. The server's
+  `unmatchedAppIds` are removed from the selection and reported. Above the 200-AppID cap the bar shows the
+  message and no subtotals. The preview adds no rate-limit policy: the cap is the brake.
 - **Sortable columns:** `Juego` (alphabetical), `Prioridad`, `Alta`, `Actualizado`, `Precio base`,
   `% dto. oficial`, `% dto. keys`, `Deal oficial`, `Deal keys`, `Mínimo histórico`, `Mín. oficial` and
-  `Mín. keys`. `Portada` and `Acciones` are not sortable. Numeric and date values sort by their raw
+  `Mín. keys`. `Sel.`, `Portada` and `Acciones` are not sortable. Numeric and date values sort by their raw
   number/timestamp, not their formatted label.
 - **Null sorting:** the column comparator explicitly places `null` values last in both ascending and
   descending directions. A missing price is never coerced to zero, so it cannot appear as the cheapest row.

@@ -22,6 +22,7 @@ const item = (overrides: Partial<WishlistItem> = {}): WishlistItem => ({
   historyLowCurrency: null,
   bestOfficialMinor: null,
   bestKeyshopMinor: null,
+  ownedStores: [],
   ...overrides
 });
 

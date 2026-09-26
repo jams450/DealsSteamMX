@@ -31,6 +31,15 @@ public class WishlistController : ControllerBase
 
     private const string MxnCurrency = "MXN";
 
+    // Ceiling of the package preview. Acota el payload y el trabajo por petición; el cliente aplica el
+    // mismo número para no construir una petición que va a fallar.
+    private const int MaxPackageAppIds = 200;
+
+    // ~1,000 millones de pesos en unidad mínima. Una oferta por encima de esto es dato corrupto, no un
+    // precio: se excluye del subtotal y se cuenta como faltante. Con este tope, 200 sumandos quedan muy por
+    // debajo de long.MaxValue, así que la suma no puede desbordar.
+    private const long MaxPackagePriceMinor = 99_999_999_900L;
+
     private readonly IRepository _repository;
     private readonly IWishlistSyncService _wishlistSyncService;
     private readonly JobRunLog _jobRunLog;
@@ -60,7 +69,7 @@ public class WishlistController : ControllerBase
         }
 
         var state = WishlistStates.Compose(user.SteamId64, user.WishlistSyncedAt, user.WishlistState);
-        var items = await LoadItemsAsync(userId, cancellationToken);
+        var items = await LoadItemsAsync(userId, null, cancellationToken);
 
         return Ok(new WishlistResponse(state, user.WishlistSyncedAt, items, user.MinViableDiscountPercent));
     }
@@ -144,6 +153,94 @@ public class WishlistController : ControllerBase
             report.FetchFailed));
     }
 
+    /// <summary>
+    /// Cost of the selected games under two independent scenarios (official and keyshops). Read-only: it
+    /// reuses the same loader the table uses, so a game priced here and the same game priced in its row can
+    /// never disagree. Nothing is persisted and no bundle is applied.
+    /// </summary>
+    [HttpPost("package-preview")]
+    public async Task<IActionResult> PackagePreview(
+        [FromBody] WishlistPackagePreviewRequest request,
+        CancellationToken cancellationToken)
+    {
+        var appIds = request?.AppIds ?? throw new ArgumentException("AppIds is required", nameof(request));
+        if (appIds.Count == 0)
+        {
+            throw new ArgumentException("AppIds must contain at least one appid", nameof(request));
+        }
+
+        if (appIds.Count > MaxPackageAppIds)
+        {
+            throw new ArgumentException($"AppIds cannot contain more than {MaxPackageAppIds} entries", nameof(request));
+        }
+
+        // A non-positive appid is not a real Steam appid, so it is rejected instead of coming back as
+        // "unmatched": the route only answers about games that can exist.
+        if (appIds.Any(appId => appId <= 0))
+        {
+            throw new ArgumentException("Every appid must be a positive integer", nameof(request));
+        }
+
+        // Duplicates are deduplicated rather than rejected: the caller's intent is the same either way, and
+        // counting a game twice would inflate the subtotal.
+        var requestedAppIds = appIds.Distinct().ToList();
+        var items = await LoadItemsAsync(GetUserId(), requestedAppIds, cancellationToken);
+        var foundAppIds = items.Select(item => item.AppId).ToHashSet();
+
+        var official = Summarize(items, item => item.BestOfficialMinor);
+        var keyshop = Summarize(items, item => item.BestKeyshopMinor);
+
+        return Ok(new WishlistPackagePreviewResponse(
+            requestedAppIds.Count,
+            items.Count,
+            requestedAppIds.Where(appId => !foundAppIds.Contains(appId)).ToList(),
+            official.Subtotal,
+            official.Quoted,
+            official.MissingAppIds.Count,
+            official.MissingAppIds,
+            keyshop.Subtotal,
+            keyshop.Quoted,
+            keyshop.MissingAppIds.Count,
+            keyshop.MissingAppIds,
+            MxnCurrency,
+            DateTime.UtcNow));
+    }
+
+    /// <summary>
+    /// Adds up one scenario of a package: the subtotal, how many games were quoted and which ones were not.
+    /// A negative or absurdly large amount is corrupt data, not a price, so it is excluded and counted as
+    /// missing: one bad row can neither shrink nor inflate what the user is about to spend. A scenario with
+    /// no quoted game returns a null subtotal, never a zero.
+    /// </summary>
+    private static PackageSubtotal Summarize(
+        IReadOnlyList<WishlistItemResponse> items,
+        Func<WishlistItemResponse, int?> price)
+    {
+        long subtotal = 0;
+        var quoted = 0;
+        var missingAppIds = new List<int>();
+
+        foreach (var item in items)
+        {
+            var amount = price(item);
+            // La comparación se hace en long a propósito: el tope no cabe en int, y compararlo contra un int
+            // sería siempre falso (y el compilador lo avisa).
+            if (amount is null || amount.Value < 0 || (long)amount.Value > MaxPackagePriceMinor)
+            {
+                missingAppIds.Add(item.AppId);
+                continue;
+            }
+
+            // Cannot overflow: at most MaxPackageAppIds summands, each one capped at MaxPackagePriceMinor.
+            subtotal += amount.Value;
+            quoted++;
+        }
+
+        return new PackageSubtotal(quoted == 0 ? null : subtotal, quoted, missingAppIds);
+    }
+
+    private sealed record PackageSubtotal(long? Subtotal, int Quoted, IReadOnlyList<int> MissingAppIds);
+
     private async Task<long> TryStartRunAsync(CancellationToken cancellationToken)
     {
         try
@@ -171,25 +268,57 @@ public class WishlistController : ControllerBase
         }
     }
 
-    private async Task<IReadOnlyList<WishlistItemResponse>> LoadItemsAsync(int userId, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<WishlistItemResponse>> LoadItemsAsync(
+        int userId,
+        IReadOnlyCollection<int>? appIds,
+        CancellationToken cancellationToken)
     {
-        var rows = await _repository.Get<UserLibrary>()
-            .Where(entry => entry.UserId == userId && entry.Store == SteamStore && entry.State == WishedState)
+        var rowsQuery = _repository.Get<UserLibrary>()
+            .Where(entry => entry.UserId == userId && entry.Store == SteamStore && entry.State == WishedState);
+
+        if (appIds is not null)
+        {
+            // Un preview del paquete acota la lectura a la selección en vez de traer la wishlist entera.
+            // StoreGameId guarda el appid como texto invariante de solo dígitos (ver ParseAppId), así que el
+            // ida y vuelta es exacto y el filtro baja a SQL.
+            var storeGameIds = appIds
+                .Select(appId => appId.ToString(CultureInfo.InvariantCulture))
+                .ToList();
+            rowsQuery = rowsQuery.Where(entry => storeGameIds.Contains(entry.StoreGameId));
+        }
+
+        var rows = await rowsQuery
             // PostgreSQL sorts NULLs last on ASC, so entries with no priority land after the ranked ones.
             .OrderBy(entry => entry.Priority)
             .ThenBy(entry => entry.Title)
             .ToListAsync(cancellationToken);
 
-        var appIds = rows
+        var steamAppIds = rows
             .Select(entry => ParseAppId(entry.StoreGameId))
             .Where(appId => appId > 0)
             .Distinct()
             .ToList();
 
         var games = await _repository.Get<SteamGame>()
-            .Where(game => game.Region == Region && appIds.Contains(game.AppId))
+            .Where(game => game.Region == Region && steamAppIds.Contains(game.AppId))
             .ToListAsync(cancellationToken);
         var gamesByAppId = games.ToDictionary(game => game.AppId);
+
+        // One ownership query for the whole wishlist. Canonical game identity is authoritative; Steam is
+        // excluded because every row here is already a Steam wishlist entry. Subscriptions are not owned.
+        var canonicalGameIds = games.Select(game => (long?)game.GameId).ToList();
+        var ownedStoresByGameId = await _repository.Get<UserLibrary>()
+            .Where(entry => entry.UserId == userId &&
+                entry.State == Deals.BusinessLogic.Models.Library.LibraryStates.Owned &&
+                entry.Store != SteamStore &&
+                entry.GameId != null && canonicalGameIds.Contains(entry.GameId))
+            .GroupBy(entry => entry.GameId!.Value)
+            .Select(group => new
+            {
+                GameId = group.Key,
+                Stores = group.Select(entry => entry.Store).Distinct().ToList()
+            })
+            .ToDictionaryAsync(group => group.GameId, group => group.Stores, cancellationToken);
 
         // One aggregate query for the whole list, never one per row: PostgreSQL computes the three minima
         // and only the grouped result is materialized.
@@ -284,7 +413,10 @@ public class WishlistController : ControllerBase
                 historyLowMinor,
                 historyLowMinor is null ? null : MxnCurrency,
                 bestOfficialMinor,
-                bestKeyshopMinor));
+                bestKeyshopMinor,
+                game?.GameId is long canonicalGameId && ownedStoresByGameId.TryGetValue(canonicalGameId, out var ownedStores)
+                    ? ownedStores.OrderBy(store => store, StringComparer.Ordinal).ToList()
+                    : []));
         }
 
         return items;
