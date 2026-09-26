@@ -20,6 +20,8 @@ public class AppDbContext : DbContext
     public DbSet<Game> Games { get; set; } = null!;
     public DbSet<GameExternalId> GameExternalIds { get; set; } = null!;
     public DbSet<UserLibrary> UserLibrary { get; set; } = null!;
+    public DbSet<WishlistCategory> WishlistCategories { get; set; } = null!;
+    public DbSet<WishlistCategoryItem> WishlistCategoryItems { get; set; } = null!;
     public DbSet<GameReview> GameReviews { get; set; } = null!;
     public DbSet<SteamGame> SteamGames { get; set; } = null!;
     public DbSet<SteamPriceObservation> SteamPriceObservations { get; set; } = null!;
@@ -52,8 +54,12 @@ public class AppDbContext : DbContext
         {
             if (entry.State == EntityState.Added)
             {
+                // Audit columns are NOT NULL for the wishlist entities. Set both sides of the
+                // audit pair on insert; leaving Updated null makes PostgreSQL reject the row.
                 entry.Entity.Created = now;
                 entry.Entity.CreatedBy = userName;
+                entry.Entity.Updated = now;
+                entry.Entity.UpdatedBy = userName;
                 continue;
             }
 
@@ -89,6 +95,7 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => new { e.UserId, e.Store, e.StoreGameId, e.State }).IsUnique();
             entity.HasIndex(e => new { e.UserId, e.ItadGameId });
             entity.HasIndex(e => e.GameId);
+            entity.HasAlternateKey(e => new { e.UserId, e.UserLibraryId });
             // The (user_id, lower(title)) index is not expressible in EF Core; it lives in SQL only.
             entity.HasOne(e => e.User)
                 .WithMany()
@@ -98,6 +105,23 @@ public class AppDbContext : DbContext
                 .WithMany()
                 .HasForeignKey(e => e.GameId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<WishlistCategory>(entity =>
+        {
+            entity.HasIndex(e => new { e.UserId, e.NormalizedName }).IsUnique();
+            entity.HasIndex(e => e.UserId);
+            entity.HasAlternateKey(e => new { e.UserId, e.WishlistCategoryId });
+            entity.HasOne(e => e.User).WithMany().HasForeignKey(e => e.UserId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<WishlistCategoryItem>(entity =>
+        {
+            entity.HasKey(e => new { e.WishlistCategoryId, e.UserLibraryId });
+            entity.HasIndex(e => new { e.UserId, e.WishlistCategoryId, e.UserLibraryId });
+            entity.HasIndex(e => new { e.UserId, e.UserLibraryId, e.WishlistCategoryId });
+            entity.HasOne(e => e.Category).WithMany(e => e.Items).HasForeignKey(e => new { e.UserId, e.WishlistCategoryId }).HasPrincipalKey(e => new { e.UserId, e.WishlistCategoryId }).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(e => e.UserLibrary).WithMany().HasForeignKey(e => new { e.UserId, e.UserLibraryId }).HasPrincipalKey(e => new { e.UserId, e.UserLibraryId }).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<GameReview>(entity =>

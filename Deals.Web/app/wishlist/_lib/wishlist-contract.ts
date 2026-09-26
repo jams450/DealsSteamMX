@@ -29,12 +29,17 @@ export type WishlistItem = {
   readonly bestOfficialMinor: number | null;
   readonly bestKeyshopMinor: number | null;
   readonly ownedStores: readonly string[];
+  readonly categories: readonly WishlistCategory[];
 };
+
+export type WishlistCategory = { readonly id: number; readonly name: string; readonly itemCount: number };
+
 
 export type WishlistResponse = {
   readonly state: WishlistState;
   readonly syncedAt: string | null;
   readonly items: readonly WishlistItem[];
+  readonly categories: readonly WishlistCategory[];
   // Umbral del score de la wishlist. El backend lo manda; si todavía no lo manda (o llega inválido) se
   // usa el default y la página sigue funcionando.
   readonly minViableDiscountPercent: number;
@@ -69,6 +74,22 @@ function isRecord(value: unknown): value is UnknownRecord {
 
 function read(value: UnknownRecord, key: string): unknown {
   return value[key] ?? value[key.charAt(0).toUpperCase() + key.slice(1)];
+}
+
+export function normalizeWishlistCategory(value: unknown): WishlistCategory | null {
+  if (!isRecord(value)) return null;
+  const id = toPositiveInteger(read(value, "id"));
+  const name = toText(read(value, "name"));
+  const itemCount = toCount(read(value, "itemCount"));
+  return id !== null && name !== null && itemCount !== null ? { id, name, itemCount } : null;
+}
+
+function toCategoryList(value: unknown): WishlistCategory[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const category = normalizeWishlistCategory(entry);
+    return category === null ? [] : [category];
+  });
 }
 
 function toPositiveInteger(value: unknown): number | null {
@@ -194,7 +215,8 @@ function normalizeWishlistItem(value: unknown): WishlistItem | null {
     // Los mínimos de tiendas llegan ya convertidos a MXN, así que no traen moneda propia.
     bestOfficialMinor: toPriceMinor(read(value, "bestOfficialMinor")),
     bestKeyshopMinor: toPriceMinor(read(value, "bestKeyshopMinor")),
-    ownedStores: toStoreList(read(value, "ownedStores"))
+    ownedStores: toStoreList(read(value, "ownedStores")),
+    categories: toCategoryList(read(value, "categories"))
   };
 }
 
@@ -221,7 +243,8 @@ export function normalizeWishlistResponse(input: unknown): WishlistResponse | nu
     // El umbral es resiliente a propósito: mientras el backend no lo mande, la página queda en 50.
     minViableDiscountPercent:
       toDiscountThreshold(read(input, "minViableDiscountPercent")) ?? MIN_VIABLE_DISCOUNT_PERCENT_DEFAULT,
-    items
+    items,
+    categories: toCategoryList(read(input, "categories"))
   };
 }
 

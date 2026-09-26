@@ -1,0 +1,23 @@
+import { CheckCircle2, CircleAlert, X } from "lucide-react";
+import { cn } from "@/lib/ui/cn";
+import type { Toast } from "./use-toasts";
+
+type Props = {
+  readonly toasts: readonly Toast[];
+  readonly onDismiss: (id: string) => void;
+};
+
+export function ToastStack({ toasts, onDismiss }: Props) {
+  return (
+    <div className="pointer-events-none fixed right-3 top-3 z-[120] flex w-[min(92vw,360px)] flex-col gap-2 md:right-6 md:top-5" aria-live="polite">
+      {toasts.map((toast) => {
+        const success = toast.variant === "success";
+        return <div key={toast.id} role="status" className={cn("app-card pointer-events-auto flex items-start gap-2.5 rounded-[var(--radius-md)] px-3 py-2.5", success ? "text-success" : "text-danger")}>
+          {success ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" /> : <CircleAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />}
+          <p className="min-w-0 flex-1 text-sm font-medium">{toast.message}</p>
+          <button type="button" className="rounded-[var(--radius-sm)] p-1 text-muted hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]" onClick={() => onDismiss(toast.id)} aria-label="Cerrar notificación"><X className="h-3.5 w-3.5" aria-hidden="true" /></button>
+        </div>;
+      })}
+    </div>
+  );
+}

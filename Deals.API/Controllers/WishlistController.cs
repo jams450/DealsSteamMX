@@ -70,8 +70,137 @@ public class WishlistController : ControllerBase
 
         var state = WishlistStates.Compose(user.SteamId64, user.WishlistSyncedAt, user.WishlistState);
         var items = await LoadItemsAsync(userId, null, cancellationToken);
+        var categoryRows = await _repository.Get<WishlistCategory>()
+            .Where(category => category.UserId == userId)
+            .Select(category => new
+            {
+                category.WishlistCategoryId,
+                category.Name,
+                ItemCount = _repository.Get<WishlistCategoryItem>()
+                    .Count(item => item.UserId == userId && item.WishlistCategoryId == category.WishlistCategoryId)
+            })
+            .OrderBy(category => category.Name)
+            .ToListAsync(cancellationToken);
+        var categories = categoryRows
+            .Select(category => new WishlistCategorySummary(category.WishlistCategoryId, category.Name, category.ItemCount))
+            .ToList();
 
-        return Ok(new WishlistResponse(state, user.WishlistSyncedAt, items, user.MinViableDiscountPercent));
+        return Ok(new WishlistResponse(state, user.WishlistSyncedAt, items, user.MinViableDiscountPercent, categories));
+    }
+
+    [HttpGet("categories")]
+    public async Task<IActionResult> Categories(CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        var categoryRows = await _repository.Get<WishlistCategory>()
+            .Where(c => c.UserId == userId)
+            .Select(c => new
+            {
+                c.WishlistCategoryId,
+                c.Name,
+                ItemCount = _repository.Get<WishlistCategoryItem>()
+                    .Count(i => i.UserId == userId && i.WishlistCategoryId == c.WishlistCategoryId)
+            })
+            .OrderBy(c => c.Name)
+            .ToListAsync(cancellationToken);
+        var categories = categoryRows
+            .Select(c => new WishlistCategorySummary(c.WishlistCategoryId, c.Name, c.ItemCount))
+            .ToList();
+        return Ok(categories);
+    }
+
+    [HttpPost("categories")]
+    public async Task<IActionResult> CreateCategory([FromBody] WishlistCategoryRequest request, CancellationToken cancellationToken)
+    {
+        var name = NormalizeCategoryName(request?.Name);
+        var userId = GetUserId();
+        if (await _repository.Get<WishlistCategory>().AnyAsync(c => c.UserId == userId && c.NormalizedName == name.ToUpperInvariant(), cancellationToken))
+            return Conflict();
+        var category = new WishlistCategory { UserId = userId, Name = request!.Name!.Trim(), NormalizedName = name.ToUpperInvariant() };
+        _repository.GetTrack<WishlistCategory>().Add(category);
+        await _repository.SaveChangesAsync();
+        return Ok(new WishlistCategorySummary(category.WishlistCategoryId, category.Name, 0));
+    }
+
+    [HttpPatch("categories/{categoryId:long}")]
+    public async Task<IActionResult> RenameCategory(long categoryId, [FromBody] WishlistCategoryRenameRequest request, CancellationToken cancellationToken)
+    {
+        var name = NormalizeCategoryName(request?.Name);
+        var userId = GetUserId();
+        var category = await _repository.GetTrack<WishlistCategory>().FirstOrDefaultAsync(c => c.UserId == userId && c.WishlistCategoryId == categoryId, cancellationToken);
+        if (category is null) return NotFound();
+        if (await _repository.Get<WishlistCategory>().AnyAsync(c => c.UserId == userId && c.WishlistCategoryId != categoryId && c.NormalizedName == name.ToUpperInvariant(), cancellationToken)) return Conflict();
+        category.Name = request!.Name!.Trim(); category.NormalizedName = name.ToUpperInvariant();
+        await _repository.SaveChangesAsync();
+        return NoContent();
+    }
+
+    [HttpDelete("categories/{categoryId:long}")]
+    public async Task<IActionResult> DeleteCategory(long categoryId, CancellationToken cancellationToken)
+    {
+        var category = await _repository.GetTrack<WishlistCategory>().FirstOrDefaultAsync(c => c.UserId == GetUserId() && c.WishlistCategoryId == categoryId, cancellationToken);
+        if (category is null) return NotFound();
+        _repository.GetTrack<WishlistCategory>().Remove(category);
+        await _repository.SaveChangesAsync();
+        return NoContent();
+    }
+
+    [HttpPost("categories/{categoryId:long}/items")]
+    public Task<IActionResult> AddCategoryItems(long categoryId, [FromBody] WishlistCategoryAssignmentRequest request, CancellationToken cancellationToken) => ChangeCategoryItems(categoryId, request, true, cancellationToken);
+
+    [HttpDelete("categories/{categoryId:long}/items")]
+    public Task<IActionResult> RemoveCategoryItems(long categoryId, [FromBody] WishlistCategoryAssignmentRequest request, CancellationToken cancellationToken) => ChangeCategoryItems(categoryId, request, false, cancellationToken);
+
+    [HttpPut("categories/{categoryId:long}/items")]
+    public async Task<IActionResult> ReplaceCategoryItems(long categoryId, [FromBody] WishlistCategoryAssignmentRequest request, CancellationToken cancellationToken)
+    {
+        var appIds = ValidateAppIds(request?.AppIds);
+        var userId = GetUserId();
+        if (!await _repository.Get<WishlistCategory>().AnyAsync(c => c.UserId == userId && c.WishlistCategoryId == categoryId, cancellationToken)) return NotFound();
+        var ids = appIds.Select(id => id.ToString(CultureInfo.InvariantCulture)).ToList();
+        var rows = await _repository.Get<UserLibrary>().Where(r => r.UserId == userId && r.Store == SteamStore && r.State == WishedState && ids.Contains(r.StoreGameId)).ToListAsync(cancellationToken);
+        var libraryIds = rows.Select(r => r.UserLibraryId).ToHashSet();
+        var existing = await _repository.GetTrack<WishlistCategoryItem>().Where(i => i.UserId == userId && i.WishlistCategoryId == categoryId).ToListAsync(cancellationToken);
+        var desired = existing.Where(i => libraryIds.Contains(i.UserLibraryId)).ToDictionary(i => i.UserLibraryId);
+        var changed = 0;
+        foreach (var row in existing.Where(i => !libraryIds.Contains(i.UserLibraryId))) { _repository.GetTrack<WishlistCategoryItem>().Remove(row); changed++; }
+        foreach (var row in rows.Where(r => !desired.ContainsKey(r.UserLibraryId))) { _repository.GetTrack<WishlistCategoryItem>().Add(new WishlistCategoryItem { UserId = userId, WishlistCategoryId = categoryId, UserLibraryId = row.UserLibraryId }); changed++; }
+        await _repository.SaveChangesAsync();
+        return Ok(new WishlistCategoryBatchResponse(appIds.Count, rows.Count, changed, appIds.Count - rows.Count));
+    }
+
+    [HttpPut("items/{appId:int}/categories")]
+    public async Task<IActionResult> ReplaceItemCategories(int appId, [FromBody] WishlistItemCategoriesRequest request, CancellationToken cancellationToken)
+    {
+        if (appId <= 0) throw new ArgumentException("AppID must be positive", nameof(appId));
+        var categoryIds = request?.CategoryIds?.Distinct().ToList() ?? throw new ArgumentException("CategoryIds is required", nameof(request));
+        if (categoryIds.Count > MaxPackageAppIds || categoryIds.Any(id => id <= 0)) throw new ArgumentException("CategoryIds must contain at most 200 positive integers", nameof(request));
+        var userId = GetUserId();
+        var library = await _repository.Get<UserLibrary>().FirstOrDefaultAsync(r => r.UserId == userId && r.Store == SteamStore && r.State == WishedState && r.StoreGameId == appId.ToString(CultureInfo.InvariantCulture), cancellationToken);
+        if (library is null) return NotFound();
+        var categories = await _repository.Get<WishlistCategory>().Where(c => c.UserId == userId && categoryIds.Contains(c.WishlistCategoryId)).ToListAsync(cancellationToken);
+        if (categories.Count != categoryIds.Count) return NotFound();
+        var existing = await _repository.GetTrack<WishlistCategoryItem>().Where(i => i.UserId == userId && i.UserLibraryId == library.UserLibraryId).ToListAsync(cancellationToken);
+        _repository.GetTrack<WishlistCategoryItem>().RemoveRange(existing);
+        _repository.GetTrack<WishlistCategoryItem>().AddRange(categoryIds.Select(id => new WishlistCategoryItem { UserId = userId, WishlistCategoryId = id, UserLibraryId = library.UserLibraryId }));
+        await _repository.SaveChangesAsync();
+        return NoContent();
+    }
+
+    private async Task<IActionResult> ChangeCategoryItems(long categoryId, WishlistCategoryAssignmentRequest request, bool add, CancellationToken cancellationToken)
+    {
+        var appIds = ValidateAppIds(request?.AppIds);
+        var userId = GetUserId();
+        if (!await _repository.Get<WishlistCategory>().AnyAsync(c => c.UserId == userId && c.WishlistCategoryId == categoryId, cancellationToken)) return NotFound();
+        var ids = appIds.Select(id => id.ToString(CultureInfo.InvariantCulture)).ToList();
+        var rows = await _repository.GetTrack<UserLibrary>().Where(r => r.UserId == userId && r.Store == SteamStore && r.State == WishedState && ids.Contains(r.StoreGameId)).ToListAsync(cancellationToken);
+        var libraryIds = rows.Select(r => r.UserLibraryId).ToHashSet();
+        var existing = await _repository.GetTrack<WishlistCategoryItem>().Where(i => i.UserId == userId && i.WishlistCategoryId == categoryId && libraryIds.Contains(i.UserLibraryId)).ToListAsync(cancellationToken);
+        var changed = 0;
+        if (add) { foreach (var row in rows.Where(r => existing.All(i => i.UserLibraryId != r.UserLibraryId))) { _repository.GetTrack<WishlistCategoryItem>().Add(new WishlistCategoryItem { UserId = userId, WishlistCategoryId = categoryId, UserLibraryId = row.UserLibraryId }); changed++; } }
+        else { _repository.GetTrack<WishlistCategoryItem>().RemoveRange(existing); changed = existing.Count; }
+        await _repository.SaveChangesAsync();
+        return Ok(new WishlistCategoryBatchResponse(appIds.Count, rows.Count, changed, appIds.Count - rows.Count));
     }
 
     [HttpPut("preferences")]
@@ -355,6 +484,18 @@ public class WishlistController : ControllerBase
             })
             .ToDictionaryAsync(aggregate => aggregate.SteamGameId!.Value, cancellationToken);
 
+        var libraryIdsForRows = rows.Select(row => row.UserLibraryId).ToList();
+        var categoryAssignments = await _repository.Get<WishlistCategoryItem>()
+            .Where(item => item.UserId == userId && libraryIdsForRows.Contains(item.UserLibraryId))
+            .Join(_repository.Get<WishlistCategory>(),
+                item => item.WishlistCategoryId,
+                category => category.WishlistCategoryId,
+                (item, category) => new { item.UserLibraryId, Category = new WishlistCategorySummary(category.WishlistCategoryId, category.Name, 0) })
+            .ToListAsync(cancellationToken);
+        var categoriesByLibraryId = categoryAssignments
+            .GroupBy(item => item.UserLibraryId)
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<WishlistCategorySummary>)group.Select(item => item.Category).OrderBy(category => category.Name).ToList());
+
         var items = new List<WishlistItemResponse>(rows.Count);
         foreach (var row in rows)
         {
@@ -416,7 +557,8 @@ public class WishlistController : ControllerBase
                 bestKeyshopMinor,
                 game?.GameId is long canonicalGameId && ownedStoresByGameId.TryGetValue(canonicalGameId, out var ownedStores)
                     ? ownedStores.OrderBy(store => store, StringComparer.Ordinal).ToList()
-                    : []));
+                    : [],
+                 categoriesByLibraryId.TryGetValue(row.UserLibraryId, out var rowCategories) ? rowCategories : []));
         }
 
         return items;
@@ -430,6 +572,22 @@ public class WishlistController : ControllerBase
         : second is null ? first
         : first > second ? first
         : second;
+
+    private static List<int> ValidateAppIds(IReadOnlyList<int>? values)
+    {
+        var appIds = values?.Distinct().ToList() ?? throw new ArgumentException("AppIds is required");
+        if (appIds.Count == 0 || appIds.Count > MaxPackageAppIds || appIds.Any(id => id <= 0))
+            throw new ArgumentException("AppIds must contain 1..200 positive integers");
+        return appIds;
+    }
+
+    private static string NormalizeCategoryName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException("Category name is required");
+        var name = value.Trim();
+        if (name.Length > 80) throw new ArgumentException("Category name cannot exceed 80 characters");
+        return name;
+    }
 
     private int GetUserId()
     {

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { ColumnDef, FilterFn, SortingFn } from "@tanstack/react-table";
 import { Gamepad2, RefreshCw, X } from "lucide-react";
 import { DataGrid } from "@/components/data-grid/data-grid";
@@ -10,7 +10,9 @@ import { Button } from "@/components/ui/button";
 import { PriceFact, PriceValue, formatMinor } from "@/components/ui/price-value";
 import { refreshSteamGame } from "@/app/steam/_lib/steam-api";
 import { cn } from "@/lib/ui/cn";
-import { getWishlist, previewWishlistPackage, syncWishlist, updateWishlistPreferences } from "./_lib/wishlist-api";
+import { ToastStack } from "@/components/feedback/toast-stack";
+import { useToasts } from "@/components/feedback/use-toasts";
+import { assignWishlistCategory, createWishlistCategory, getWishlist, previewWishlistPackage, removeWishlistCategoryItems, replaceWishlistItemCategories, syncWishlist, updateWishlistPreferences } from "./_lib/wishlist-api";
 import { dealScore, discountPercent } from "./_lib/wishlist-metrics";
 import {
   MAX_PACKAGE_APP_IDS,
@@ -573,8 +575,161 @@ function PackageSummaryBar({
   );
 }
 
+function CategoryBadges({ categories }: { readonly categories: readonly import("./_lib/wishlist-contract").WishlistCategory[] }) {
+  if (categories.length === 0) return <span className="text-xs text-muted">Sin categoría</span>;
+  return <span className="flex flex-wrap gap-1" aria-label="Categorías">{categories.map((category) => <span key={category.id} className="tabler-badge tabler-badge-info">{category.name}</span>)}</span>;
+}
+
+const NewCategoryForm = memo(function NewCategoryForm({
+  busy,
+  onCreate,
+  onCancel
+}: {
+  readonly busy: boolean;
+  readonly onCreate: (name: string) => Promise<void>;
+  readonly onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = draft.trim();
+    if (!name || busy) return;
+    await onCreate(name);
+    setDraft("");
+  }
+
+  return (
+    <form className="flex flex-wrap items-center gap-2" onSubmit={(event) => { void submit(event); }}>
+      <label htmlFor="wishlist-new-category" className="sr-only">Nombre de categoría</label>
+      <input id="wishlist-new-category" autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={80} required placeholder="Nombre de categoría" className="input-semantic h-8 text-xs" />
+      <Button type="submit" className="h-8 px-3 text-xs" loading={busy} loadingText="Creando">Crear</Button>
+      <Button type="button" variant="ghost" className="h-8 px-3 text-xs" onClick={onCancel}>Cancelar</Button>
+    </form>
+  );
+});
+
+function CategoryModal({
+  item,
+  categories,
+  disabled,
+  onClose,
+  onSaved,
+  onItemCategoriesChanged,
+  onError
+}: {
+  readonly item: WishlistItem | null;
+  readonly categories: readonly import("./_lib/wishlist-contract").WishlistCategory[];
+  readonly disabled: boolean;
+  readonly onClose: () => void;
+  readonly onSaved: () => void | Promise<void>;
+  readonly onItemCategoriesChanged: (appId: number, categoryIds: readonly number[]) => void;
+  readonly onError: (message: string) => void;
+}) {
+  const [value, setValue] = useState<number[]>([]);
+  const [saving, setSaving] = useState(false);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!item) return;
+    setValue(item.categories.map((category) => category.id));
+    closeButtonRef.current?.focus();
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [item, onClose]);
+
+  if (!item) return null;
+  const currentItem = item;
+
+  async function save() {
+    const appId = currentItem.appId;
+    setSaving(true);
+    try {
+      await replaceWishlistItemCategories(appId, value);
+      onItemCategoriesChanged(appId, value);
+      await onSaved();
+      onClose();
+    } catch (cause) {
+      onError(cause instanceof Error ? cause.message : "No se pudieron guardar las categorías.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="app-card w-full max-w-md space-y-4 p-5 shadow-xl" role="dialog" aria-modal="true" aria-labelledby="wishlist-category-dialog-title" aria-describedby="wishlist-category-dialog-help">
+        <div>
+          <h2 id="wishlist-category-dialog-title" className="text-lg font-semibold text-primary">Editar categorías</h2>
+          <p className="mt-1 text-sm text-secondary">{currentItem.name}</p>
+        </div>
+        <label htmlFor="wishlist-category-dialog-select" className="text-sm font-medium text-primary">Categorías</label>
+        <select id="wishlist-category-dialog-select" multiple value={value.map(String)} disabled={disabled || saving} onChange={(event) => setValue([...event.target.selectedOptions].map((option) => Number(option.value)))} className="input-semantic min-h-32 w-full" aria-describedby="wishlist-category-dialog-help">
+          {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+        </select>
+        <p id="wishlist-category-dialog-help" className="text-xs text-muted">Ctrl/Cmd permite varias categorías. Deja todo sin seleccionar para quitar todas.</p>
+        <div className="flex justify-end gap-2">
+          <Button ref={closeButtonRef} type="button" variant="ghost" onClick={onClose} disabled={saving}>Cancelar</Button>
+          <Button type="button" onClick={() => void save()} loading={saving} loadingText="Guardando">Guardar</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface WishlistDataGridProps {
+  readonly columns: ColumnDef<WishlistItem>[];
+  readonly rows: WishlistItem[];
+  readonly minViableDiscountPercent: number;
+  readonly onThresholdCommit: (next: number) => Promise<void>;
+}
+
+function wishlistFilter(row: Parameters<FilterFn<WishlistItem>>[0], _columnId: string, value: unknown) {
+  const text = String(value).trim().toLocaleLowerCase("es-MX");
+  return row.original.name.toLocaleLowerCase("es-MX").includes(text) || String(row.original.appId).includes(text);
+}
+
+// Keep DataGrid outside WishlistItems so category form/modal/feedback state does not render
+// its rows. Props are deliberately narrow: only table data or table-owned controls can invalidate it.
+const WishlistDataGrid = memo(function WishlistDataGrid({
+  columns,
+  rows,
+  minViableDiscountPercent,
+  onThresholdCommit
+}: WishlistDataGridProps) {
+  return (
+    <DataGrid
+      columns={columns}
+      rows={rows}
+      density="compact"
+      stickyHeader
+      stickyActionsColumn
+      pageSizeOptions={WISHLIST_PAGE_SIZES}
+      allowAllPageSize
+      pageSizeStorageKey={PAGE_SIZE_STORAGE_KEY}
+      enableGlobalFilter
+      globalFilterPlaceholder="Buscar por nombre o AppID"
+      globalFilterFn={wishlistFilter}
+      enableColumnVisibility
+      columnVisibilityStorageKey={COLUMN_VISIBILITY_STORAGE_KEY}
+      initialColumnVisibility={INITIAL_COLUMN_VISIBILITY}
+      enableColumnFilters
+      toolbar={<ThresholdControl value={minViableDiscountPercent} onCommit={onThresholdCommit} />}
+      emptyMessage="Ningún juego coincide con la búsqueda."
+    />
+  );
+});
+
 interface WishlistItemsProps {
   readonly items: readonly WishlistItem[];
+  readonly categories: readonly import("./_lib/wishlist-contract").WishlistCategory[];
+  readonly onCategoriesChanged: (created?: import("./_lib/wishlist-contract").WishlistCategory) => void | Promise<void>;
+  readonly onItemCategoriesChanged: (appId: number, categoryIds: readonly number[]) => void;
+  readonly onBatchCategoriesChanged: (categoryId: number, appIds: readonly number[], remove: boolean) => void;
+  readonly onToast: (message: string, variant: "success" | "error") => void;
   readonly refreshingAppId: number | null;
   readonly rowErrors: Readonly<Record<number, string>>;
   readonly minViableDiscountPercent: number;
@@ -584,6 +739,11 @@ interface WishlistItemsProps {
 
 function WishlistItems({
   items,
+  categories,
+  onCategoriesChanged,
+  onItemCategoriesChanged,
+  onBatchCategoriesChanged,
+  onToast,
   refreshingAppId,
   rowErrors,
   minViableDiscountPercent,
@@ -591,7 +751,19 @@ function WishlistItems({
   onRefresh
 }: WishlistItemsProps) {
   const [filter, setFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState<number | "all" | "none">("all");
   const [selectedAppIds, setSelectedAppIds] = useState<ReadonlySet<number>>(() => new Set<number>());
+  const [categoryFeedback, setCategoryFeedback] = useState("");
+  const [categoryFormOpen, setCategoryFormOpen] = useState(false);
+  const [batchCategoryId, setBatchCategoryId] = useState<number | "">("");
+  const [categoryBusy, setCategoryBusy] = useState(false);
+  const [categoryItem, setCategoryItem] = useState<WishlistItem | null>(null);
+  const categoryButtonRef = useRef<HTMLButtonElement>(null);
+  const categoryTriggerRef = useRef<HTMLButtonElement>(null);
+  const closeCategoryModal = useCallback(() => {
+    setCategoryItem(null);
+    requestAnimationFrame(() => categoryTriggerRef.current?.focus());
+  }, []);
   const [preview, setPreview] = useState<WishlistPackagePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -600,8 +772,12 @@ function WishlistItems({
   const previewRequestRef = useRef(0);
   const query = filter.trim().toLocaleLowerCase("es-MX");
   const filteredItems = useMemo(
-    () => items.filter((item) => item.name.toLocaleLowerCase("es-MX").includes(query) || String(item.appId).includes(query)),
-    [items, query]
+    () => items.filter((item) => {
+      const matchesText = item.name.toLocaleLowerCase("es-MX").includes(query) || String(item.appId).includes(query);
+      const matchesCategory = categoryFilter === "all" || (categoryFilter === "none" ? item.categories.length === 0 : item.categories.some((category) => category.id === categoryFilter));
+      return matchesText && matchesCategory;
+    }),
+    [items, query, categoryFilter]
   );
 
   // Un juego puede salir de la wishlist entre la selección y el cálculo (el sync lo sacó). La selección se
@@ -675,10 +851,46 @@ function WishlistItems({
     setReconciledAppIds([]);
   }
 
-  const wishlistFilter: FilterFn<WishlistItem> = (row, _columnId, value) => {
-    const text = String(value).trim().toLocaleLowerCase("es-MX");
-    return row.original.name.toLocaleLowerCase("es-MX").includes(text) || String(row.original.appId).includes(text);
-  };
+  const createCategory = useCallback(async (name: string) => {
+    if (!name || categoryBusy) return;
+    setCategoryBusy(true); setCategoryFeedback("");
+    try {
+      const category = await createWishlistCategory(name);
+      setCategoryFormOpen(false);
+      // La creación ya devuelve la categoría completa: actualizar el estado local evita repetir GET /api/wishlist,
+      // que además vuelve a cargar precios, ownership y todas las asignaciones.
+      onCategoriesChanged(category);
+      setCategoryFeedback("Categoría creada.");
+      onToast("Categoría creada.", "success");
+      categoryButtonRef.current?.focus();
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "No se pudo crear la categoría.";
+      setCategoryFeedback(message);
+      onToast(message, "error");
+    } finally {
+      setCategoryBusy(false);
+    }
+  }, [categoryBusy, onCategoriesChanged, onToast]);
+
+  async function applyBatchCategory(remove: boolean) {
+    if (batchCategoryId === "" || selectedAppIds.size === 0 || categoryBusy) return;
+    const appIds = [...new Set(selectedAppIds)].slice(0, 200);
+    setCategoryBusy(true); setCategoryFeedback("");
+    try {
+      if (remove) await removeWishlistCategoryItems(batchCategoryId, appIds);
+      else await assignWishlistCategory(batchCategoryId, appIds);
+      onBatchCategoriesChanged(batchCategoryId, appIds, remove);
+      await onCategoriesChanged();
+      const message = remove ? "Categoría quitada de selección." : "Categoría asignada a selección.";
+      setCategoryFeedback(message);
+      onToast(message, "success");
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "No se pudo actualizar la categoría.";
+      setCategoryFeedback(message);
+      onToast(message, "error");
+    }
+    finally { setCategoryBusy(false); }
+  }
 
   // Un valor ausente se expresa como `undefined`, nunca `null`, y cada columna ordenable lleva
   // `sortUndefined: "last"`. El paquete resuelve ese caso con un `return` temprano ANTES de invertir
@@ -731,7 +943,7 @@ function WishlistItems({
     { id: "cover", header: "Portada", enableSorting: false, cell: ({ row }) => <WishlistThumb src={row.original.imageUrl} /> },
     {
       accessorKey: "name", header: "Juego", sortingFn: (rowA, rowB, id) => String(rowA.getValue(id)).localeCompare(String(rowB.getValue(id)), "es-MX"),
-      cell: ({ row }) => <div className="min-w-48"><Link href={`/games/${row.original.appId}`} className="text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{row.original.name}</Link><p className="text-xs text-muted">AppID {row.original.appId}</p>{row.original.ownedStores.length > 0 ? <p className="text-xs font-medium text-success">Ya adquirido en: {row.original.ownedStores.join(", ")}</p> : null}{rowErrors[row.original.appId] ? <p role="alert" className="mt-1 text-xs text-danger">{rowErrors[row.original.appId]}</p> : null}</div>
+      cell: ({ row }) => <div className="min-w-48"><Link href={`/games/${row.original.appId}`} className="text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{row.original.name}</Link><p className="text-xs text-muted">AppID {row.original.appId}</p><CategoryBadges categories={row.original.categories} /><Button type="button" variant="ghost" className="mt-1 h-7 px-2 text-xs" onClick={(event) => { categoryTriggerRef.current = event.currentTarget; setCategoryItem(row.original); }}>Editar categorías</Button>{row.original.ownedStores.length > 0 ? <p className="text-xs font-medium text-success">Ya adquirido en: {row.original.ownedStores.join(", ")}</p> : null}{rowErrors[row.original.appId] ? <p role="alert" className="mt-1 text-xs text-danger">{rowErrors[row.original.appId]}</p> : null}</div>
     },
     { id: "priority", accessorFn: (item) => item.priority ?? undefined, header: "Prioridad", sortingFn: numericSort, sortUndefined: "last" },
     { id: "addedAt", accessorFn: (item) => item.addedAt ? new Date(item.addedAt).getTime() : undefined, header: "Alta", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => formatDateTime(row.original.addedAt) ?? "—" },
@@ -808,6 +1020,23 @@ function WishlistItems({
         <p className="text-xs text-muted">«Mín. oficial» y «Mín. keys» ya están en MXN. El precio base y el mínimo histórico se muestran en la moneda del proveedor, sin convertir.</p>
         <p className="text-xs text-muted">«% dto.» se calcula contra el precio de lista de Steam (precio base) y «Deal» es un score híbrido de 0 a 10: 7 puntos por la escala del descuento frente al mínimo viable y 3 por la cercanía al mínimo histórico.</p>
       </div>
+      <div className="flex flex-wrap items-center gap-2" aria-label="Filtro de categorías">
+        <label htmlFor="wishlist-category-filter" className="text-xs font-medium text-secondary">Categoría</label>
+        <select id="wishlist-category-filter" value={String(categoryFilter)} onChange={(event) => setCategoryFilter(event.target.value === "all" || event.target.value === "none" ? event.target.value : Number(event.target.value))} className="input-semantic h-8 text-xs">
+          <option value="all">Todas</option>
+          <option value="none">Sin categoría</option>
+          {categories.map((category) => <option key={category.id} value={category.id}>{category.name} ({category.itemCount})</option>)}
+        </select>
+        <Button ref={categoryButtonRef} type="button" variant="secondary" className="h-8 px-3 text-xs" onClick={() => setCategoryFormOpen((open) => !open)}>Nueva categoría</Button>
+        {categoryFormOpen ? <NewCategoryForm busy={categoryBusy} onCreate={createCategory} onCancel={() => { setCategoryFormOpen(false); categoryButtonRef.current?.focus(); }} /> : null}
+        <span className="sr-only" aria-live="polite">{categoryFeedback}</span>
+        {selectedAppIds.size > 0 ? <div className="flex flex-wrap items-center gap-2" aria-label="Acciones de categorías para selección">
+          <label htmlFor="wishlist-batch-category" className="sr-only">Categoría seleccionada</label>
+          <select id="wishlist-batch-category" value={batchCategoryId} onChange={(event) => setBatchCategoryId(event.target.value ? Number(event.target.value) : "")} className="input-semantic h-8 text-xs"><option value="">Selecciona categoría</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select>
+          <Button type="button" variant="secondary" className="h-8 px-3 text-xs" disabled={categoryBusy || batchCategoryId === ""} onClick={() => void applyBatchCategory(false)}>Asignar a categoría</Button>
+          <Button type="button" variant="ghost" className="h-8 px-3 text-xs" disabled={categoryBusy || batchCategoryId === ""} onClick={() => void applyBatchCategory(true)}>Quitar de categoría</Button>
+        </div> : null}
+      </div>
       <div className="md:hidden">
         <label className="sr-only" htmlFor="wishlist-filter-mobile">Buscar por nombre o AppID</label>
         <input id="wishlist-filter-mobile" type="search" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Buscar por nombre o AppID" className="input-semantic h-8 w-full text-xs" />
@@ -821,34 +1050,22 @@ function WishlistItems({
                 checked={selectedAppIds.has(item.appId)}
                 onChange={(event) => setSelectedAppIds((current) => toggleAppId(current, item.appId, event.target.checked))}
                 className="mt-1 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
-              /><WishlistThumb src={item.imageUrl} /><div className="min-w-0"><Link href={`/games/${item.appId}`} className="text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{item.name}</Link><p className="text-xs text-muted">AppID {item.appId}</p></div></div>
+              /><WishlistThumb src={item.imageUrl} /><div className="min-w-0"><Link href={`/games/${item.appId}`} className="text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{item.name}</Link><p className="text-xs text-muted">AppID {item.appId}</p><CategoryBadges categories={item.categories} /></div></div>
             <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2"><PriceFact label="Precio base" amountMinor={item.basePriceMinor} currency={item.baseCurrency} /><PriceFact label="Mínimo histórico" amountMinor={item.historyLowMinor} currency={item.historyLowCurrency} /><PriceFact label="Mín. oficial" amountMinor={item.bestOfficialMinor} currency={MXN} /><PriceFact label="Mín. keys" amountMinor={item.bestKeyshopMinor} currency={MXN} /><MobileMetrics item={item} minViableDiscountPercent={minViableDiscountPercent} /></div>
-            <div className="mt-3"><WishlistRowMeta item={item} /></div>
+            <div className="mt-3"><WishlistRowMeta item={item} /></div><Button type="button" variant="ghost" className="mt-2 h-7 px-2 text-xs" onClick={(event) => { categoryTriggerRef.current = event.currentTarget; setCategoryItem(item); }}>Editar categorías</Button>
             <div className="mt-3"><RowRefreshButton item={item} refreshing={refreshingAppId === item.appId} blocked={refreshingAppId !== null && refreshingAppId !== item.appId} onRefresh={onRefresh} /></div>
             {rowErrors[item.appId] ? <p role="alert" className="mt-2 text-xs text-danger">{rowErrors[item.appId]}</p> : null}
           </li>
         ))}
       </ul>
       {filteredItems.length === 0 ? <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">{items.length === 0 ? "La wishlist está vacía." : "Ningún juego coincide con la búsqueda."}</p> : null}
-      <DataGrid
+      <WishlistDataGrid
         columns={columns}
-        rows={[...items]}
-        density="compact"
-        stickyHeader
-        stickyActionsColumn
-        pageSizeOptions={WISHLIST_PAGE_SIZES}
-        allowAllPageSize
-        pageSizeStorageKey={PAGE_SIZE_STORAGE_KEY}
-        enableGlobalFilter
-        globalFilterPlaceholder="Buscar por nombre o AppID"
-        globalFilterFn={wishlistFilter}
-        enableColumnVisibility
-        columnVisibilityStorageKey={COLUMN_VISIBILITY_STORAGE_KEY}
-        initialColumnVisibility={INITIAL_COLUMN_VISIBILITY}
-        enableColumnFilters
-        toolbar={<ThresholdControl value={minViableDiscountPercent} onCommit={onThresholdCommit} />}
-        emptyMessage={items.length === 0 ? "La wishlist está vacía." : "Ningún juego coincide con la búsqueda."}
+        rows={filteredItems}
+        minViableDiscountPercent={minViableDiscountPercent}
+        onThresholdCommit={onThresholdCommit}
       />
+      <CategoryModal item={categoryItem} categories={categories} disabled={categoryBusy} onClose={closeCategoryModal} onSaved={onCategoriesChanged} onItemCategoriesChanged={onItemCategoriesChanged} onError={(message) => { setCategoryFeedback(message); onToast(message, "error"); }} />
       {selectedAppIds.size > 0 ? (
         <div className="sticky bottom-2 z-10">
           <PackageSummaryBar
@@ -866,6 +1083,7 @@ function WishlistItems({
 }
 
 export function WishlistClient() {
+  const { toasts, dismissToast, success, error: toastError } = useToasts();
   const [wishlist, setWishlist] = useState<WishlistResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -938,6 +1156,40 @@ export function WishlistClient() {
 
   // El umbral es del backend: se guarda con el PUT y el estado local solo se actualiza con el valor
   // confirmado. Si falla, el error lo muestra el control y el valor vigente no cambia.
+  const updateItemCategories = useCallback((appId: number, categoryIds: readonly number[]) => {
+    setWishlist((current) => {
+      if (!current) return current;
+      const selected = new Set(categoryIds);
+      const oldItem = current.items.find((item) => item.appId === appId);
+      if (!oldItem) return current;
+      const oldIds = new Set(oldItem.categories.map((category) => category.id));
+      const categories = current.categories.map((category) => ({
+        ...category,
+        itemCount: category.itemCount + (selected.has(category.id) ? (oldIds.has(category.id) ? 0 : 1) : (oldIds.has(category.id) ? -1 : 0))
+      }));
+      const items = current.items.map((item) => item.appId === appId ? { ...item, categories: categories.filter((category) => selected.has(category.id)) } : item);
+      return { ...current, items, categories };
+    });
+  }, []);
+
+  const updateBatchCategories = useCallback((categoryId: number, appIds: readonly number[], remove: boolean) => {
+    setWishlist((current) => {
+      if (!current) return current;
+      const ids = new Set(appIds);
+      const category = current.categories.find((candidate) => candidate.id === categoryId);
+      if (!category) return current;
+      let delta = 0;
+      const items = current.items.map((item) => {
+        if (!ids.has(item.appId)) return item;
+        const has = item.categories.some((candidate) => candidate.id === categoryId);
+        if (remove ? !has : has) return item;
+        delta += remove ? -1 : 1;
+        return { ...item, categories: remove ? item.categories.filter((candidate) => candidate.id !== categoryId) : [...item.categories, category].sort((a, b) => a.name.localeCompare(b.name, "es-MX")) };
+      });
+      return { ...current, items, categories: current.categories.map((candidate) => candidate.id === categoryId ? { ...candidate, itemCount: Math.max(0, candidate.itemCount + delta) } : candidate) };
+    });
+  }, []);
+
   async function updateThreshold(next: number) {
     const saved = await updateWishlistPreferences(next);
     setWishlist((current) => (current ? { ...current, minViableDiscountPercent: saved } : current));
@@ -962,6 +1214,7 @@ export function WishlistClient() {
 
   return (
     <div className="space-y-4">
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
       <section className="app-card-accent space-y-4 p-5" aria-labelledby="wishlist-summary-heading">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
@@ -1026,6 +1279,17 @@ export function WishlistClient() {
       {items.length > 0 ? (
         <WishlistItems
           items={items}
+          categories={wishlist.categories}
+          onToast={(message, variant) => (variant === "success" ? success(message) : toastError(message))}
+          onItemCategoriesChanged={updateItemCategories}
+          onBatchCategoriesChanged={updateBatchCategories}
+          onCategoriesChanged={(created) => {
+            if (created === undefined) return;
+            setWishlist((current) => current === null ? current : {
+              ...current,
+              categories: [...current.categories, created].sort((left, right) => left.name.localeCompare(right.name, "es-MX"))
+            });
+          }}
           refreshingAppId={refreshingAppId}
           rowErrors={rowErrors}
           minViableDiscountPercent={wishlist.minViableDiscountPercent}

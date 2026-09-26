@@ -33,13 +33,23 @@ public sealed record WishlistItemResponse(
     string? HistoryLowCurrency,
     int? BestOfficialMinor,
     int? BestKeyshopMinor,
-    IReadOnlyList<string> OwnedStores);
+    IReadOnlyList<string> OwnedStores,
+    IReadOnlyList<WishlistCategorySummary>? Categories = null);
+
+public sealed record WishlistCategorySummary(long Id, string Name, int ItemCount);
 
 public sealed record WishlistResponse(
     string State,
     DateTime? SyncedAt,
     IReadOnlyList<WishlistItemResponse> Items,
-    int MinViableDiscountPercent);
+    int MinViableDiscountPercent,
+    IReadOnlyList<WishlistCategorySummary> Categories);
+
+public sealed record WishlistCategoryRequest(string? Name);
+public sealed record WishlistCategoryRenameRequest(string? Name);
+public sealed record WishlistCategoryAssignmentRequest(IReadOnlyList<int>? AppIds);
+public sealed record WishlistItemCategoriesRequest(IReadOnlyList<long>? CategoryIds);
+public sealed record WishlistCategoryBatchResponse(int Requested, int Matched, int Changed, int Ignored);
 
 /// <summary>
 /// Request of the package preview: the appids the user selected in the table. Prices are never accepted

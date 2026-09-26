@@ -379,7 +379,7 @@ public sealed class WishlistSyncService(
                 continue;
             }
 
-            entry.Priority = item.Priority;
+            // Steam priority is authoritative only when the row is first imported. Local edits survive future syncs.
             entry.AddedAt = addedAt;
             entry.ImportedAt = DateTime.UtcNow;
             if (!string.IsNullOrWhiteSpace(knownName))

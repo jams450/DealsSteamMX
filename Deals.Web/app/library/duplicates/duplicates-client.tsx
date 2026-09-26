@@ -65,9 +65,14 @@ type AppliedMerge = {
 
 // Estado del flujo de fusión. Vive en el cliente porque la fusión es una secuencia de peticiones (una por
 // juego absorbido).
+type MergeJob = {
+  readonly survivor: DuplicateMember;
+  readonly absorbed: readonly DuplicateMember[];
+};
+
 type MergeOperation = {
   readonly phase: "merging" | "done" | "error";
-  readonly survivor: DuplicateMember;
+  readonly jobs: readonly MergeJob[];
   readonly applied: readonly AppliedMerge[];
   readonly error: string | null;
 };
@@ -90,18 +95,14 @@ function movedSummary(item: AppliedMerge): string {
   return parts.length > 0 ? parts.join(" · ") : "sin contadores informados";
 }
 
-type ConfirmState = {
-  readonly survivor: DuplicateMember;
-  readonly absorbed: readonly DuplicateMember[];
-};
-
 export function DuplicatesClient() {
   const [groups, setGroups] = useState<readonly DuplicateGroup[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   // Superviviente elegido por grupo, indexado por posición de la lista (los grupos no traen id propio).
   const [survivors, setSurvivors] = useState<Record<number, number>>({});
-  const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+  const [selectedGroups, setSelectedGroups] = useState<Record<number, boolean>>({});
+  const [confirm, setConfirm] = useState<readonly MergeJob[] | null>(null);
   const [op, setOp] = useState<MergeOperation | null>(null);
 
   const loadGroups = useCallback(async () => {
@@ -125,58 +126,38 @@ export function DuplicatesClient() {
   // Secuencia de fusiones: un POST por juego absorbido. El único 409 posible es la identidad de Steam
   // ambigua, que ya deshabilita el grupo: si igual llega, se muestra como error y no se sigue.
   const runQueue = useCallback(
-    async (
-      survivor: DuplicateMember,
-      queue: readonly DuplicateMember[],
-      appliedSoFar: readonly AppliedMerge[]
-    ) => {
+    async (jobs: readonly MergeJob[], appliedSoFar: readonly AppliedMerge[]) => {
       let applied = appliedSoFar;
 
-      for (let index = 0; index < queue.length; index += 1) {
-        const absorbed = queue[index];
-        try {
-          const result = await mergeGame(absorbed.gameId, survivor.gameId);
-
-          if (result.kind === "applied") {
-            applied = [...applied, toApplied(absorbed, survivor, result)];
-            continue;
+      for (const job of jobs) {
+        for (const absorbed of job.absorbed) {
+          try {
+            const result = await mergeGame(absorbed.gameId, job.survivor.gameId);
+            if (result.kind === "applied") {
+              applied = [...applied, toApplied(absorbed, job.survivor, result)];
+              continue;
+            }
+            setOp({ phase: "error", jobs, applied, error: result.blockReason ?? "La fusión fue rechazada." });
+            return;
+          } catch (cause) {
+            setOp({ phase: "error", jobs, applied, error: errorMessage(cause, "No se pudo fusionar el juego.") });
+            return;
           }
-
-          setOp({
-            phase: "error",
-            survivor,
-            applied,
-            error: result.blockReason ?? "La fusión fue rechazada."
-          });
-          return;
-        } catch (cause) {
-          setOp({
-            phase: "error",
-            survivor,
-            applied,
-            error: errorMessage(cause, "No se pudo fusionar el juego.")
-          });
-          return;
         }
       }
 
-      setOp({ phase: "done", survivor, applied, error: null });
+      setOp({ phase: "done", jobs, applied, error: null });
       await loadGroups();
     },
     [loadGroups]
   );
 
-  async function startMerge(state: ConfirmState) {
+  async function startMerge(jobs: readonly MergeJob[]) {
     setConfirm(null);
-    // Los grupos cambian con una fusión, así que al terminar la lista se recarga: la selección se limpia.
     setSurvivors({});
-    setOp({
-      phase: "merging",
-      survivor: state.survivor,
-      applied: [],
-      error: null
-    });
-    await runQueue(state.survivor, state.absorbed, []);
+    setSelectedGroups({});
+    setOp({ phase: "merging", jobs, applied: [], error: null });
+    await runQueue(jobs, []);
   }
 
   const groupCount = groups?.length ?? 0;
@@ -203,7 +184,7 @@ export function DuplicatesClient() {
             Fusión en curso
           </p>
           <p className="mt-1 text-sm text-primary" aria-live="polite">
-            Fusionando en «{op.survivor.title}»...
+            Fusionando {op.jobs.length === 1 ? `en «${op.jobs[0].survivor.title}»` : `${op.jobs.length} grupos`}...
           </p>
         </section>
       );
@@ -232,7 +213,7 @@ export function DuplicatesClient() {
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <span className="tabler-badge tabler-badge-success">{op.applied.length} absorbidos</span>
-            <span className="tabler-badge tabler-badge-info">Superviviente {op.survivor.title}</span>
+            <span className="tabler-badge tabler-badge-info">{op.jobs.length} grupos procesados</span>
           </div>
           <p className="text-sm text-primary" role="status">
             La fusión terminó. Los juegos absorbidos ya no existen en el catálogo.
@@ -278,6 +259,21 @@ export function DuplicatesClient() {
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" variant="secondary" onClick={() => void loadGroups()} disabled={loading}>
             Recargar
+          </Button>
+          <Button
+            type="button"
+            variant="danger"
+            disabled={busy || Object.keys(selectedGroups).length === 0}
+            onClick={() => {
+              const jobs = (groups ?? []).flatMap((group, index) => {
+                if (!selectedGroups[index] || groupBlockReason(group) !== null) return [];
+                const survivor = group.members.find((member) => member.gameId === survivors[index]);
+                return survivor ? [{ survivor, absorbed: group.members.filter((member) => member.gameId !== survivor.gameId) }] : [];
+              });
+              if (jobs.length > 0) setConfirm(jobs);
+            }}
+          >
+            Fusionar grupos seleccionados
           </Button>
         </div>
       </section>
@@ -406,13 +402,24 @@ export function DuplicatesClient() {
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
+              <label className="inline-flex items-center gap-2 text-xs text-secondary">
+                <input
+                  type="checkbox"
+                  checked={selectedGroups[index] === true}
+                  disabled={busy || blockReason !== null || survivor === null}
+                  onChange={(event) => setSelectedGroups((current) => ({ ...current, [index]: event.target.checked }))}
+                  aria-label={`Seleccionar grupo ${group.foldedTitle} para fusión por cola`}
+                  className="h-4 w-4 accent-[var(--color-accent)]"
+                />
+                Seleccionar grupo
+              </label>
               <Button
                 type="button"
                 variant="danger"
                 disabled={!canMerge}
                 onClick={() => {
                   if (survivor === null || absorbed.length === 0) return;
-                  setConfirm({ survivor, absorbed });
+                  setConfirm([{ survivor, absorbed }]);
                 }}
               >
                 {survivor === null
@@ -435,8 +442,7 @@ export function DuplicatesClient() {
 
       {confirm !== null ? (
         <MergeConfirmDialog
-          survivor={confirm.survivor}
-          absorbed={confirm.absorbed}
+          jobs={confirm}
           busy={busy}
           onCancel={() => setConfirm(null)}
           onConfirm={() => void startMerge(confirm)}
@@ -447,8 +453,7 @@ export function DuplicatesClient() {
 }
 
 type MergeConfirmDialogProps = {
-  readonly survivor: DuplicateMember;
-  readonly absorbed: readonly DuplicateMember[];
+  readonly jobs: readonly MergeJob[];
   readonly busy: boolean;
   readonly onCancel: () => void;
   readonly onConfirm: () => void;
@@ -457,7 +462,9 @@ type MergeConfirmDialogProps = {
 // Confirmación destructiva: títulos reales, la lista de absorbidos y el aviso de irreversibilidad. Es un
 // `alertdialog` nativo con Escape para cancelar y foco inicial en el botón de confirmar, así que se opera
 // completo con teclado y el estado se anuncia por `alertdialog` + `aria-describedby`.
-function MergeConfirmDialog({ survivor, absorbed, busy, onCancel, onConfirm }: MergeConfirmDialogProps) {
+function MergeConfirmDialog({ jobs, busy, onCancel, onConfirm }: MergeConfirmDialogProps) {
+  const survivor = jobs[0]?.survivor;
+  const absorbed = jobs.flatMap((job) => job.absorbed);
   const confirmRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -494,10 +501,10 @@ function MergeConfirmDialog({ survivor, absorbed, busy, onCancel, onConfirm }: M
         </h2>
         <div id="merge-confirm-desc" className="space-y-2 text-sm text-secondary">
           <p>
-            Sobrevive <span className="font-semibold text-primary">{survivor.title}</span> (gameId{" "}
-            <span className="tabular-nums">{survivor.gameId}</span>).
+            Se procesarán {jobs.length} grupos en orden. Primer superviviente: <span className="font-semibold text-primary">{survivor?.title}</span> (gameId{" "}
+            <span className="tabular-nums">{survivor?.gameId}</span>).
           </p>
-          <p>Estos juegos se absorben y se borran del catálogo:</p>
+          <p>Estos juegos se absorben y se borran del catálogo, un grupo por vez:</p>
           <ul className="list-disc space-y-1 pl-5">
             {absorbed.map((member) => (
               <li key={member.gameId}>

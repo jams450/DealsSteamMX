@@ -342,6 +342,20 @@ Dos caminos, y ninguno toca identidad ni precios:
 - **Una fila sin `gameId` no tiene dónde guardar portada**, así que la grilla no le ofrece la acción.
 - Un appid retirado, sin `header_image` o una caída de Steam cuentan como `Failed` y no abortan la pasada.
 
+### Fusión manual de duplicados
+
+`GET /api/games/merge-suggestions` solo devuelve candidatos de la biblioteca del usuario admin: juegos con
+`user_library.state IN ('owned','subscription')` y el mismo fold exacto calculado sobre `games.title`
+(minúsculas, acentos y puntuación normalizados). No agrupa por `games.normalized_title`, no filtra por tipo
+(game/DLC) y no exige que compartan identidad Steam. Por eso Cyberpunk 2077 (games 115 y 2940) solo aparece
+si ambos tienen una fila elegible en la biblioteca del usuario; Cyberpunk 2077: Phantom Liberty (316) queda
+fuera porque su título produce otro fold (`cyberpunk 2077 phantom liberty`).
+
+La UI conserva selección humana del superviviente. Puede marcar varios grupos, confirmar una sola vez y
+procesa la selección secuencialmente: un `POST /api/games/{absorbedGameId}/merge` por absorbido, una
+transacción por llamada. Si una fusión devuelve conflicto o error, la cola se detiene y muestra lo aplicado;
+no existe auto-merge ni endpoint batch, y el usuario debe recargar antes de continuar.
+
 ### Favoritos
 
 Marca del usuario para un juego entero, independiente de las partidas:

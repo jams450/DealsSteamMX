@@ -265,7 +265,7 @@ Decisiones que conviene no re-litigar:
 |---|---|
 | El resolver toca `SteamGameService` (dos sitios de inserción) y el import | Patrón `ON CONFLICT` atómico ya probado en la ruta de bundles; ambos sitios ya están en transacción |
 | Sin EF: el orden de las migraciones es manual | Commitear ITAD y FX primero (§5) |
-| Fusionar dos `games` por título crea duplicados con precios y badges erróneos | **V1 no auto-fusiona**: un falso positivo solo puede dejar una fila sin resolver, jamás un precio equivocado |
+| Fusionar dos `games` por título crea duplicados con precios y badges erróneos | **V1 no auto-fusiona**: un falso positivo solo puede dejar una fila sin resolver, jamás un precio equivocado. La herramienta admin permite seleccionar varios grupos con superviviente explícito y los procesa como una cola de fusiones individuales; se detiene ante el primer conflicto. |
 | `user_library.game_id` en `NULL` | Es un estado válido y visible: la UI conserva "Sin precios vinculados" |
 | Cobertura de `game_time_to_beats` en IGDB | Medir (`/game_time_to_beats/count` contra `/games/count`) antes de diseñar encima |
 | Tier no comercial de IGDB | Anotado: monetizar DealExt exige acuerdo de partner |
