@@ -24,6 +24,6 @@ public sealed class GgDealsBudgetOptions
 {
     public int RecordsPerMinute { get; set; } = 90;
     public int RecordsPerHour { get; set; } = 900;
-    public int MaxBurstRecords { get; set; } = 25;
+    public int MaxBurstRecords { get; set; } = 90;
     public int MinDelayMilliseconds { get; set; } = 200;
 }

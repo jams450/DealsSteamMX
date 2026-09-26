@@ -298,7 +298,7 @@ public static class ServiceCollectionExtensions
         services.AddOptions<JobBudgetOptions>()
             .Validate(options => options.RetentionDays > 0 && options.PurgeBatchSize > 0, "JobBudgets retention and purge batch must be positive.")
             .Validate(options => options.Itad.RequestsPerFiveMinutes > 0 && options.Itad.MaxBurst > 0 && options.Itad.MinDelayMilliseconds >= 0, "JobBudgets:Itad values are invalid.")
-            .Validate(options => options.GgDeals.RecordsPerMinute > 0 && options.GgDeals.RecordsPerHour > 0 && options.GgDeals.MaxBurstRecords > 0 && options.GgDeals.MinDelayMilliseconds >= 0, "JobBudgets:GgDeals values are invalid.")
+            .Validate(options => options.GgDeals.RecordsPerMinute > 0 && options.GgDeals.RecordsPerHour > 0 && options.GgDeals.MaxBurstRecords > 0 && options.GgDeals.MaxBurstRecords <= 100 && options.GgDeals.MaxBurstRecords <= options.GgDeals.RecordsPerMinute && options.GgDeals.MaxBurstRecords <= options.GgDeals.RecordsPerHour && options.GgDeals.MinDelayMilliseconds >= 0, "JobBudgets:GgDeals values are invalid.")
             .ValidateOnStart();
         services.AddHostedService<WishlistSyncJob>();
         services.AddHostedService<JobRunPurgeJob>();

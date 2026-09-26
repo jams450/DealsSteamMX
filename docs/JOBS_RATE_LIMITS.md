@@ -11,10 +11,10 @@ Configuration section: `JobBudgets` in `appsettings.json` or environment variabl
 | `JobBudgets__Itad__MinDelayMilliseconds` | `200` | minimum delay between requests |
 | `JobBudgets__GgDeals__RecordsPerMinute` | `90` | requested Steam IDs / minute |
 | `JobBudgets__GgDeals__RecordsPerHour` | `900` | requested Steam IDs / hour |
-| `JobBudgets__GgDeals__MaxBurstRecords` | `25` | records admitted in one request |
+| `JobBudgets__GgDeals__MaxBurstRecords` | `90` | records admitted in one request (maximum `100`, matching the client hard limit) |
 | `JobBudgets__GgDeals__MinDelayMilliseconds` | `200` | minimum delay between requests |
 
-Defaults leave a 10% margin below the verified provider quotas: ITAD 1000 requests/300 seconds, and GG.deals 100 records/minute plus 1000 records/hour. These are local safety budgets, not claims about provider behavior.
+Defaults leave a 10% margin below the verified provider quotas: ITAD 1000 requests/300 seconds, and GG.deals 100 records/minute plus 1000 records/hour. `MaxBurstRecords` may be configured up to the client's hard limit of `100`, but validation also keeps it at or below the configured minute and hour budgets. These are local safety budgets, not claims about provider behavior.
 
 `GgDealsClient` emits structured rate-limit telemetry with provider name, requested record count, and the provider's `x-ratelimit-limit`, `x-ratelimit-remaining`, and `x-ratelimit-reset` values. It never logs API keys, request URLs, or response payloads.
 
