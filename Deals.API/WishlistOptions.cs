@@ -22,4 +22,7 @@ public sealed class WishlistOptions
 
     public string ApiBaseUrl { get; set; } = "https://api.steampowered.com/";
     public int TimeoutSeconds { get; set; } = 10;
+
+    /// <summary>Delay between sequential Steam detail lookups for wishlist rows lacking local metadata.</summary>
+    public int MissingMetadataDelayMilliseconds { get; set; } = 250;
 }

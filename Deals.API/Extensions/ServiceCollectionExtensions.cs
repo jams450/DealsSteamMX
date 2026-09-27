@@ -26,6 +26,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IGameTitleEditService, GameTitleEditService>();
         services.AddScoped<ILibraryPriceBindingService, LibraryPriceBindingService>();
         services.AddScoped<IGameOwnershipService, GameOwnershipService>();
+        services.AddScoped<ISteamGameUserStateService, SteamGameUserStateService>();
         services.AddScoped<IReviewService, ReviewService>();
         services.AddScoped<IFavoriteService, FavoriteService>();
     services.AddScoped<IManualLibraryService, ManualLibraryService>();
@@ -77,7 +78,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(serviceProvider =>
         {
             var budget = serviceProvider.GetRequiredService<IOptions<JobBudgetOptions>>().Value.Itad;
-            return new ItadRequestGovernor(budget.RequestsPerFiveMinutes, budget.MaxBurst, budget.MinDelayMilliseconds);
+            return new ItadRequestGovernor(
+                budget.RequestsPerFiveMinutes,
+                budget.MaxBurst,
+                budget.MinDelayMilliseconds,
+                serviceProvider.GetRequiredService<ILogger<ItadRequestGovernor>>());
         });
         services.AddSingleton(serviceProvider =>
         {
@@ -276,13 +281,16 @@ public static class ServiceCollectionExtensions
             .Validate(
                 options => options.TimeoutSeconds > 0,
                 "Wishlist:TimeoutSeconds must be greater than zero.")
+            .Validate(
+                options => options.MissingMetadataDelayMilliseconds >= 0 && options.MissingMetadataDelayMilliseconds <= 60_000,
+                "Wishlist:MissingMetadataDelayMilliseconds must be between 0 and 60000.")
             .ValidateOnStart();
 
         services.AddSingleton(serviceProvider =>
         {
             var options = serviceProvider.GetRequiredService<IOptions<WishlistOptions>>().Value;
             var itadOptions = serviceProvider.GetRequiredService<IOptions<ItadOptions>>().Value;
-            return new WishlistSyncSettings(options.MaxRefreshesPerHour, itadOptions.RefreshAfterDays);
+            return new WishlistSyncSettings(options.MaxRefreshesPerHour, itadOptions.RefreshAfterDays, options.MissingMetadataDelayMilliseconds);
         });
 
         services.AddHttpClient<ISteamWishlistClient, SteamWishlistClient>((serviceProvider, client) =>

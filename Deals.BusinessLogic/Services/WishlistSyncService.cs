@@ -11,7 +11,7 @@ namespace Deals.BusinessLogic.Services;
 /// Settings handed to the sync service, mirroring the <see cref="SteamOffersSettings"/> pattern: the API
 /// project binds the options section and hands the plain values down.
 /// </summary>
-public sealed record WishlistSyncSettings(int MaxRefreshesPerHour, int RefreshAfterDays);
+public sealed record WishlistSyncSettings(int MaxRefreshesPerHour, int RefreshAfterDays, int MissingMetadataDelayMilliseconds);
 
 /// <summary>
 /// Wishlist synchronization. The two passes are separate on purpose: <see cref="SyncListAsync"/> is a
@@ -333,6 +333,11 @@ public sealed class WishlistSyncService(
 
                 knownNames[appId] = details.Name;
                 fetchedFromSteam++;
+
+                if (settings.MissingMetadataDelayMilliseconds > 0)
+                {
+                    await Task.Delay(settings.MissingMetadataDelayMilliseconds, cancellationToken);
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

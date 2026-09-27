@@ -1,12 +1,14 @@
 using System.Globalization;
 using System.Security.Claims;
 using Deals.API.Models.Wishlist;
+using Deals.BusinessLogic.Context;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Steam;
 using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 
 namespace Deals.API.Controllers;
@@ -44,120 +46,127 @@ public class WishlistController : ControllerBase
     private readonly IWishlistSyncService _wishlistSyncService;
     private readonly JobRunLog _jobRunLog;
     private readonly ILogger<WishlistController> _logger;
+    private readonly AppDbContext _db;
 
     public WishlistController(
         IRepository repository,
         IWishlistSyncService wishlistSyncService,
         JobRunLog jobRunLog,
-        ILogger<WishlistController> logger)
+        ILogger<WishlistController> logger,
+        AppDbContext db)
     {
         _repository = repository;
         _wishlistSyncService = wishlistSyncService;
         _jobRunLog = jobRunLog;
         _logger = logger;
+        _db = db;
     }
 
     [HttpGet]
-    public async Task<IActionResult> Get(
-        [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 50,
-        [FromQuery] string? search = null,
-        [FromQuery] long? categoryId = null,
-        [FromQuery] string? categoryState = null,
-        [FromQuery] string? sort = null,
-        [FromQuery] string? direction = null,
-        CancellationToken cancellationToken = default)
+    public async Task<IActionResult> Get([FromQuery] WishlistQueryRequest request, CancellationToken cancellationToken = default)
     {
-        if (page < 1) throw new ArgumentException("page must be positive", nameof(page));
-        if (pageSize is < 1 or > 100) throw new ArgumentException("pageSize must be between 1 and 100", nameof(pageSize));
-        if (categoryState is not null && categoryState is not ("all" or "none")) throw new ArgumentException("categoryState must be all or none", nameof(categoryState));
-        if (categoryId is <= 0) throw new ArgumentException("categoryId must be positive", nameof(categoryId));
-        if (sort is not null && sort is not ("name" or "priority" or "addedAt")) throw new ArgumentException("sort is invalid", nameof(sort));
-        if (direction is not null && direction is not ("asc" or "desc")) throw new ArgumentException("direction must be asc or desc", nameof(direction));
-
+        ValidateQuery(request);
         var userId = GetUserId();
         var user = await _repository.Get<User>().FirstOrDefaultAsync(candidate => candidate.UserId == userId, cancellationToken);
         if (user is null) return NotFound();
 
-        var rowsQuery = _repository.Get<UserLibrary>().Where(entry => entry.UserId == userId && entry.Store == SteamStore && entry.State == WishedState);
-        if (!string.IsNullOrWhiteSpace(search))
-        {
-            var term = search.Trim();
-            rowsQuery = rowsQuery.Where(entry => entry.Title.Contains(term) || entry.StoreGameId.Contains(term));
-        }
-        if (categoryId is not null)
-        {
-            var id = categoryId.Value;
-            rowsQuery = rowsQuery.Where(entry => _repository.Get<WishlistCategoryItem>().Any(item => item.UserId == userId && item.WishlistCategoryId == id && item.UserLibraryId == entry.UserLibraryId));
-        }
-        else if (categoryState == "none")
-        {
-            rowsQuery = rowsQuery.Where(entry => !_repository.Get<WishlistCategoryItem>().Any(item => item.UserId == userId && item.UserLibraryId == entry.UserLibraryId));
-        }
-
-        var state = WishlistStates.Compose(user.SteamId64, user.WishlistSyncedAt, user.WishlistState);
-        var totalItems = await rowsQuery.CountAsync(cancellationToken);
-        var ordered = sort switch
-        {
-            "name" => direction == "desc" ? rowsQuery.OrderByDescending(entry => entry.Title) : rowsQuery.OrderBy(entry => entry.Title),
-            "addedAt" => direction == "desc" ? rowsQuery.OrderByDescending(entry => entry.AddedAt) : rowsQuery.OrderBy(entry => entry.AddedAt),
-            _ => direction == "desc"
-                ? rowsQuery.OrderByDescending(entry => entry.Priority).ThenByDescending(entry => entry.Title).ThenByDescending(entry => entry.StoreGameId)
-                : rowsQuery.OrderBy(entry => entry.Priority).ThenBy(entry => entry.Title).ThenBy(entry => entry.StoreGameId)
-        };
-        var totalPages = totalItems == 0 ? 0 : (int)Math.Ceiling(totalItems / (double)pageSize);
-        var pageStoreGameIds = await ordered
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .Select(entry => entry.StoreGameId)
-            .ToListAsync(cancellationToken);
-        var pageAppIds = pageStoreGameIds
-            .Select(ParseAppId)
-            .Where(appId => appId > 0)
-            .ToList();
-        var loadedItems = await LoadItemsAsync(userId, pageAppIds, cancellationToken);
-        var itemsByAppId = loadedItems.ToDictionary(item => item.AppId);
-        var items = pageAppIds
-            .Where(itemsByAppId.ContainsKey)
-            .Select(appId => itemsByAppId[appId])
-            .ToList();
-        var categoryRows = await _repository.Get<WishlistCategory>()
-            .Where(category => category.UserId == userId)
-            .Select(category => new
+        var categoryIds = request.CategoryIds?.Distinct().ToList() ?? [];
+        var rows =
+            from row in _repository.Get<UserLibrary>()
+            where row.UserId == userId && row.Store == SteamStore && row.State == WishedState
+            join snapshot in _repository.Get<SteamGame>().Where(game => game.Region == Region)
+                on row.StoreGameId equals snapshot.AppId.ToString() into snapshots
+            from game in snapshots.DefaultIfEmpty()
+            let name = game != null && game.Name != "" ? game.Name : row.Title
+            let officialOffers = _repository.Get<GameOffer>().Where(offer => game != null && offer.SteamGameId == game.SteamGameId && offer.Classification != KeyshopClassification && offer.PricingType != UnconvertedPricing).ToList()
+            let keyshopOffers = _repository.Get<GameOffer>().Where(offer => game != null && offer.SteamGameId == game.SteamGameId && offer.Classification == KeyshopClassification && offer.PricingType != UnconvertedPricing).ToList()
+            let offeredOfficial = officialOffers.Min(offer => offer.MxnCurrentPriceMinor)
+            let steamOfficial = game != null && game.Currency == MxnCurrency ? game.CurrentPriceMinor : null
+            let official = offeredOfficial == null ? steamOfficial : steamOfficial == null ? offeredOfficial : offeredOfficial < steamOfficial ? offeredOfficial : steamOfficial
+            let keyshop = keyshopOffers.Min(offer => offer.MxnCurrentPriceMinor)
+            let bestPrice = official == null ? keyshop : keyshop == null ? official : official < keyshop ? official : keyshop
+            // These percentages use the same MXN Steam list-price baseline as the two table columns.
+            // A free/unknown/non-MXN base cannot produce a meaningful discount, so it remains null.
+            let basePrice = game != null && game.Currency == MxnCurrency && game.InitialPriceMinor > 0 ? game.InitialPriceMinor : null
+            let officialDiscount = basePrice == null || official == null ? (decimal?)null : 100m * (basePrice.Value - official.Value) / basePrice.Value
+            let keyshopDiscount = basePrice == null || keyshop == null ? (decimal?)null : 100m * (basePrice.Value - keyshop.Value) / basePrice.Value
+            let bestDiscount = new[]
             {
-                category.WishlistCategoryId,
-                category.Name,
-                ItemCount = _repository.Get<WishlistCategoryItem>()
-                    .Count(item => item.UserId == userId && item.WishlistCategoryId == category.WishlistCategoryId)
-            })
-            .OrderBy(category => category.Name)
-            .ToListAsync(cancellationToken);
-        var categories = categoryRows
-            .Select(category => new WishlistCategorySummary(category.WishlistCategoryId, category.Name, category.ItemCount))
-            .ToList();
+                game != null ? game.DiscountPercent : null,
+                officialOffers.Max(offer => offer.DiscountPercent),
+                keyshopOffers.Max(offer => offer.DiscountPercent)
+            }.Max()
+            select new { row, name, official, keyshop, bestPrice, bestDiscount, officialDiscount, keyshopDiscount };
 
-        return Ok(new WishlistResponse(state, user.WishlistSyncedAt, items, user.MinViableDiscountPercent, categories, page, pageSize, totalItems, totalPages));
+        if (!string.IsNullOrWhiteSpace(request.Search))
+        {
+            var pattern = $"%{EscapeLikePattern(request.Search.Trim())}%";
+            rows = rows.Where(entry => EF.Functions.ILike(entry.name, pattern, "\\") || EF.Functions.ILike(entry.row.StoreGameId, pattern, "\\"));
+        }
+        if (request.MinPrice is not null || request.MaxPrice is not null)
+        {
+            rows = rows.Where(entry =>
+                (entry.official != null && (request.MinPrice == null || entry.official >= request.MinPrice) && (request.MaxPrice == null || entry.official <= request.MaxPrice)) ||
+                (entry.keyshop != null && (request.MinPrice == null || entry.keyshop >= request.MinPrice) && (request.MaxPrice == null || entry.keyshop <= request.MaxPrice)));
+        }
+        if (request.Owned is not null)
+        {
+            var owned = request.Owned == "yes";
+            rows = rows.Where(entry => (_repository.Get<UserLibrary>().Any(candidate => candidate.UserId == userId && candidate.State == Deals.BusinessLogic.Models.Library.LibraryStates.Owned && candidate.GameId != null && candidate.GameId == entry.row.GameId)) == owned);
+        }
+        if (request.Subscription is not null)
+        {
+            var subscription = request.Subscription == "yes";
+            rows = rows.Where(entry => (_repository.Get<UserLibrary>().Any(candidate => candidate.UserId == userId && candidate.State == "subscription" && candidate.GameId != null && candidate.GameId == entry.row.GameId)) == subscription);
+        }
+        if (categoryIds.Count > 0 || request.Uncategorized)
+        {
+            rows = rows.Where(entry =>
+                (categoryIds.Count > 0 && _repository.Get<WishlistCategoryItem>().Any(item => item.UserId == userId && item.UserLibraryId == entry.row.UserLibraryId && categoryIds.Contains(item.WishlistCategoryId))) ||
+                (request.Uncategorized && !_repository.Get<WishlistCategoryItem>().Any(item => item.UserId == userId && item.UserLibraryId == entry.row.UserLibraryId)));
+        }
+
+        var totalItems = await rows.CountAsync(cancellationToken);
+        var totalPages = totalItems == 0 ? 0 : (int)Math.Ceiling(totalItems / (double)request.PageSize);
+        var page = totalPages == 0 ? 1 : Math.Min(request.Page, totalPages);
+        var descending = request.Direction == "desc";
+        var ordered = request.Sort switch
+        {
+            "name" => descending ? rows.OrderByDescending(entry => entry.name).ThenByDescending(entry => entry.row.StoreGameId) : rows.OrderBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId),
+            "bestPrice" => descending ? rows.OrderBy(entry => entry.bestPrice == null).ThenByDescending(entry => entry.bestPrice).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId) : rows.OrderBy(entry => entry.bestPrice == null).ThenBy(entry => entry.bestPrice).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId),
+            "bestDiscount" => descending ? rows.OrderBy(entry => entry.bestDiscount == null).ThenByDescending(entry => entry.bestDiscount).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId) : rows.OrderBy(entry => entry.bestDiscount == null).ThenBy(entry => entry.bestDiscount).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId),
+            "officialDiscount" => descending ? rows.OrderBy(entry => entry.officialDiscount == null).ThenByDescending(entry => entry.officialDiscount).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId) : rows.OrderBy(entry => entry.officialDiscount == null).ThenBy(entry => entry.officialDiscount).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId),
+            "keyshopDiscount" => descending ? rows.OrderBy(entry => entry.keyshopDiscount == null).ThenByDescending(entry => entry.keyshopDiscount).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId) : rows.OrderBy(entry => entry.keyshopDiscount == null).ThenBy(entry => entry.keyshopDiscount).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId),
+            "officialPrice" => descending ? rows.OrderBy(entry => entry.official == null).ThenByDescending(entry => entry.official).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId) : rows.OrderBy(entry => entry.official == null).ThenBy(entry => entry.official).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId),
+            "keyshopPrice" => descending ? rows.OrderBy(entry => entry.keyshop == null).ThenByDescending(entry => entry.keyshop).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId) : rows.OrderBy(entry => entry.keyshop == null).ThenBy(entry => entry.keyshop).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId),
+            _ => descending ? rows.OrderBy(entry => entry.row.Priority == null).ThenByDescending(entry => entry.row.Priority).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId) : rows.OrderBy(entry => entry.row.Priority == null).ThenBy(entry => entry.row.Priority).ThenBy(entry => entry.name).ThenBy(entry => entry.row.StoreGameId)
+        };
+        var appIds = await ordered.Skip((page - 1) * request.PageSize).Take(request.PageSize).Select(entry => entry.row.StoreGameId).ToListAsync(cancellationToken);
+        var items = await LoadItemsAsync(userId, appIds.Select(ParseAppId).Where(appId => appId > 0).ToList(), cancellationToken);
+        var itemsByAppId = items.ToDictionary(item => item.AppId);
+        var orderedItems = appIds.Select(ParseAppId).Where(itemsByAppId.ContainsKey).Select(appId => itemsByAppId[appId]).ToList();
+        var categories = await LoadCategoriesAsync(userId, cancellationToken);
+        return Ok(new WishlistResponse(WishlistStates.Compose(user.SteamId64, user.WishlistSyncedAt, user.WishlistState), user.WishlistSyncedAt, orderedItems, user.MinViableDiscountPercent, categories, page, request.PageSize, totalItems, totalPages));
+    }
+
+    private static void ValidateQuery(WishlistQueryRequest request)
+    {
+        if (request.Page < 1) throw new ArgumentException("page must be positive", nameof(request.Page));
+        if (request.PageSize is < 1 or > 100) throw new ArgumentException("pageSize must be between 1 and 100", nameof(request.PageSize));
+        if (request.Search?.Trim().Length > 100) throw new ArgumentException("search cannot exceed 100 characters", nameof(request.Search));
+        if (request.MinPrice < 0 || request.MaxPrice < 0 || request.MinPrice > request.MaxPrice) throw new ArgumentException("price range is invalid");
+        if (request.Owned is not null && request.Owned is not ("yes" or "no")) throw new ArgumentException("owned must be yes or no", nameof(request.Owned));
+        if (request.Subscription is not null && request.Subscription is not ("yes" or "no")) throw new ArgumentException("subscription must be yes or no", nameof(request.Subscription));
+        if (request.CategoryIds is { Count: > 50 } || request.CategoryIds?.Any(id => id <= 0) == true) throw new ArgumentException("categoryIds must contain at most 50 positive values", nameof(request.CategoryIds));
+        if (request.Sort is not null && request.Sort is not ("priority" or "name" or "bestPrice" or "bestDiscount" or "officialDiscount" or "keyshopDiscount" or "officialPrice" or "keyshopPrice")) throw new ArgumentException("sort is invalid", nameof(request.Sort));
+        if (request.Direction is not null && request.Direction is not ("asc" or "desc")) throw new ArgumentException("direction must be asc or desc", nameof(request.Direction));
     }
 
     [HttpGet("categories")]
     public async Task<IActionResult> Categories(CancellationToken cancellationToken)
     {
         var userId = GetUserId();
-        var categoryRows = await _repository.Get<WishlistCategory>()
-            .Where(c => c.UserId == userId)
-            .Select(c => new
-            {
-                c.WishlistCategoryId,
-                c.Name,
-                ItemCount = _repository.Get<WishlistCategoryItem>()
-                    .Count(i => i.UserId == userId && i.WishlistCategoryId == c.WishlistCategoryId)
-            })
-            .OrderBy(c => c.Name)
-            .ToListAsync(cancellationToken);
-        var categories = categoryRows
-            .Select(c => new WishlistCategorySummary(c.WishlistCategoryId, c.Name, c.ItemCount))
-            .ToList();
-        return Ok(categories);
+        return Ok(await LoadCategoriesAsync(userId, cancellationToken));
     }
 
     [HttpPost("categories")]
@@ -165,11 +174,13 @@ public class WishlistController : ControllerBase
     {
         var name = NormalizeCategoryName(request?.Name);
         var userId = GetUserId();
+        await using var categoryLock = new PostgresAdvisoryLock(_db, CategoryLockKey(userId));
+        if (!await categoryLock.TryAcquireAsync(cancellationToken)) return Conflict(new { code = "WISHLIST_CATEGORY_BUSY" });
         if (await _repository.Get<WishlistCategory>().AnyAsync(c => c.UserId == userId && c.NormalizedName == name.ToUpperInvariant(), cancellationToken))
-            return Conflict();
+            return Conflict(new { code = "WISHLIST_CATEGORY_EXISTS" });
         var category = new WishlistCategory { UserId = userId, Name = request!.Name!.Trim(), NormalizedName = name.ToUpperInvariant() };
         _repository.GetTrack<WishlistCategory>().Add(category);
-        await _repository.SaveChangesAsync();
+        await _repository.SaveChangesAsync(cancellationToken);
         return Ok(new WishlistCategorySummary(category.WishlistCategoryId, category.Name, 0));
     }
 
@@ -178,21 +189,26 @@ public class WishlistController : ControllerBase
     {
         var name = NormalizeCategoryName(request?.Name);
         var userId = GetUserId();
+        await using var categoryLock = new PostgresAdvisoryLock(_db, CategoryLockKey(userId));
+        if (!await categoryLock.TryAcquireAsync(cancellationToken)) return Conflict(new { code = "WISHLIST_CATEGORY_BUSY" });
         var category = await _repository.GetTrack<WishlistCategory>().FirstOrDefaultAsync(c => c.UserId == userId && c.WishlistCategoryId == categoryId, cancellationToken);
         if (category is null) return NotFound();
         if (await _repository.Get<WishlistCategory>().AnyAsync(c => c.UserId == userId && c.WishlistCategoryId != categoryId && c.NormalizedName == name.ToUpperInvariant(), cancellationToken)) return Conflict();
         category.Name = request!.Name!.Trim(); category.NormalizedName = name.ToUpperInvariant();
-        await _repository.SaveChangesAsync();
+        await _repository.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
 
     [HttpDelete("categories/{categoryId:long}")]
     public async Task<IActionResult> DeleteCategory(long categoryId, CancellationToken cancellationToken)
     {
-        var category = await _repository.GetTrack<WishlistCategory>().FirstOrDefaultAsync(c => c.UserId == GetUserId() && c.WishlistCategoryId == categoryId, cancellationToken);
+        var userId = GetUserId();
+        await using var categoryLock = new PostgresAdvisoryLock(_db, CategoryLockKey(userId));
+        if (!await categoryLock.TryAcquireAsync(cancellationToken)) return Conflict(new { code = "WISHLIST_CATEGORY_BUSY" });
+        var category = await _repository.GetTrack<WishlistCategory>().FirstOrDefaultAsync(c => c.UserId == userId && c.WishlistCategoryId == categoryId, cancellationToken);
         if (category is null) return NotFound();
         _repository.GetTrack<WishlistCategory>().Remove(category);
-        await _repository.SaveChangesAsync();
+        await _repository.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
 
@@ -207,6 +223,8 @@ public class WishlistController : ControllerBase
     {
         var appIds = ValidateAppIds(request?.AppIds);
         var userId = GetUserId();
+        await using var categoryLock = new PostgresAdvisoryLock(_db, CategoryLockKey(userId));
+        if (!await categoryLock.TryAcquireAsync(cancellationToken)) return Conflict(new { code = "WISHLIST_CATEGORY_BUSY" });
         if (!await _repository.Get<WishlistCategory>().AnyAsync(c => c.UserId == userId && c.WishlistCategoryId == categoryId, cancellationToken)) return NotFound();
         var ids = appIds.Select(id => id.ToString(CultureInfo.InvariantCulture)).ToList();
         var rows = await _repository.Get<UserLibrary>().Where(r => r.UserId == userId && r.Store == SteamStore && r.State == WishedState && ids.Contains(r.StoreGameId)).ToListAsync(cancellationToken);
@@ -216,7 +234,7 @@ public class WishlistController : ControllerBase
         var changed = 0;
         foreach (var row in existing.Where(i => !libraryIds.Contains(i.UserLibraryId))) { _repository.GetTrack<WishlistCategoryItem>().Remove(row); changed++; }
         foreach (var row in rows.Where(r => !desired.ContainsKey(r.UserLibraryId))) { _repository.GetTrack<WishlistCategoryItem>().Add(new WishlistCategoryItem { UserId = userId, WishlistCategoryId = categoryId, UserLibraryId = row.UserLibraryId }); changed++; }
-        await _repository.SaveChangesAsync();
+        await _repository.SaveChangesAsync(cancellationToken);
         return Ok(new WishlistCategoryBatchResponse(appIds.Count, rows.Count, changed, appIds.Count - rows.Count));
     }
 
@@ -227,14 +245,25 @@ public class WishlistController : ControllerBase
         var categoryIds = request?.CategoryIds?.Distinct().ToList() ?? throw new ArgumentException("CategoryIds is required", nameof(request));
         if (categoryIds.Count > MaxPackageAppIds || categoryIds.Any(id => id <= 0)) throw new ArgumentException("CategoryIds must contain at most 200 positive integers", nameof(request));
         var userId = GetUserId();
+        // A user-wide lock is stronger than the item/category lock granularity and keeps replace-item and
+        // batch-category mutations from observing each other's half-applied set.
+        await using var itemLock = new PostgresAdvisoryLock(_db, CategoryLockKey(userId));
+        if (!await itemLock.TryAcquireAsync(cancellationToken)) return Conflict(new { code = "WISHLIST_CATEGORY_BUSY" });
         var library = await _repository.Get<UserLibrary>().FirstOrDefaultAsync(r => r.UserId == userId && r.Store == SteamStore && r.State == WishedState && r.StoreGameId == appId.ToString(CultureInfo.InvariantCulture), cancellationToken);
         if (library is null) return NotFound();
         var categories = await _repository.Get<WishlistCategory>().Where(c => c.UserId == userId && categoryIds.Contains(c.WishlistCategoryId)).ToListAsync(cancellationToken);
         if (categories.Count != categoryIds.Count) return NotFound();
         var existing = await _repository.GetTrack<WishlistCategoryItem>().Where(i => i.UserId == userId && i.UserLibraryId == library.UserLibraryId).ToListAsync(cancellationToken);
-        _repository.GetTrack<WishlistCategoryItem>().RemoveRange(existing);
-        _repository.GetTrack<WishlistCategoryItem>().AddRange(categoryIds.Select(id => new WishlistCategoryItem { UserId = userId, WishlistCategoryId = id, UserLibraryId = library.UserLibraryId }));
-        await _repository.SaveChangesAsync();
+        var requestedCategoryIds = categoryIds.ToHashSet();
+        var existingCategoryIds = existing.Select(item => item.WishlistCategoryId).ToHashSet();
+        var toRemove = existing.Where(item => !requestedCategoryIds.Contains(item.WishlistCategoryId)).ToList();
+        var toAdd = requestedCategoryIds
+            .Where(categoryId => !existingCategoryIds.Contains(categoryId))
+            .Select(categoryId => new WishlistCategoryItem { UserId = userId, WishlistCategoryId = categoryId, UserLibraryId = library.UserLibraryId })
+            .ToList();
+        _repository.GetTrack<WishlistCategoryItem>().RemoveRange(toRemove);
+        _repository.GetTrack<WishlistCategoryItem>().AddRange(toAdd);
+        await _repository.SaveChangesAsync(cancellationToken);
         return NoContent();
     }
 
@@ -242,6 +271,8 @@ public class WishlistController : ControllerBase
     {
         var appIds = ValidateAppIds(request?.AppIds);
         var userId = GetUserId();
+        await using var categoryLock = new PostgresAdvisoryLock(_db, CategoryLockKey(userId));
+        if (!await categoryLock.TryAcquireAsync(cancellationToken)) return Conflict(new { code = "WISHLIST_CATEGORY_BUSY" });
         if (!await _repository.Get<WishlistCategory>().AnyAsync(c => c.UserId == userId && c.WishlistCategoryId == categoryId, cancellationToken)) return NotFound();
         var ids = appIds.Select(id => id.ToString(CultureInfo.InvariantCulture)).ToList();
         var rows = await _repository.GetTrack<UserLibrary>().Where(r => r.UserId == userId && r.Store == SteamStore && r.State == WishedState && ids.Contains(r.StoreGameId)).ToListAsync(cancellationToken);
@@ -250,7 +281,7 @@ public class WishlistController : ControllerBase
         var changed = 0;
         if (add) { foreach (var row in rows.Where(r => existing.All(i => i.UserLibraryId != r.UserLibraryId))) { _repository.GetTrack<WishlistCategoryItem>().Add(new WishlistCategoryItem { UserId = userId, WishlistCategoryId = categoryId, UserLibraryId = row.UserLibraryId }); changed++; } }
         else { _repository.GetTrack<WishlistCategoryItem>().RemoveRange(existing); changed = existing.Count; }
-        await _repository.SaveChangesAsync();
+        await _repository.SaveChangesAsync(cancellationToken);
         return Ok(new WishlistCategoryBatchResponse(appIds.Count, rows.Count, changed, appIds.Count - rows.Count));
     }
 
@@ -277,7 +308,7 @@ public class WishlistController : ControllerBase
             }
 
             user.MinViableDiscountPercent = percent;
-            await _repository.SaveChangesAsync();
+            await _repository.SaveChangesAsync(cancellationToken);
             return true;
         });
 
@@ -292,10 +323,14 @@ public class WishlistController : ControllerBase
     [HttpPost("sync")]
     public async Task<IActionResult> Sync(CancellationToken cancellationToken)
     {
+        // AdminWithId remains intentional: wishlist sync is an admin-only operational action in current product policy.
         // List snapshot only. The per-game price refresh takes tens of minutes and lives in the
         // background job; letting it run here would hang the request.
         // Recorded as a manual run so job_runs stays a truthful history, but excluded from the background
         // job's gate: it does not do the expensive price pass, so it must not delay one.
+        await using var syncLock = new PostgresAdvisoryLock(_db, 7_831_442_091L);
+        if (!await syncLock.TryAcquireAsync(cancellationToken)) return Conflict(new { code = "WISHLIST_SYNC_IN_PROGRESS" });
+
         var jobRunId = await TryStartRunAsync(cancellationToken);
 
         WishlistListSyncReport report;
@@ -338,6 +373,7 @@ public class WishlistController : ControllerBase
     /// reuses the same loader the table uses, so a game priced here and the same game priced in its row can
     /// never disagree. Nothing is persisted and no bundle is applied.
     /// </summary>
+    [EnableRateLimiting("wishlist-package-preview")]
     [HttpPost("package-preview")]
     public async Task<IActionResult> PackagePreview(
         [FromBody] WishlistPackagePreviewRequest request,
@@ -614,6 +650,39 @@ public class WishlistController : ControllerBase
 
         return items;
     }
+
+    private async Task<IReadOnlyList<WishlistCategorySummary>> LoadCategoriesAsync(int userId, CancellationToken cancellationToken)
+    {
+        var counts = await _repository.Get<WishlistCategoryItem>()
+            .Where(item => item.UserId == userId)
+            .GroupBy(item => item.WishlistCategoryId)
+            .Select(group => new { CategoryId = group.Key, Count = group.Count() })
+            .ToDictionaryAsync(group => group.CategoryId, group => group.Count, cancellationToken);
+
+        var categories = await _repository.Get<WishlistCategory>()
+            .Where(category => category.UserId == userId)
+            .Select(category => new
+            {
+                category.WishlistCategoryId,
+                category.Name
+            })
+            .ToListAsync(cancellationToken);
+
+        return categories
+            .Select(category => new WishlistCategorySummary(
+                category.WishlistCategoryId,
+                category.Name,
+                counts.TryGetValue(category.WishlistCategoryId, out var count) ? count : 0))
+            .OrderBy(category => category.Name)
+            .ToList();
+    }
+
+    private static long CategoryLockKey(int userId) => unchecked(0x574C00000000L | (uint)userId);
+
+    private static string EscapeLikePattern(string value) =>
+        value.Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("%", "\\%", StringComparison.Ordinal)
+            .Replace("_", "\\_", StringComparison.Ordinal);
 
     private static int ParseAppId(string storeGameId) =>
         int.TryParse(storeGameId, NumberStyles.None, CultureInfo.InvariantCulture, out var appId) ? appId : 0;

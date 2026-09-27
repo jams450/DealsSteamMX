@@ -14,11 +14,18 @@ type ApiRefreshResponse = {
 export async function fetchApiWithAutoRefresh(
   session: AuthSession,
   input: string,
-  init: RequestInit
+  init: RequestInit,
+  signal?: AbortSignal,
+  timeoutMs = 30_000
 ): Promise<{ response: Response; session: AuthSession }> {
+  const requestSignal = () => {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    return signal ? AbortSignal.any([signal, timeout]) : timeout;
+  };
   const execute = (accessToken: string) =>
     fetch(input, {
       ...init,
+      signal: requestSignal(),
       headers: {
         ...(init.headers ?? {}),
         Authorization: `Bearer ${accessToken}`,
@@ -37,7 +44,8 @@ export async function fetchApiWithAutoRefresh(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refreshToken: session.refreshToken }),
-    cache: "no-store"
+    cache: "no-store",
+    signal: requestSignal()
   });
 
   if (!refreshRes.ok) {

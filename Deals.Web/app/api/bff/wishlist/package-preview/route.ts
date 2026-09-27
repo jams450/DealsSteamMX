@@ -40,16 +40,13 @@ export async function POST(request: Request) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ appIds }),
       cache: "no-store"
-    }
+    },
+    request.signal
   );
 
   if (!response.ok) {
-    const upstreamBody = (await response.json().catch(() => null)) as { message?: string; Message?: string } | null;
-    const result = upstreamError(
-      request,
-      response.status,
-      upstreamBody?.message ?? upstreamBody?.Message ?? "No se pudo calcular el paquete"
-    );
+    await response.text().catch(() => "");
+    const result = upstreamError(request, response.status, "No se pudo calcular el paquete");
     await attachSessionCookie(result, updatedSession, session);
     return result;
   }

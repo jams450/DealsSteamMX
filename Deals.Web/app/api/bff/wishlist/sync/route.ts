@@ -12,11 +12,11 @@ export async function POST(request: Request) {
   const { response, session: updatedSession } = await fetchApiWithAutoRefresh(session, `${getApiBaseUrl()}/api/wishlist/sync`, {
     method: "POST",
     cache: "no-store"
-  });
+  }, request.signal);
 
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { message?: string; Message?: string } | null;
-    const result = upstreamError(request, response.status, body?.message ?? body?.Message ?? "No se pudo sincronizar la wishlist");
+    await response.text().catch(() => "");
+    const result = upstreamError(request, response.status, "No se pudo sincronizar la wishlist");
     await attachSessionCookie(result, updatedSession, session);
     return result;
   }

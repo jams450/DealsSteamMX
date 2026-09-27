@@ -51,17 +51,31 @@ export type WishlistQuery = {
   readonly page?: number;
   readonly pageSize?: number;
   readonly search?: string;
-  readonly categoryId?: number;
-  readonly categoryState?: "all" | "none";
-  readonly sort?: string;
+  readonly minPrice?: number;
+  readonly maxPrice?: number;
+  readonly owned?: "yes" | "no";
+  readonly subscription?: "yes" | "no";
+  readonly categoryIds?: readonly number[];
+  readonly uncategorized?: boolean;
+  readonly sort?: "priority" | "name" | "bestPrice" | "bestDiscount" | "officialDiscount" | "keyshopDiscount" | "officialPrice" | "keyshopPrice";
   readonly direction?: "asc" | "desc";
 };
 
-export async function getWishlist(query: WishlistQuery = {}, signal?: AbortSignal): Promise<WishlistResponse> {
+export function serializeWishlistQuery(query: WishlistQuery): URLSearchParams {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
-    if (value !== undefined && value !== "") params.set(key, String(value));
+    if (value === undefined || value === "" || value === false) continue;
+    if (key === "categoryIds" && Array.isArray(value)) {
+      value.forEach((id) => params.append("categoryIds", String(id)));
+    } else {
+      params.set(key, String(value));
+    }
   }
+  return params;
+}
+
+export async function getWishlist(query: WishlistQuery = {}, signal?: AbortSignal): Promise<WishlistResponse> {
+  const params = serializeWishlistQuery(query);
   const response = await fetch(`/api/bff/wishlist${params.size ? `?${params}` : ""}`, { cache: "no-store", signal });
   if (!response.ok) throw await parseApiError(response, "No se pudo cargar la wishlist");
 
@@ -70,8 +84,8 @@ export async function getWishlist(query: WishlistQuery = {}, signal?: AbortSigna
   return wishlist;
 }
 
-export async function syncWishlist(): Promise<WishlistSyncResponse> {
-  const response = await csrfFetch("/api/bff/wishlist/sync", { method: "POST", cache: "no-store" });
+export async function syncWishlist(signal?: AbortSignal): Promise<WishlistSyncResponse> {
+  const response = await csrfFetch("/api/bff/wishlist/sync", { method: "POST", cache: "no-store", signal });
   if (!response.ok) throw await parseApiError(response, "No se pudo sincronizar la wishlist");
 
   const report = normalizeWishlistSyncResponse(await response.json());
@@ -81,12 +95,13 @@ export async function syncWishlist(): Promise<WishlistSyncResponse> {
 
 // El preview del paquete es de solo lectura pero se pide por POST: la selección viaja en el cuerpo, no en
 // la URL, y el servidor relee sus propios precios. El cliente nunca manda importes.
-export async function previewWishlistPackage(appIds: readonly number[]): Promise<WishlistPackagePreview> {
+export async function previewWishlistPackage(appIds: readonly number[], signal?: AbortSignal): Promise<WishlistPackagePreview> {
   const response = await csrfFetch("/api/bff/wishlist/package-preview", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ appIds }),
-    cache: "no-store"
+    cache: "no-store",
+    signal
   });
   if (!response.ok) throw await parseApiError(response, "No se pudo calcular el paquete");
 

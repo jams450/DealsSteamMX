@@ -5,6 +5,12 @@ import { getServerSession, type AuthSession } from "@/lib/auth/session";
 import { badRequest, unauthorized, upstreamError } from "@/lib/bff/http";
 import { normalizeSteamGame } from "@/lib/contracts/steam";
 
+const STORE_REFRESH_TIMEOUT_MS = 90_000;
+
+function isTimeout(error: unknown) {
+  return error instanceof DOMException && error.name === "TimeoutError";
+}
+
 function parseAppId(value: string): number | null {
   const appId = Number(value);
   return Number.isSafeInteger(appId) && appId > 0 ? appId : null;
@@ -24,12 +30,23 @@ async function forward(
 
   const url = new URL(`/api/steam/games/${appId}${path}`, getApiBaseUrl());
 
-  const { response, session: updatedSession } = await fetchApiWithAutoRefresh(session, url.toString(), {
-    method,
-    cache: "no-store"
-  });
+  try {
+    const { response, session: updatedSession } = await fetchApiWithAutoRefresh(
+      session,
+      url.toString(),
+      { method, cache: "no-store" },
+      request.signal,
+      method === "POST" ? STORE_REFRESH_TIMEOUT_MS : undefined
+    );
 
-  return buildResponse(request, response, updatedSession, session);
+    return buildResponse(request, response, updatedSession, session);
+  } catch (error) {
+    if (isTimeout(error)) {
+      return upstreamError(request, 504, "La actualización de tiendas excedió el tiempo de espera");
+    }
+
+    throw error;
+  }
 }
 
 async function buildResponse(

@@ -110,7 +110,7 @@ export function DataGrid<TData>({
 }: DataGridProps<TData>) {
   const resolvedManualSorting = manualSorting ?? mode === "server";
   const resolvedManualPagination = manualPagination ?? mode === "server";
-  const persistsPageSize = Boolean(pageSizeStorageKey) && !pagination && !resolvedManualPagination;
+  const persistsPageSize = Boolean(pageSizeStorageKey);
 
   const [internalSorting, setInternalSorting] = useState<SortingState>(initialSorting ?? []);
   const [internalPagination, setInternalPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 10 });
@@ -122,6 +122,7 @@ export function DataGrid<TData>({
   const globalFilterInputId = useId();
   const columnMenuRef = useRef<HTMLDivElement>(null);
   const columnMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const hydratedPageSizeStorageKeyRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     if (!densityStorageKey || density) {
@@ -163,16 +164,28 @@ export function DataGrid<TData>({
   }, [enableColumnVisibility, columnVisibilityStorageKey]);
 
   useEffect(() => {
-    if (!persistsPageSize) {
+    if (!pageSizeStorageKey || hydratedPageSizeStorageKeyRef.current === pageSizeStorageKey) {
       return;
     }
 
-    const persisted = window.localStorage.getItem(pageSizeStorageKey as string);
+    hydratedPageSizeStorageKeyRef.current = pageSizeStorageKey;
+    const persisted = window.localStorage.getItem(pageSizeStorageKey);
     const parsed = Number(persisted);
-    if (persisted && Number.isSafeInteger(parsed) && parsed > 0) {
-      setInternalPagination((current) => ({ ...current, pageIndex: 0, pageSize: parsed }));
+    const allowed = [...pageSizeOptions, ...(allowAllPageSize ? [ALL_PAGE_SIZE] : [])];
+    if (persisted && Number.isSafeInteger(parsed) && allowed.includes(parsed)) {
+      if (pagination && onPaginationChange) {
+        if (pagination.pageIndex !== 0 || pagination.pageSize !== parsed) {
+          onPaginationChange({ ...pagination, pageIndex: 0, pageSize: parsed });
+        }
+      } else {
+        setInternalPagination((current) =>
+          current.pageIndex === 0 && current.pageSize === parsed
+            ? current
+            : { ...current, pageIndex: 0, pageSize: parsed }
+        );
+      }
     }
-  }, [persistsPageSize, pageSizeStorageKey]);
+  }, [allowAllPageSize, onPaginationChange, pageSizeOptions, pageSizeStorageKey, pagination]);
 
   useEffect(() => {
     if (!columnMenuOpen) {

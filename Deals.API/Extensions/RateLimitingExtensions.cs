@@ -42,6 +42,15 @@ public static class RateLimitingExtensions
                     QueueLimit = 0
                 }));
 
+            options.AddPolicy("wishlist-package-preview", context => RateLimitPartition.GetFixedWindowLimiter(
+                GetClientKey(context),
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 30,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0
+                }));
+
             options.AddPolicy("steam-refresh", context => RateLimitPartition.GetFixedWindowLimiter(
                 GetClientIp(context),
                 _ => new FixedWindowRateLimiterOptions

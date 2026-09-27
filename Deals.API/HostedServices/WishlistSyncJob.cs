@@ -1,3 +1,4 @@
+using Deals.BusinessLogic.Context;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
@@ -132,10 +133,18 @@ public sealed class WishlistSyncJob(
     {
         // 0 means "not recorded": FinishAsync then finds no row and returns, and the cycle still runs.
         var jobRunId = 0L;
+        await using var lockScope = scopeFactory.CreateAsyncScope();
+        var lockDb = lockScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await using var syncLock = new PostgresAdvisoryLock(lockDb, 7_831_442_091L);
+        if (!await syncLock.TryAcquireAsync(cancellationToken))
+        {
+            logger.LogInformation("[wishlist.sync] another process owns sync lock; cycle skipped");
+            return;
+        }
+
         try
         {
-            using var scope = scopeFactory.CreateAsyncScope();
-            jobRunId = await scope.ServiceProvider.GetRequiredService<JobRunLog>()
+            jobRunId = await lockScope.ServiceProvider.GetRequiredService<JobRunLog>()
                 .StartAsync(Job, trigger, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

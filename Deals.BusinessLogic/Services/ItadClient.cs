@@ -52,7 +52,10 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
     private const string MalformedPricesMessage = "IsThereAnyDeal prices returned a malformed response.";
     private const string MalformedBundlesMessage = "IsThereAnyDeal bundles returned a malformed response.";
 
-    public async Task<string?> LookupSteamAppIdAsync(int appId, CancellationToken cancellationToken)
+    public async Task<string?> LookupSteamAppIdAsync(
+        int appId,
+        CancellationToken cancellationToken,
+        ItadRequestPriority priority = ItadRequestPriority.Background)
     {
         if (appId <= 0)
         {
@@ -61,7 +64,7 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
 
         var lookupKey = $"app/{appId}";
         var payload = JsonSerializer.Serialize(new[] { lookupKey });
-        using var response = await PostWithRetryAsync(LookupPath, payload, withApiKey: false, cancellationToken);
+        using var response = await PostWithRetryAsync(LookupPath, payload, withApiKey: false, priority, cancellationToken);
         EnsureSuccess(response, "lookup");
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -95,7 +98,8 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
 
     public async Task<IReadOnlyList<ItadGamePrices>> GetPricesAsync(
         IReadOnlyCollection<string> itadIds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ItadRequestPriority priority = ItadRequestPriority.Background)
     {
         var ids = itadIds
             .Where(id => Guid.TryParse(id, out _))
@@ -106,7 +110,7 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
         var prices = new List<ItadGamePrices>(ids.Count);
         foreach (var batch in ids.Chunk(MaxIdsPerRequest))
         {
-            prices.AddRange(await GetPricesBatchAsync(batch, cancellationToken));
+            prices.AddRange(await GetPricesBatchAsync(batch, priority, cancellationToken));
         }
 
         return prices;
@@ -132,7 +136,8 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
     /// </summary>
     public async Task<IReadOnlyList<ItadBundle>> GetBundlesAsync(
         IReadOnlyCollection<string> itadIds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ItadRequestPriority priority = ItadRequestPriority.Background)
     {
         var ids = itadIds
             .Where(id => Guid.TryParse(id, out _))
@@ -148,7 +153,7 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
         foreach (var batch in ids.Chunk(MaxIdsPerRequest))
         {
             // One bundle can be reported for several queried ids: it is kept once, keyed by its own id.
-            foreach (var bundle in await GetBundlesBatchAsync(batch, cancellationToken))
+            foreach (var bundle in await GetBundlesBatchAsync(batch, priority, cancellationToken))
             {
                 bundles.TryAdd(bundle.BundleKey, bundle);
             }
@@ -162,7 +167,7 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
             throw new JsonException(MalformedBundlesMessage);
         }
 
-        var priced = await PriceItemsAsync(result, cancellationToken);
+        var priced = await PriceItemsAsync(result, priority, cancellationToken);
         return result.Select(bundle => WithItemPrices(bundle, priced)).ToList();
     }
 
@@ -173,6 +178,7 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
     /// </summary>
     private async Task<IReadOnlyDictionary<string, (int? Minor, string? Currency)>> PriceItemsAsync(
         IReadOnlyList<ItadBundle> bundles,
+        ItadRequestPriority priority,
         CancellationToken cancellationToken)
     {
         // Sin precio de tier no hay comparación posible, así que los precios por ítem no se pueden usar:
@@ -196,7 +202,7 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
         }
 
         var priced = new Dictionary<string, (int? Minor, string? Currency)>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in await GetPricesAsync(itemIds, cancellationToken))
+        foreach (var entry in await GetPricesAsync(itemIds, cancellationToken, priority))
         {
             priced[entry.ItadId] = ResolveItemPrice(entry);
         }
@@ -254,11 +260,12 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
 
     private async Task<IReadOnlyList<ItadBundle>> GetBundlesBatchAsync(
         string[] itadIds,
+        ItadRequestPriority priority,
         CancellationToken cancellationToken)
     {
         var path = $"{BundlesPath}?country={Uri.EscapeDataString(settings.Country)}";
         var payload = JsonSerializer.Serialize(itadIds);
-        using var response = await PostWithRetryAsync(path, payload, withApiKey: true, cancellationToken);
+        using var response = await PostWithRetryAsync(path, payload, withApiKey: true, priority, cancellationToken);
         EnsureSuccess(response, "bundles");
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -624,12 +631,13 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
 
     private async Task<IReadOnlyList<ItadGamePrices>> GetPricesBatchAsync(
         string[] itadIds,
+        ItadRequestPriority priority,
         CancellationToken cancellationToken)
     {
         var shopIds = string.Join(',', settings.OfficialShopIds);
         var path = $"{PricesPath}?country={Uri.EscapeDataString(settings.Country)}&shops={Uri.EscapeDataString(shopIds)}";
         var payload = JsonSerializer.Serialize(itadIds);
-        using var response = await PostWithRetryAsync(path, payload, withApiKey: true, cancellationToken);
+        using var response = await PostWithRetryAsync(path, payload, withApiKey: true, priority, cancellationToken);
         EnsureSuccess(response, "prices");
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -652,7 +660,10 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
         return games;
     }
 
-    public async Task<string?> ResolveDealUrlAsync(string dealUrl, CancellationToken cancellationToken)
+    public async Task<string?> ResolveDealUrlAsync(
+        string dealUrl,
+        CancellationToken cancellationToken,
+        ItadRequestPriority priority = ItadRequestPriority.Background)
     {
         var start = TryReadRedirectorUrl(dealUrl);
         if (start is null)
@@ -660,7 +671,7 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
             return null;
         }
 
-        using var lease = await governor.AcquireAsync(cancellationToken);
+        using var lease = await governor.AcquireAsync(priority, cancellationToken);
         using var request = new HttpRequestMessage(HttpMethod.Get, start);
 
         // ResponseHeadersRead: only the redirect chain and the final URL matter, so no body is ever
@@ -699,9 +710,10 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
         string path,
         string payload,
         bool withApiKey,
+        ItadRequestPriority priority,
         CancellationToken cancellationToken)
     {
-        var response = await PostAsync(path, payload, withApiKey, cancellationToken);
+        var response = await PostAsync(path, payload, withApiKey, priority, cancellationToken);
         if (response.StatusCode != HttpStatusCode.TooManyRequests)
         {
             return response;
@@ -711,16 +723,17 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
         response.Dispose();
 
         await Task.Delay(retryAfter, cancellationToken);
-        return await PostAsync(path, payload, withApiKey, cancellationToken);
+        return await PostAsync(path, payload, withApiKey, priority, cancellationToken);
     }
 
     private async Task<HttpResponseMessage> PostAsync(
         string path,
         string payload,
         bool withApiKey,
+        ItadRequestPriority priority,
         CancellationToken cancellationToken)
     {
-        using var lease = await governor.AcquireAsync(cancellationToken);
+        using var lease = await governor.AcquireAsync(priority, cancellationToken);
         using var request = new HttpRequestMessage(HttpMethod.Post, path)
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json")

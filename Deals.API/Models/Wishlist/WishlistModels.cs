@@ -38,6 +38,22 @@ public sealed record WishlistItemResponse(
 
 public sealed record WishlistCategorySummary(long Id, string Name, int ItemCount);
 
+/// <summary>Validated, bounded query parameters for the server-paginated wishlist.</summary>
+public sealed class WishlistQueryRequest
+{
+    public int Page { get; init; } = 1;
+    public int PageSize { get; init; } = 50;
+    public string? Search { get; init; }
+    public int? MinPrice { get; init; }
+    public int? MaxPrice { get; init; }
+    public string? Owned { get; init; }
+    public string? Subscription { get; init; }
+    public IReadOnlyList<long>? CategoryIds { get; init; }
+    public bool Uncategorized { get; init; }
+    public string? Sort { get; init; }
+    public string? Direction { get; init; }
+}
+
 public sealed record WishlistResponse(
     string State,
     DateTime? SyncedAt,

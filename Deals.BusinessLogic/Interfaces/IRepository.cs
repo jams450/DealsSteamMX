@@ -31,7 +31,7 @@ namespace Deals.BusinessLogic.Interfaces
 
         Task<int> ExecuteSqlRawAsync(string sql, params object[] parameters);
         Task<List<T>> SqlQueryAsync<T>(string sql, params object[] parameters) where T : class;
-        Task<int> SaveChangesAsync();
+        Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
         Task<T> ExecuteInTransactionAsync<T>(Func<Task<T>> operation);
     }
 }

@@ -17,9 +17,7 @@ namespace Deals.API.Controllers;
 public sealed class SteamController(
     ISteamGameService steamGameService,
     ICurrentUserService currentUserService,
-    IGameOwnershipService gameOwnershipService,
-    IReviewService reviewService,
-    IFavoriteService favoriteService) : ControllerBase
+    ISteamGameUserStateService userStateService) : ControllerBase
 {
     [HttpGet("search")]
     public async Task<ActionResult<IReadOnlyList<SteamSearchResponse>>> Search(
@@ -50,48 +48,40 @@ public sealed class SteamController(
     public Task<ActionResult<SteamGameResponse>> GetGame(
         int appId,
         CancellationToken cancellationToken) =>
-        FetchGame(appId, forceRefresh: false, cancellationToken);
+        FetchGame(appId, forceRefresh: false, interactive: false, cancellationToken);
 
     [HttpPost("games/{appId:int}/refresh")]
     [EnableRateLimiting("steam-refresh")]
     public Task<ActionResult<SteamGameResponse>> RefreshGame(
         int appId,
         CancellationToken cancellationToken) =>
-        FetchGame(appId, forceRefresh: true, cancellationToken);
+        FetchGame(appId, forceRefresh: true, interactive: true, cancellationToken);
 
     private async Task<ActionResult<SteamGameResponse>> FetchGame(
         int appId,
         bool forceRefresh,
+        bool interactive,
         CancellationToken cancellationToken)
     {
         try
         {
-            var game = await steamGameService.GetByAppIdAsync(appId, forceRefresh, cancellationToken);
+            var game = await steamGameService.GetByAppIdAsync(appId, forceRefresh, cancellationToken, interactive);
             if (game == null)
             {
                 return NotFound();
             }
 
-            var userId = currentUserService.GetRequiredUserId();
-            var ownership = await ResolveOwnershipAsync(appId, cancellationToken);
-            var reviews = await reviewService.GetForSteamAppAsync(userId, appId, cancellationToken);
-            var isFavorite = await favoriteService.IsFavoriteForSteamAppAsync(userId, appId, cancellationToken);
+            var userState = await userStateService.GetAsync(
+                currentUserService.GetRequiredUserId(),
+                appId,
+                cancellationToken);
 
-            return Ok(ToResponse(game, ownership, reviews, isFavorite));
+            return Ok(ToResponse(game, userState.Ownership, userState.Reviews, userState.IsFavorite));
         }
         catch (HttpRequestException)
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new { Message = "Steam is temporarily unavailable." });
         }
-    }
-
-    // Optional additive block: an unresolvable user id is "no ownership", never a failure.
-    private async Task<GameOwnership> ResolveOwnershipAsync(int appId, CancellationToken cancellationToken)
-    {
-        var userId = currentUserService.GetUserId();
-        return userId is > 0
-            ? await gameOwnershipService.ResolveAsync(appId, userId.Value, cancellationToken)
-            : GameOwnership.None;
     }
 
     private static SteamSearchResponse ToResponse(SteamSearchResult result) =>

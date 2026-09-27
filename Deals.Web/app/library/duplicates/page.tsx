@@ -7,7 +7,6 @@ export default async function LibraryDuplicatesPage() {
 
   return (
     <ProductShell
-      wide
       title="Duplicados del catálogo"
       subtitle="Grupos de juegos canónicos que apuntan al mismo título desde identidades distintas. Fusionar es irreversible: el juego absorbido desaparece."
     >

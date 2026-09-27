@@ -5,7 +5,11 @@ namespace Deals.BusinessLogic.Interfaces;
 public interface ISteamGameService
 {
     Task<IReadOnlyList<SteamSearchResult>> SearchAsync(string query, CancellationToken cancellationToken);
-    Task<SteamGameDetails?> GetByAppIdAsync(int appId, bool forceRefresh, CancellationToken cancellationToken);
+    Task<SteamGameDetails?> GetByAppIdAsync(
+        int appId,
+        bool forceRefresh,
+        CancellationToken cancellationToken,
+        bool interactive = false);
 
     /// <summary>
     /// Steam-only detail load: fetches and persists the store snapshot without touching ITAD, gg.deals,

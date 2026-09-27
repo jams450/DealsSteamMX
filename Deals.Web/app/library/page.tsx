@@ -7,7 +7,6 @@ export default async function LibraryPage() {
 
   return (
     <ProductShell
-      wide
       title="Biblioteca de juegos"
       subtitle="Los juegos de tu export de Playnite, agrupados por tienda. La importación es manual y no toca tu biblioteca en ninguna tienda."
     >

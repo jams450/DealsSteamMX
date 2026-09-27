@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import type { ColumnDef, FilterFn, SortingFn } from "@tanstack/react-table";
-import { Gamepad2, RefreshCw, X } from "lucide-react";
+import type { ColumnDef, SortingFn } from "@tanstack/react-table";
+import { Gamepad2, RefreshCw, SlidersHorizontal, X } from "lucide-react";
 import { DataGrid } from "@/components/data-grid/data-grid";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -12,7 +13,7 @@ import { refreshSteamGame } from "@/app/steam/_lib/steam-api";
 import { cn } from "@/lib/ui/cn";
 import { ToastStack } from "@/components/feedback/toast-stack";
 import { useToasts } from "@/components/feedback/use-toasts";
-import { assignWishlistCategory, createWishlistCategory, getWishlist, previewWishlistPackage, removeWishlistCategoryItems, replaceWishlistItemCategories, syncWishlist, updateWishlistPreferences, type WishlistQuery } from "./_lib/wishlist-api";
+import { assignWishlistCategory, createWishlistCategory, getWishlist, previewWishlistPackage, removeWishlistCategoryItems, replaceWishlistItemCategories, serializeWishlistQuery, syncWishlist, updateWishlistPreferences, type WishlistQuery } from "./_lib/wishlist-api";
 import type { PaginationState, SortingState } from "@tanstack/react-table";
 import { dealScore, discountPercent } from "./_lib/wishlist-metrics";
 import {
@@ -46,6 +47,52 @@ const PAGE_SIZE_STORAGE_KEY = "wishlist.pageSize.v1";
 const COLUMN_VISIBILITY_STORAGE_KEY = "wishlist.columns.v1";
 // La prioridad de Steam no se usa, así que nace oculta; sigue disponible en el menú «Columnas».
 const INITIAL_COLUMN_VISIBILITY = { priority: false };
+const WISHLIST_SORTS = ["priority", "name", "bestPrice", "bestDiscount", "officialDiscount", "keyshopDiscount", "officialPrice", "keyshopPrice"] as const;
+type WishlistSort = (typeof WISHLIST_SORTS)[number];
+type TriState = "all" | "yes" | "no";
+type WishlistFilters = {
+  search: string;
+  minPrice: string;
+  maxPrice: string;
+  owned: TriState;
+  subscription: TriState;
+  categoryIds: number[];
+  uncategorized: boolean;
+};
+const DEFAULT_FILTERS: WishlistFilters = { search: "", minPrice: "", maxPrice: "", owned: "all", subscription: "all", categoryIds: [], uncategorized: false };
+
+function filtersFromUrl(params: Pick<URLSearchParams, "get" | "getAll">): WishlistFilters {
+  // Number(null) is 0. Treating a missing URL parameter as zero silently applied a 0–0 MXN range.
+  const number = (name: string) => {
+    const raw = params.get(name);
+    if (raw === null || raw === "") return "";
+    const value = Number(raw);
+    return Number.isSafeInteger(value) && value >= 0 ? String(value) : "";
+  };
+  return {
+    search: (params.get("search") ?? "").slice(0, 100), minPrice: number("minPrice"), maxPrice: number("maxPrice"),
+    owned: params.get("owned") === "yes" || params.get("owned") === "no" ? params.get("owned")! as TriState : "all",
+    subscription: params.get("subscription") === "yes" || params.get("subscription") === "no" ? params.get("subscription")! as TriState : "all",
+    categoryIds: [...new Set(params.getAll("categoryIds").map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))].slice(0, 50),
+    uncategorized: params.get("uncategorized") === "true"
+  };
+}
+
+function queryFilters(filters: WishlistFilters): Omit<WishlistQuery, "page" | "pageSize" | "sort" | "direction"> {
+  const minPrice = filters.minPrice === "" ? undefined : Number(filters.minPrice);
+  const maxPrice = filters.maxPrice === "" ? undefined : Number(filters.maxPrice);
+  return { search: filters.search.trim() || undefined, minPrice, maxPrice, owned: filters.owned === "all" ? undefined : filters.owned, subscription: filters.subscription === "all" ? undefined : filters.subscription, categoryIds: filters.categoryIds.length ? filters.categoryIds : undefined, uncategorized: filters.uncategorized || undefined };
+}
+
+function hasDefaultFilters(filters: WishlistFilters) {
+  return filters.search.trim() === "" &&
+    filters.minPrice === "" &&
+    filters.maxPrice === "" &&
+    filters.owned === "all" &&
+    filters.subscription === "all" &&
+    filters.categoryIds.length === 0 &&
+    !filters.uncategorized;
+}
 
 // El normalizador ya descarta fechas inválidas; el guard evita que Intl.format lance si algo se cuela.
 function formatDateTime(value: string | null) {
@@ -696,11 +743,6 @@ interface WishlistDataGridProps {
   readonly error: string | null;
 }
 
-function wishlistFilter(row: Parameters<FilterFn<WishlistItem>>[0], _columnId: string, value: unknown) {
-  const text = String(value).trim().toLocaleLowerCase("es-MX");
-  return row.original.name.toLocaleLowerCase("es-MX").includes(text) || String(row.original.appId).includes(text);
-}
-
 // Keep DataGrid outside WishlistItems so category form/modal/feedback state does not render
 // its rows. Props are deliberately narrow: only table data or table-owned controls can invalidate it.
 const WishlistDataGrid = memo(function WishlistDataGrid({
@@ -736,13 +778,11 @@ const WishlistDataGrid = memo(function WishlistDataGrid({
       stickyHeader
       stickyActionsColumn
       pageSizeOptions={WISHLIST_PAGE_SIZES}
-      allowAllPageSize
       pageSizeStorageKey={PAGE_SIZE_STORAGE_KEY}
       enableGlobalFilter
       globalFilter={search}
       onGlobalFilterChange={onSearchChange}
       globalFilterPlaceholder="Buscar por nombre o AppID"
-      globalFilterFn={wishlistFilter}
       enableColumnVisibility
       columnVisibilityStorageKey={COLUMN_VISIBILITY_STORAGE_KEY}
       initialColumnVisibility={INITIAL_COLUMN_VISIBILITY}
@@ -774,8 +814,11 @@ interface WishlistItemsProps {
   readonly totalItems: number;
   readonly loading: boolean;
   readonly tableError: string | null;
-  readonly categoryFilter: number | "all" | "none";
-  readonly onCategoryChange: (value: number | "all" | "none") => void;
+  readonly draftFilters: WishlistFilters;
+  readonly onDraftFiltersChange: (next: WishlistFilters) => void;
+  readonly filtersOpen: boolean;
+  readonly onFiltersOpenChange: (open: boolean) => void;
+  readonly onApplyFilters: () => void;
   readonly onClearFilters: () => void;
 }
 
@@ -800,8 +843,11 @@ function WishlistItems({
   totalItems,
   loading,
   tableError,
-  categoryFilter,
-  onCategoryChange,
+  draftFilters,
+  onDraftFiltersChange,
+  filtersOpen,
+  onFiltersOpenChange,
+  onApplyFilters,
   onClearFilters
 }: WishlistItemsProps) {
 
@@ -823,6 +869,7 @@ function WishlistItems({
   const [reconciledAppIds, setReconciledAppIds] = useState<readonly number[]>([]);
   // Los descartes de peticiones viejas no se pintan: la última selección es la que manda.
   const previewRequestRef = useRef(0);
+  const previewAbortRef = useRef<AbortController | null>(null);
   // The API already applied search/category filters to the page; never filter the partial page again.
   const filteredItems = items;
   const rangeStart = totalItems === 0 ? 0 : pagination.pageIndex * pagination.pageSize + 1;
@@ -838,6 +885,7 @@ function WishlistItems({
     previewRequestRef.current = requestId;
 
     if (appIds.length === 0) {
+      previewAbortRef.current?.abort();
       setPreview(null);
       setPreviewError(null);
       setPreviewLoading(false);
@@ -855,11 +903,15 @@ function WishlistItems({
 
     setPreviewLoading(true);
     setPreviewError(null);
+    previewAbortRef.current?.abort();
+    const controller = new AbortController();
+    previewAbortRef.current = controller;
 
     const timer = setTimeout(() => {
       void (async () => {
         try {
-          const result = await previewWishlistPackage(appIds);
+          const previewSignal = controller.signal;
+          const result = await previewWishlistPackage(appIds, previewSignal);
           if (previewRequestRef.current !== requestId) return;
           setPreview(result);
           // El servidor dice qué AppIDs no son de tu wishlist: se quitan del set y se avisa, en vez de
@@ -880,7 +932,10 @@ function WishlistItems({
       })();
     }, PACKAGE_DEBOUNCE_MS);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [selectedAppIds]);
 
   function clearSelection() {
@@ -989,7 +1044,9 @@ function WishlistItems({
       cell: ({ row }) => <div className="min-w-48"><Link href={`/games/${row.original.appId}`} className="text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{row.original.name}</Link><p className="text-xs text-muted">AppID {row.original.appId}</p><CategoryBadges categories={row.original.categories} /><Button type="button" variant="ghost" className="mt-1 h-7 px-2 text-xs" onClick={(event) => { categoryTriggerRef.current = event.currentTarget; setCategoryItem(row.original); }}>Editar categorías</Button>{row.original.ownedStores.length > 0 ? <p className="text-xs font-medium text-success">Ya adquirido en: {row.original.ownedStores.join(", ")}</p> : null}{rowErrors[row.original.appId] ? <p role="alert" className="mt-1 text-xs text-danger">{rowErrors[row.original.appId]}</p> : null}</div>
     },
     { id: "priority", accessorFn: (item) => item.priority ?? undefined, header: "Prioridad", sortingFn: numericSort, sortUndefined: "last" },
-    { id: "addedAt", accessorFn: (item) => item.addedAt ? new Date(item.addedAt).getTime() : undefined, header: "Alta", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => formatDateTime(row.original.addedAt) ?? "—" },
+    { id: "bestPrice", accessorFn: (item) => item.bestOfficialMinor === null ? item.bestKeyshopMinor ?? undefined : item.bestKeyshopMinor === null ? item.bestOfficialMinor : Math.min(item.bestOfficialMinor, item.bestKeyshopMinor), header: "Mejor precio", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => { const { bestOfficialMinor, bestKeyshopMinor } = row.original; const best = bestOfficialMinor === null ? bestKeyshopMinor : bestKeyshopMinor === null ? bestOfficialMinor : Math.min(bestOfficialMinor, bestKeyshopMinor); return <PriceValue amountMinor={best} currency={MXN} />; } },
+    { id: "bestDiscount", accessorFn: (item) => { const official = discountPercent(item.basePriceMinor, item.baseCurrency, item.bestOfficialMinor); const keyshop = discountPercent(item.basePriceMinor, item.baseCurrency, item.bestKeyshopMinor); return official === null ? keyshop ?? undefined : keyshop === null ? official : Math.max(official, keyshop); }, header: "Mayor descuento", sortingFn: numericSort, sortUndefined: "last" },
+    { id: "addedAt", accessorFn: (item) => item.addedAt ? new Date(item.addedAt).getTime() : undefined, header: "Alta", enableSorting: false, cell: ({ row }) => formatDateTime(row.original.addedAt) ?? "—" },
     { id: "refreshedAt", accessorFn: (item) => item.refreshedAt ? new Date(item.refreshedAt).getTime() : undefined, header: "Actualizado", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => formatDateTime(row.original.refreshedAt) ?? "—" },
     // Ordena por el sello más reciente de los cinco, que es el que responde «¿cuán al día está esta fila?».
     // Los juegos sin ningún sello salen `undefined` y quedan al final en las dos direcciones.
@@ -1011,20 +1068,20 @@ function WishlistItems({
     },
     { id: "basePriceMinor", accessorFn: (item) => item.basePriceMinor ?? undefined, header: "Precio base", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.basePriceMinor} currency={row.original.baseCurrency} /> },
     {
-      id: "discountOfficial",
+      id: "officialDiscount",
       accessorFn: (item) => discountPercent(item.basePriceMinor, item.baseCurrency, item.bestOfficialMinor) ?? undefined,
       header: "% dto. oficial",
       sortingFn: numericSort,
       sortUndefined: "last",
-      cell: ({ row }) => <DiscountValue value={row.getValue<number | undefined>("discountOfficial") ?? null} />
+      cell: ({ row }) => <DiscountValue value={row.getValue<number | undefined>("officialDiscount") ?? null} />
     },
     {
-      id: "discountKeyshop",
+      id: "keyshopDiscount",
       accessorFn: (item) => discountPercent(item.basePriceMinor, item.baseCurrency, item.bestKeyshopMinor) ?? undefined,
       header: "% dto. keys",
       sortingFn: numericSort,
       sortUndefined: "last",
-      cell: ({ row }) => <DiscountValue value={row.getValue<number | undefined>("discountKeyshop") ?? null} />
+      cell: ({ row }) => <DiscountValue value={row.getValue<number | undefined>("keyshopDiscount") ?? null} />
     },
     {
       id: "dealOfficial",
@@ -1043,8 +1100,8 @@ function WishlistItems({
       cell: ({ row }) => <ScoreValue score={row.getValue<number | undefined>("dealKeyshop") ?? null} />
     },
     { id: "historyLowMinor", accessorFn: (item) => item.historyLowMinor ?? undefined, header: "Mínimo histórico", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.historyLowMinor} currency={row.original.historyLowCurrency} /> },
-    { id: "bestOfficialMinor", accessorFn: (item) => item.bestOfficialMinor ?? undefined, header: "Mín. oficial", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.bestOfficialMinor} currency={MXN} /> },
-    { id: "bestKeyshopMinor", accessorFn: (item) => item.bestKeyshopMinor ?? undefined, header: "Mín. keys", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.bestKeyshopMinor} currency={MXN} /> },
+    { id: "officialPrice", accessorFn: (item) => item.bestOfficialMinor ?? undefined, header: "Mín. oficial", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.bestOfficialMinor} currency={MXN} /> },
+    { id: "keyshopPrice", accessorFn: (item) => item.bestKeyshopMinor ?? undefined, header: "Mín. keys", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.bestKeyshopMinor} currency={MXN} /> },
     { id: "actions", header: "Acciones", enableSorting: false, cell: ({ row }) => <RowRefreshButton item={row.original} refreshing={refreshingAppId === row.original.appId} blocked={refreshingAppId !== null && refreshingAppId !== row.original.appId} onRefresh={onRefresh} /> }
     ];
   }, [minViableDiscountPercent, onRefresh, refreshingAppId, rowErrors, selectedAppIds]);
@@ -1063,13 +1120,38 @@ function WishlistItems({
         <p className="text-xs text-muted">«Mín. oficial» y «Mín. keys» ya están en MXN. El precio base y el mínimo histórico se muestran en la moneda del proveedor, sin convertir.</p>
         <p className="text-xs text-muted">«% dto.» se calcula contra el precio de lista de Steam (precio base) y «Deal» es un score híbrido de 0 a 10: 7 puntos por la escala del descuento frente al mínimo viable y 3 por la cercanía al mínimo histórico.</p>
       </div>
-      <div className="flex flex-wrap items-center gap-2" aria-label="Filtro de categorías">
-        <label htmlFor="wishlist-category-filter" className="text-xs font-medium text-secondary">Categoría</label>
-        <select id="wishlist-category-filter" value={String(categoryFilter)} onChange={(event) => onCategoryChange(event.target.value === "all" || event.target.value === "none" ? event.target.value : Number(event.target.value))} className="input-semantic h-8 text-xs">
-          <option value="all">Todas</option>
-          <option value="none">Sin categoría</option>
-          {categories.map((category) => <option key={category.id} value={category.id}>{category.name} ({category.itemCount})</option>)}
-        </select>
+      <div className="overflow-hidden rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)]">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left transition-colors hover:bg-[var(--color-surface-3)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--color-border-focus)] sm:px-4"
+          aria-expanded={filtersOpen}
+          aria-controls="wishlist-filters"
+          onClick={() => onFiltersOpenChange(!filtersOpen)}
+        >
+          <span className="flex items-center gap-2">
+            <SlidersHorizontal className="h-4 w-4 text-accent" aria-hidden="true" />
+            <span className="text-sm font-semibold text-primary">Filtros</span>
+          </span>
+          <span className="text-xs text-muted">{filtersOpen ? "Ocultar" : "Mostrar"}</span>
+        </button>
+        {filtersOpen ? (
+          <form id="wishlist-filters" className="grid gap-3 border-t border-default p-3 sm:p-4 md:grid-cols-2" onSubmit={(event) => { event.preventDefault(); onApplyFilters(); }} aria-label="Filtros de wishlist">
+            <div className="grid gap-2 sm:grid-cols-3">
+              <input type="search" value={draftFilters.search} onChange={(event) => onDraftFiltersChange({ ...draftFilters, search: event.target.value })} placeholder="Buscar por nombre o AppID" className="input-semantic h-9 text-xs sm:col-span-3" />
+              <input type="number" min="0" inputMode="numeric" value={draftFilters.minPrice} onChange={(event) => onDraftFiltersChange({ ...draftFilters, minPrice: event.target.value })} placeholder="Precio mínimo MXN" className="input-semantic h-9 text-xs" />
+              <input type="number" min="0" inputMode="numeric" value={draftFilters.maxPrice} onChange={(event) => onDraftFiltersChange({ ...draftFilters, maxPrice: event.target.value })} placeholder="Precio máximo MXN" className="input-semantic h-9 text-xs" />
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <select value={draftFilters.owned} onChange={(event) => onDraftFiltersChange({ ...draftFilters, owned: event.target.value as TriState })} className="input-semantic h-9 text-xs"><option value="all">Compra: todas</option><option value="yes">Compra: sí</option><option value="no">Compra: no</option></select>
+              <select value={draftFilters.subscription} onChange={(event) => onDraftFiltersChange({ ...draftFilters, subscription: event.target.value as TriState })} className="input-semantic h-9 text-xs"><option value="all">Suscripción: todas</option><option value="yes">Suscripción: sí</option><option value="no">Suscripción: no</option></select>
+              <select multiple value={draftFilters.categoryIds.map(String)} onChange={(event) => onDraftFiltersChange({ ...draftFilters, categoryIds: [...event.target.selectedOptions].map((option) => Number(option.value)) })} className="input-semantic min-h-20 text-xs" aria-label="Categorías"><option value="" disabled>Categorías (OR)</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name} ({category.itemCount})</option>)}</select>
+              <label className="flex items-center gap-2 text-xs text-secondary"><input type="checkbox" checked={draftFilters.uncategorized} onChange={(event) => onDraftFiltersChange({ ...draftFilters, uncategorized: event.target.checked })} />Sin categoría</label>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 md:col-span-2"><Button type="button" variant="secondary" onClick={onClearFilters}>Limpiar filtros</Button><Button type="submit">Aplicar filtros</Button></div>
+          </form>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-2" aria-label="Categorías">
         <Button ref={categoryButtonRef} type="button" variant="secondary" className="h-8 px-3 text-xs" onClick={() => setCategoryFormOpen((open) => !open)}>Nueva categoría</Button>
         {categoryFormOpen ? <NewCategoryForm busy={categoryBusy} onCreate={createCategory} onCancel={() => { setCategoryFormOpen(false); categoryButtonRef.current?.focus(); }} /> : null}
         <span className="sr-only" aria-live="polite">{categoryFeedback}</span>
@@ -1079,10 +1161,6 @@ function WishlistItems({
           <Button type="button" variant="secondary" className="h-8 px-3 text-xs" disabled={categoryBusy || batchCategoryId === ""} onClick={() => void applyBatchCategory(false)}>Asignar a categoría</Button>
           <Button type="button" variant="ghost" className="h-8 px-3 text-xs" disabled={categoryBusy || batchCategoryId === ""} onClick={() => void applyBatchCategory(true)}>Quitar de categoría</Button>
         </div> : null}
-      </div>
-      <div className="md:hidden">
-        <label className="sr-only" htmlFor="wishlist-filter-mobile">Buscar por nombre o AppID</label>
-        <input id="wishlist-filter-mobile" type="search" value={search} onChange={(event) => onSearchChange(event.target.value)} placeholder="Buscar por nombre o AppID" className="input-semantic h-8 w-full text-xs" />
       </div>
       <ul className="space-y-3 md:hidden">
         {filteredItems.map((item) => (
@@ -1103,12 +1181,10 @@ function WishlistItems({
       </ul>
       {filteredItems.length === 0 ? (
         <div className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
-          <p>{items.length === 0 ? "La wishlist está vacía." : "Ningún juego coincide con los filtros actuales."}</p>
-          {items.length === 0 && (search.trim() || categoryFilter !== "all") ? (
-            <Button type="button" variant="secondary" className="mt-3 h-8 px-3 text-xs" onClick={onClearFilters}>
-              Limpiar filtros
-            </Button>
-          ) : null}
+          <p>Ningún juego coincide con los filtros actuales.</p>
+          <Button type="button" variant="secondary" className="mt-3 h-8 px-3 text-xs" onClick={onClearFilters}>
+            Limpiar filtros
+          </Button>
         </div>
       ) : null}
       <p className="text-xs text-muted" aria-live="polite">
@@ -1158,24 +1234,34 @@ export function WishlistClient() {
   const [report, setReport] = useState<WishlistSyncResponse | null>(null);
   const [refreshingAppId, setRefreshingAppId] = useState<number | null>(null);
   const [rowErrors, setRowErrors] = useState<Readonly<Record<number, string>>>({});
-  const [search, setSearch] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState<number | "all" | "none">("all");
-  const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 50 });
-  const [sorting, setSorting] = useState<SortingState>([]);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  // Filters only arrive from an explicit shareable URL; they are never restored from local draft state.
+  const initialFilters = useMemo(() => filtersFromUrl(searchParams), [searchParams]);
+  const [draftFilters, setDraftFilters] = useState<WishlistFilters>(() => initialFilters);
+  const [appliedFilters, setAppliedFilters] = useState<WishlistFilters>(() => initialFilters);
+  const [filtersOpen, setFiltersOpen] = useState(() => !hasDefaultFilters(initialFilters));
+  const [pagination, setPagination] = useState<PaginationState>(() => ({ pageIndex: Math.max(0, Number(searchParams.get("page") || 1) - 1), pageSize: WISHLIST_PAGE_SIZES.includes(Number(searchParams.get("pageSize"))) ? Number(searchParams.get("pageSize")) : 50 }));
+  const [sorting, setSorting] = useState<SortingState>(() => {
+    const sort = searchParams.get("sort");
+    return (WISHLIST_SORTS as readonly string[]).includes(sort ?? "") ? [{ id: sort as WishlistSort, desc: searchParams.get("direction") === "desc" }] : [];
+  });
   const requestRef = useRef(0);
   const hasLoadedRef = useRef(false);
 
   const wishlistQuery = useMemo<WishlistQuery>(() => ({
+    ...queryFilters(appliedFilters),
     page: pagination.pageIndex + 1,
     pageSize: pagination.pageSize,
-    search: search.trim() || undefined,
-    categoryId: typeof categoryFilter === "number" ? categoryFilter : undefined,
-    categoryState: categoryFilter === "none" ? "none" : "all",
-    sort: sorting[0]?.id === "name" || sorting[0]?.id === "priority" || sorting[0]?.id === "addedAt" ? sorting[0].id : undefined,
-    direction: sorting[0]?.desc ? "desc" : sorting.length > 0 ? "asc" : undefined
-  }), [categoryFilter, pagination, search, sorting]);
+    sort: (WISHLIST_SORTS as readonly string[]).includes(sorting[0]?.id ?? "") ? sorting[0]?.id as WishlistSort : undefined,
+    direction: sorting.length > 0 ? (sorting[0].desc ? "desc" : "asc") : undefined
+  }), [appliedFilters, pagination, sorting]);
 
-  const loadWishlist = useCallback(async (query: WishlistQuery = wishlistQuery, signal?: AbortSignal) => {
+  const wishlistQueryKey = useMemo(() => JSON.stringify(wishlistQuery), [wishlistQuery]);
+  const wishlistQueryRef = useRef(wishlistQuery);
+  wishlistQueryRef.current = wishlistQuery;
+
+  const loadWishlist = useCallback(async (query: WishlistQuery, signal?: AbortSignal) => {
     const requestId = ++requestRef.current;
     const initialLoad = !hasLoadedRef.current;
     setTableLoading(true);
@@ -1202,30 +1288,55 @@ export function WishlistClient() {
         if (initialLoad) setLoading(false);
       }
     }
-  }, [wishlistQuery]);
+  }, []);
+
+  useEffect(() => {
+    const totalPages = wishlist?.totalPages ?? 0;
+    setPagination((current) => {
+      const maxPageIndex = Math.max(0, totalPages - 1);
+      return current.pageIndex > maxPageIndex ? { ...current, pageIndex: maxPageIndex } : current;
+    });
+  }, [wishlist?.totalPages]);
 
   useEffect(() => {
     const controller = new AbortController();
-    const timer = setTimeout(() => void loadWishlist(wishlistQuery, controller.signal), search.trim() ? 300 : 0);
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-    };
-  }, [loadWishlist, wishlistQuery, search]);
+    void loadWishlist(wishlistQueryRef.current, controller.signal);
+    return () => controller.abort();
+  }, [loadWishlist, wishlistQueryKey]);
 
-  function changeSearch(value: string) {
-    setSearch(value);
+  const syncUrl = useCallback((query: WishlistQuery) => {
+    const params = serializeWishlistQuery(query);
+    router.replace(`/wishlist${params.size ? `?${params.toString()}` : ""}`, { scroll: false });
+  }, [router]);
+
+  function applyFilters() {
+    const next = { ...draftFilters, categoryIds: [...draftFilters.categoryIds] };
+    setAppliedFilters(next);
     setPagination((current) => ({ ...current, pageIndex: 0 }));
+    setFiltersOpen(false);
+    syncUrl({ ...queryFilters(next), page: 1, pageSize: pagination.pageSize, sort: wishlistQuery.sort, direction: wishlistQuery.direction });
   }
 
-  function changeCategory(value: number | "all" | "none") {
-    setCategoryFilter(value);
-    setPagination((current) => ({ ...current, pageIndex: 0 }));
+  function clearFilters() {
+    setDraftFilters(DEFAULT_FILTERS);
+    setAppliedFilters(DEFAULT_FILTERS);
+    setPagination({ pageIndex: 0, pageSize: 50 });
+    setSorting([]);
+    setFiltersOpen(false);
+    // The empty URL is the canonical all-items state: no implicit page, sort, or filter survives.
+    syncUrl({});
   }
 
   function changeSorting(next: SortingState) {
-    setSorting(next);
+    const supported = next.filter((sort) => (WISHLIST_SORTS as readonly string[]).includes(sort.id)).slice(0, 1);
+    setSorting(supported);
     setPagination((current) => ({ ...current, pageIndex: 0 }));
+    syncUrl({ ...queryFilters(appliedFilters), page: 1, pageSize: pagination.pageSize, sort: supported[0]?.id as WishlistQuery["sort"], direction: supported.length ? (supported[0].desc ? "desc" : "asc") : undefined });
+  }
+
+  function changePagination(next: PaginationState) {
+    setPagination(next);
+    syncUrl({ ...queryFilters(appliedFilters), page: next.pageIndex + 1, pageSize: next.pageSize, sort: wishlistQuery.sort, direction: wishlistQuery.direction });
   }
 
 
@@ -1235,10 +1346,11 @@ export function WishlistClient() {
     setSyncing(true);
     setSyncError(null);
     setReport(null);
+    const controller = new AbortController();
     try {
-      setReport(await syncWishlist());
+      setReport(await syncWishlist(controller.signal));
       try {
-        setWishlist(await getWishlist());
+        setWishlist(await getWishlist(wishlistQuery, controller.signal));
       } catch {
         // La sincronización ya terminó: no se borra el reporte, solo se dice que faltó recargar.
         setSyncError("La sincronización terminó, pero no se pudo recargar la lista.");
@@ -1246,6 +1358,7 @@ export function WishlistClient() {
     } catch (cause) {
       setSyncError(cause instanceof Error ? cause.message : "No se pudo sincronizar la wishlist.");
     } finally {
+      controller.abort();
       setSyncing(false);
     }
   }
@@ -1265,7 +1378,7 @@ export function WishlistClient() {
     }
 
     try {
-      setWishlist(await getWishlist());
+      setWishlist(await getWishlist(wishlistQuery));
     } catch {
       setSyncError("Los precios se actualizaron, pero no se pudo recargar la lista. Recarga la página para verlos.");
     } finally {
@@ -1320,7 +1433,7 @@ export function WishlistClient() {
     return (
       <div className="space-y-3">
         <Alert variant="danger">{error ?? "No se pudo cargar la wishlist."}</Alert>
-        <Button type="button" variant="secondary" onClick={() => void loadWishlist()}>
+        <Button type="button" variant="secondary" onClick={() => void loadWishlist(wishlistQuery)}>
           Reintentar
         </Button>
       </div>
@@ -1370,7 +1483,7 @@ export function WishlistClient() {
         <div className="flex flex-wrap items-center gap-2">
           {wishlist.state === "ok" ? (
             <span className="tabler-badge tabler-badge-muted">
-              {items.length === 1 ? "1 juego" : `${items.length} juegos`}
+              {wishlist.totalItems === 1 ? "1 juego" : `${wishlist.totalItems} juegos`}
             </span>
           ) : null}
           {syncedDisplay ? (
@@ -1386,7 +1499,7 @@ export function WishlistClient() {
 
       <StateNotice state={wishlist.state} />
 
-      {wishlist.state === "ok" && items.length === 0 ? (
+      {wishlist.state === "ok" && wishlist.totalItems === 0 && hasDefaultFilters(appliedFilters) ? (
         <div className="app-card space-y-1 p-5">
           <p className="text-sm font-semibold text-primary">Tu wishlist de Steam está vacía.</p>
           <p className="text-sm text-muted">
@@ -1395,7 +1508,7 @@ export function WishlistClient() {
         </div>
       ) : null}
 
-      {items.length > 0 || search.trim() || categoryFilter !== "all" ? (
+      {items.length > 0 || wishlist.totalItems > 0 || !hasDefaultFilters(appliedFilters) ? (
         <WishlistItems
           items={items}
           categories={wishlist.categories}
@@ -1414,22 +1527,21 @@ export function WishlistClient() {
           minViableDiscountPercent={wishlist.minViableDiscountPercent}
           onThresholdCommit={updateThreshold}
           onRefresh={(item) => void refreshItem(item)}
-          search={search}
-          onSearchChange={changeSearch}
+          search={draftFilters.search}
+          onSearchChange={(search) => setDraftFilters((current) => ({ ...current, search }))}
           pagination={pagination}
-          onPaginationChange={setPagination}
+          onPaginationChange={changePagination}
           sorting={sorting}
           onSortingChange={changeSorting}
           totalItems={wishlist.totalItems}
           loading={tableLoading}
           tableError={tableError}
-          categoryFilter={categoryFilter}
-          onCategoryChange={changeCategory}
-          onClearFilters={() => {
-            setSearch("");
-            setCategoryFilter("all");
-            setPagination((current) => ({ ...current, pageIndex: 0 }));
-          }}
+          draftFilters={draftFilters}
+          onDraftFiltersChange={setDraftFilters}
+          filtersOpen={filtersOpen}
+          onFiltersOpenChange={setFiltersOpen}
+          onApplyFilters={applyFilters}
+          onClearFilters={clearFilters}
         />
       ) : null}
     </div>

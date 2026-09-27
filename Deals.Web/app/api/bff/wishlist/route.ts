@@ -10,18 +10,20 @@ export async function GET(request: Request) {
   if (!session) return unauthorized(request);
 
   const upstreamUrl = new URL("/api/wishlist", getApiBaseUrl());
-  for (const key of ["page", "pageSize", "search", "categoryId", "categoryState", "sort", "direction"]) {
-    const value = new URL(request.url).searchParams.get(key);
+  const params = new URL(request.url).searchParams;
+  for (const key of ["page", "pageSize", "search", "minPrice", "maxPrice", "owned", "subscription", "uncategorized", "sort", "direction"]) {
+    const value = params.get(key);
     if (value !== null) upstreamUrl.searchParams.set(key, value);
   }
+  for (const categoryId of params.getAll("categoryIds")) upstreamUrl.searchParams.append("categoryIds", categoryId);
   const { response, session: updatedSession } = await fetchApiWithAutoRefresh(session, upstreamUrl.toString(), {
     method: "GET",
     cache: "no-store"
-  });
+  }, request.signal);
 
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { message?: string; Message?: string } | null;
-    const result = upstreamError(request, response.status, body?.message ?? body?.Message ?? "No se pudo cargar la wishlist");
+    await response.text().catch(() => "");
+    const result = upstreamError(request, response.status, "No se pudo cargar la wishlist");
     await attachSessionCookie(result, updatedSession, session);
     return result;
   }

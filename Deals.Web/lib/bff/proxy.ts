@@ -20,13 +20,13 @@ export async function proxyJsonWithSession(options: ProxyJsonOptions): Promise<{
   const startedAt = Date.now();
   const traceId = getTraceId(request);
 
-  const call = await fetchApiWithAutoRefresh(session, url, init);
+  const call = await fetchApiWithAutoRefresh(session, url, { ...init, signal: request.signal });
   const upstream = call.response;
   const updatedSession = call.session;
 
   if (!upstream.ok) {
-    const body = (await upstream.json().catch(() => null)) as { message?: string; Message?: string } | null;
-    const out = upstreamError(request, upstream.status, body?.message ?? body?.Message ?? upstreamErrorMessage);
+    await upstream.text().catch(() => "");
+    const out = upstreamError(request, upstream.status, upstreamErrorMessage);
     await attachSessionCookie(out, updatedSession, session);
 
     logBff("warn", {
