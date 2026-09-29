@@ -102,6 +102,8 @@ public sealed class SteamGameService(
     private const int MinSuggestionLength = 2;
     private const int MaxSuggestionLength = 100;
     private const int SuggestionLimit = 10;
+    private const int DiscoverDefaultPageSize = 12;
+    private const int DiscoverMaxPageSize = 24;
 
     // Bundle display bounds, mirroring the frontend contract: the persisted tier list is capped so a
     // provider payload cannot inflate the row or the response. The client parses further than this only
@@ -360,6 +362,98 @@ public sealed class SteamGameService(
                 HoldsSteamDetails(g),
                 LatestRefresh(g.OffersRefreshedAt, g.GgDealsRefreshedAt)))
             .ToList();
+    }
+
+    /// <summary>
+    /// Discovery lists over the rows the store snapshots already wrote: region MX with a current
+    /// price. No live call, no persistence — the same rows search and the detail page read, only
+    /// projected to card fields and ordered per list.
+    /// </summary>
+    public async Task<IReadOnlyList<SteamDiscoverItem>> GetDiscoverAsync(
+        string list,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        var normalizedList = (list ?? string.Empty).Trim().ToLowerInvariant();
+        var safePage = Math.Max(page, 1);
+        var safePageSize = pageSize <= 0 ? DiscoverDefaultPageSize : Math.Min(pageSize, DiscoverMaxPageSize);
+
+        // Offers join through the canonical game_id, not SteamGame.Offers: a direct-store offer can be
+        // Steam-less and therefore has no steam_game_id. The same comparable rule as the detail page is
+        // persisted MXN plus a pricing type other than `unconverted`; no provider call occurs here.
+        var cards =
+            from game in repository.Get<SteamGame>()
+            where game.Region == Region && game.CurrentPriceMinor != null
+            join offer in repository.Get<GameOffer>()
+                on game.GameId equals offer.GameId into gameOffers
+            let bestOffer = gameOffers
+                .Where(offer => offer.GameId != null &&
+                    offer.Region == Region &&
+                    offer.MxnCurrentPriceMinor != null &&
+                    offer.PricingType != UnconvertedPricing)
+                .OrderBy(offer => offer.MxnCurrentPriceMinor)
+                .ThenBy(offer => offer.ShopName)
+                .ThenBy(offer => offer.OfferKey)
+                .FirstOrDefault()
+            let bestPrice = bestOffer == null ? game.CurrentPriceMinor : bestOffer.MxnCurrentPriceMinor
+            let usesSteamFallback = bestOffer == null
+            let bestDiscount = game.Currency == "MXN" &&
+                game.InitialPriceMinor != null && game.InitialPriceMinor > 0 &&
+                bestPrice != null && bestPrice <= game.InitialPriceMinor
+                ? 100 * (game.InitialPriceMinor - bestPrice) / game.InitialPriceMinor
+                : (int?)null
+            select new
+            {
+                Game = game,
+                BestOffer = bestOffer,
+                BestPrice = bestPrice,
+                BestDiscount = bestDiscount,
+                UsesSteamFallback = usesSteamFallback
+            };
+
+        var ordered = normalizedList switch
+        {
+            // The visible percentage derives from this card's persisted best comparable price, not Steam's
+            // older snapshot discount. Null means the currencies/base cannot support an honest percentage.
+            "discount" => cards
+                .Where(card => card.BestDiscount != null && card.BestDiscount > 0)
+                .OrderByDescending(card => card.BestDiscount)
+                .ThenByDescending(card => card.Game.ObservedAt),
+            // Preserve the established local-Steam-low definition. Cross-store prices never redefine it.
+            "historic" => cards
+                .Where(card => card.Game.LowestPriceMinor != null &&
+                    card.Game.CurrentPriceMinor == card.Game.LowestPriceMinor)
+                .OrderByDescending(card => card.Game.ObservedAt),
+            // ObservedAt belongs to the Steam snapshot only; provider refreshes do not advance this list.
+            "recent" => cards.OrderByDescending(card => card.Game.ObservedAt),
+            _ => throw new ArgumentException(
+                $"Lista desconocida: '{list}'. Valores válidos: discount, historic, recent.",
+                nameof(list))
+        };
+
+        return await ordered
+            .Skip((safePage - 1) * safePageSize)
+            .Take(safePageSize)
+            .Select(card => new SteamDiscoverItem(
+                card.Game.AppId,
+                card.Game.Name,
+                card.Game.Type,
+                card.Game.ImageUrl,
+                card.Game.Currency,
+                card.Game.InitialPriceMinor,
+                card.Game.CurrentPriceMinor,
+                card.Game.LowestPriceMinor,
+                card.Game.ObservedAt,
+                card.BestPrice,
+                card.BestOffer == null ? card.Game.Currency : "MXN",
+                card.BestOffer == null ? "steam" : card.BestOffer.Source,
+                card.BestOffer == null ? "Steam" : card.BestOffer.ShopName,
+                card.BestOffer == null ? null : card.BestOffer.Classification,
+                card.BestOffer == null ? "regional" : card.BestOffer.PricingType,
+                card.BestDiscount,
+                card.UsesSteamFallback))
+            .ToListAsync(cancellationToken);
     }
 
     public async Task<SteamGameDetails?> GetByAppIdAsync(

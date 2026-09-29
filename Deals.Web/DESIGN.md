@@ -32,8 +32,9 @@ when it was last observed.
 |---|---|---|---|
 | `/` | `app/page.tsx` | Product | Home: search as the central CTA, how-it-works, price source note |
 | `/search` | `app/search/page.tsx`, `app/search/search-client.tsx` | Product | Text search; `?q=` pre-runs the query; local suggestions while typing (≥2 chars) |
+| `/discover` | `app/discover/{page,discover-client}.tsx`, `app/discover/_lib/discover-api.ts` | Product | Discovery: three read-only lists over persisted `steam_games` rows (discount / historic / recent), capsule cards linking to `/games/[steamAppId]` |
 | `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: FX reference strip above the card, cover + official Steam price + sources historical minimum + local Steam minimum + the page's single refresh control, per-provider best-price cards with each price's observation date, CTA footer, ownership line (`ownership`), Steam source table, multi-store offers grouped by provider, bundles, reviews |
-| `/wishlist` | `app/wishlist/{page,wishlist-client}.tsx`, `app/wishlist/_lib/*` | Product | Steam wishlist: four explicit states, "Sincronizar ahora" with its report, a price-reference table (base, historical low, MXN official/keyshop minimums) with a per-row refresh, per-band discount % and a hybrid 0-10 deal score driven by a backend viable-minimum threshold; a multi-game selection (by AppID) with a sticky bar showing the package total under two alternative scenarios (official / keys) |
+| `/wishlist` | `app/wishlist/{page,wishlist-client}.tsx`, `app/wishlist/_lib/*` | Product | Steam wishlist: four explicit states, "Sincronizar ahora" with its report, capsule cards (base, historical low, MXN official/keyshop minimums, per-band discount % and a hybrid 0-10 deal score driven by a backend viable-minimum threshold) with a per-row refresh; a multi-game selection (by AppID) with a sticky bar showing the package total under two alternative scenarios (official / keys) |
 | `/library` | `app/library/{page,library-client}.tsx`, `app/library/_lib/*` | Admin | Playnite library import (manual JSON upload of ≤10 MiB) plus the owned/subscription list grouped by store, with the Game Pass tag and the explicit "Sin precios vinculados" state |
 | `/login` | `app/login/page.tsx` | Public | Only public page, plus `/api/auth/{login,refresh,session}` |
 | `/users` | `app/users/*` | Admin | Reference admin slice (`AdminShell` + `DataGrid`), admin role only; consumes the same tokens, cards, badges and `Button` variants as the product surface |
@@ -41,8 +42,8 @@ when it was last observed.
 
 - **Gate:** `middleware.ts` + `isPublicRoute` (`lib/security/route-policy.ts`) redirect any app route
   without a usable session to `/login?reason=session_expired`. There is currently no public product
-  surface; "product" means the consumer-facing area (`/`, `/search`, `/games/*`), not anonymous access.
-- **Scope of this contract:** `/`, `/search`, `/games/[steamAppId]`, `/wishlist`, `/library` and `ProductShell`. `/users`
+  surface; "product" means the consumer-facing area (`/`, `/search`, `/discover`, `/games/*`), not anonymous access.
+- **Scope of this contract:** `/`, `/search`, `/discover`, `/games/[steamAppId]`, `/wishlist`, `/library` and `ProductShell`. `/users`
   also consumes it (tokens, `.app-card`, `.app-topbar`, `.table-*`, semantic badges and `Button` variants)
   while keeping `AdminShell` and its admin-only gating. `/steam` still renders inside `AdminShell` with its
   previous layout: it inherits the shared tokens but was not migrated.
@@ -55,7 +56,15 @@ when it was last observed.
   offers **by provider** (`source` → ITAD / gg.deals), never by store type, so ITAD's official stores
   and gg.deals' retail + keyshop aggregate are two independent comparisons. gg.deals' free tier returns
   a single aggregate price per bucket and never a seller identity, so copy never names a keyshop and
-  never claims "all stores".
+  never claims "all stores". `/discover` reads the same persisted rows through
+  `GET /api/steam/discover` (BFF `GET /api/bff/steam/discover`): three read-only lists
+  (`discount | historic | recent`) projected to card fields only, never a live store call.
+  Discover cards select the lowest persisted comparable offer through canonical `game_id`
+  (`mxnCurrentPriceMinor` plus `pricingType != unconverted`), including keyshop aggregates. If no
+  such offer exists, the card explicitly falls back to Steam. `Mejor precio` is primary and
+  `Precio base Steam` is the list/base reference; a percentage renders only when that base is MXN
+  and supports an honest comparison. `historic` keeps its narrower Steam-local-low definition and
+  `recent` remains ordered only by Steam's observation timestamp.
   Each provider returns offers in its own currency (`original*` fields, the source of truth); the
   MXN columns (`mxn*`) are derived from the day's FX rate (Banxico FIX, Frankfurter fallback),
   nullable, and always presented as approximate. `historyLowAllMinor`/`historyLowCurrency` normalize
@@ -78,8 +87,12 @@ when it was last observed.
   from this page enters the comparator, `bestGroupOffer` or any savings math. The response's
   `minViableDiscountPercent` (0..95, default 50) is a per-user preference saved with
   `PUT /api/wishlist/preferences` (BFF `PUT /api/bff/wishlist/preferences`) and only feeds the two deal
-  scores. The list uses the shared `DataGrid` in client mode for sorting, global filtering, per-column
-  filtering and pagination; mobile tiles consume the same name/AppID filter state.
+  scores. The list is paged and ordered server-side and rendered as one game-collection card per
+  game at every width: a wide cover anchors identity and categories, `Mejor precio` is the purchasing
+  signal, and discount/base price form a restrained secondary rail. Refresh, category editing and
+  timestamp stay beside the purchase path; historical, per-source and scoring facts remain in native
+  `details`, so every fact is available without turning the immediate view into a dashboard. The
+  toolbar search input consumes the same name/AppID draft filter state as the filter panel.
 - **Wishlist package preview:** the same page supports selecting several games at once (by AppID, never by
   row index) and asking what that set would cost under two **alternative** scenarios: everything bought from
   a legitimate shop, or everything bought from the keyshop aggregate. The two subtotals never add up — there
@@ -333,10 +346,13 @@ same source.
 - `SteamThumb` (local to `app/search/search-client.tsx`) — 120×45 `tiny_image` on `sm` and up,
   90×34 below, with a decorative `Gamepad2` placeholder when the URL is missing or fails to load
   (`onError`). The thumbnail is always decorative (`alt=""`) because the game name is adjacent text.
-- Game detail cover: the API `imageUrl` inside `aspect-[460/215]`, full width below `lg` and inside
-  the summary header's `lg:col-span-4` grid cell from `lg` up. Missing or failed image falls back to the
-  same aspect-ratio placeholder, so the header never collapses. Both covers keep the plain `<img>` debt
-  noted in §11.
+- Game detail cover: the API `imageUrl` in a bounded side column at `lg` (`lg:grid-cols-12`,
+  cover `lg:col-span-4`, content `lg:col-span-8`; stacked below `lg`) with the shorter
+  `aspect-[16/7]`, `object-cover` and `rounded-[var(--radius-md)]` inside a bordered
+  `bg-[var(--color-surface-2)]` frame, so the price panel reads beside the image at desktop widths
+  instead of below a full-width banner; at 360px the cover stacks on top, full-width like before.
+  Missing or failed image falls back to the same aspect-ratio placeholder, so the header never
+  collapses. Both covers keep the plain `<img>` debt noted in §11.
 
 ### Buttons / inputs / alerts
 
@@ -353,11 +369,12 @@ same source.
 
 ### Offers section (game detail)
 
-- Sits in an `.app-card` **after** the existing Steam summary and Steam table, whose markup and layout
-  are unchanged.
-- Header: `uppercase tracking-widest` kicker "Ofertas por proveedor", `text-xl` heading and the note
-  "Dos proveedores con formas distintas: ITAD publica oferta por tienda; gg.deals, un precio agregado por
-  grupo de tiendas.", plus the attribution line **"Datos de precios: IsThereAnyDeal · GG.deals"** (both
+- Sits in an `.app-card` **after** the summary card (comparable cards included). The Steam source
+  table moved into this section's first tab, so there is no separate Steam table section any more.
+- Header: `uppercase tracking-widest` kicker "Ofertas por proveedor", `text-xl` heading "Ofertas y
+  bundles por proveedor" and the note "Cada pestaña muestra un proveedor: Steam oficial, tiendas
+  directas (Epic, Microsoft), ITAD por tienda y gg.deals como agregado por grupo de tiendas.",
+  plus the attribution line **"Datos de precios: IsThereAnyDeal · GG.deals"** (both
   providers require an active hyperlink, always visible).
 - The refresh control is **not in this section**. "Actualizar ofertas" lives exactly once in the game
   summary card, in the row that carries the update date (`Button variant="secondary"`,
@@ -365,8 +382,19 @@ same source.
   status line and the `refreshError` `Alert variant="danger"`. This section keeps its counts, freshness
   badges and empty state; its empty-state copy still names «Actualizar ofertas» because the control still
   exists, one region above.
-- **Two groups, two shapes**, rendered in a `space-y-5` stack because the providers publish different
-  granularity. There is no "Tiendas oficiales" group any more.
+- **Provider tabs.** Below the comparable cards, the long stacked provider tables are replaced by
+  accessible tabs in one `app-card` section (`Ofertas y bundles por proveedor`): one tab per provider
+  group **with** data — `Steam oficial` first and always, then Epic, Microsoft, ITAD, gg.deals and
+  `Bundles` (display-only) only when they have rows. Tabs use `role=tablist/tab/tabpanel`,
+  `aria-selected`, roving `tabIndex` (only the active tab is reachable with `Tab`) and ArrowLeft /
+  ArrowRight / Home / End keyboard navigation with focus moved to the newly selected tab, plus
+  `focus-visible` rings. Each panel renders that provider's **existing** table/cards unchanged
+  (Steam source table, `OfferGroup`, `AggregateOfferList`, bundle cards) with its own disclaimer/note
+  lines moved along (the GOG note lives in the ITAD panel, the bundle note and attribution in the
+  Bundles panel). Tab labels are Spanish provider names; tabs whose group already counted rows carry
+  that count as a badge (Steam's single-row table carries none). The section header (attribution,
+  freshness badges, empty state) stays above the tablist, so the ToS credit can never be missing.
+  Only local tab state is added; no data logic, helper, fetch, refresh or favorite changes.
   - `ITAD` (id `offers-itad`) — `OfferGroup`, one `.table-shell` with fixed columns
     `Tienda | Precio base | Descuento | Precio | Moneda | Aprox. MXN | Observado | Mínimo histórico`,
     because ITAD returns **one offer per store**. The header block stacks below `sm` and the table
@@ -385,6 +413,11 @@ same source.
     the muted observation date. `shopName` already distinguishes `GG.deals` from
     `GG.deals keyshops`, so no per-store column or identifier is added. The list is `ul`-based on purpose:
     a future provider with several rows per store fits the same shape without a new layout.
+  - Direct stores (`Epic Games Store`, `Microsoft Store`) — `OfferGroup` table with the same columns as
+    ITAD: one row per game with the regional price, first among the store tabs because it is the store's
+    real price, not an estimate.
+  - `Bundles` — the bundle cards moved unchanged from their old section (header, note, attribution,
+    counts, freshness badges and cards), display-only: never offer rows, never savings math.
 - `Observado` uses `Intl.DateTimeFormat("es-MX", { dateStyle: "medium" })`. `fxRateDate` arrives as
   `YYYY-MM-DD` and is reordered to `dd/MM/yyyy` by string split — never through `new Date()` — so the
   day cannot shift by timezone.
@@ -396,26 +429,28 @@ same source.
   ("DRM:" / "Plataformas:") so the pills are never unlabelled words. Nothing renders for empty arrays.
 - Above the accent card, an FX reference strip (documented in §4) renders only when some offer is an
   `fx_estimate` with a rate; otherwise it does not exist at all.
-- The summary card is one outer `app-card-accent`. Its technical header is a
-  `grid grid-cols-1 gap-5 lg:grid-cols-12`: the image is `lg:col-span-4` and the technical content
-  (`min-w-0 space-y-3`) is `lg:col-span-8`. The two-column split starts at `lg` (1024px), never at `md`:
-  between 768 and 1023 the content column was only 450-660px wide, which is where the badge rows and the
-  action row piled up, while the `460/215` cover sat short in a wide cell with dead space beside it. The
-  image keeps its existing aspect ratio, fallback and object-cover behavior without fixed desktop
-  dimensions. The card stacks image, technical content, the action row, best-price cards and the
-  disclaimer footer, so mobile order matches desktop.
-- The action row sits directly under the header grid and spans the full card width, outside the content
-  column. Inside it the refresh control and the two store links do not fit in the `lg:col-span-8` column,
-  and keeping the links in the closing footer left them alone at the bottom of the card. One
-  `flex flex-wrap items-center gap-3` row holds, in order: the update-date badge, the page's single
-  `Actualizar ofertas` control, `Ver en Steam`, `Buscar en Ubisoft Store`, and the `aria-live` refresh
-  message. `Ver en Steam` is the canonical store page link; `Buscar en Ubisoft Store` is a title search
-  only (Ubisoft has no price client and no buildable id) and says "buscar" for exactly that reason.
-  The `refreshError` alert renders immediately below this row.
-- The technical header carries, in this order: the "Precio Steam · México" kicker, the game name, the
-  AppID + favourite row, the ownership badges, the **official Steam price** (the `text-3xl` `.deal-price`
-  headline, its `-N%` badge, the "Precio actual" / "Sin precio" state badge and "Datos incompletos"),
-  the **sources historical minimum** as a visible figure, and the **local Steam minimum** badge.
+- The summary card is one outer `app-card-accent` with `overflow-hidden`. A `grid gap-5 p-5
+  lg:grid-cols-12` block splits it below `lg` into a stacked cover plus content; at `lg` and up the
+  cover sits in its own `lg:col-span-4` column and the identity block, price panel and action row
+  stack in `lg:col-span-8`, so mobile order matches desktop and no width leaves dead space inside
+  the cover frame.
+- The page hierarchy is **hero → Mejor precio comparable → Detalles**. The comparable-price section
+  is a full-width sibling immediately after the summary card; only provider tabs, tables, bundles
+  and their supporting notes live in the later details section.
+- The action row spans the full content width. One `flex flex-wrap items-center gap-3` row holds, in
+  order: the update-date badge, the page's single `Actualizar ofertas` control, `Ver en Steam`,
+  `Buscar en Ubisoft Store`, and the `aria-live` refresh message. `Ver en Steam` is the canonical store
+  page link; `Buscar en Ubisoft Store` is a title search only (Ubisoft has no price client and no
+  buildable id) and says "buscar" for exactly that reason. The `refreshError` alert renders immediately
+  below this row.
+- The identity block carries, in this order: the "Precio Steam · México" kicker, the game name, the
+  AppID + favourite row and the ownership badges.
+- The price panel (`rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4`)
+  splits "what you pay today" from "historical context" in a `grid gap-4 sm:grid-cols-2`: the left cell
+  holds the **official Steam price** (the `text-3xl` `.deal-price` headline, its `-N%` badge, the "Precio
+  actual" / "Sin precio" state badge and "Datos incompletos"); the right cell holds the **sources
+  historical minimum** as a visible figure and the **local Steam minimum** badge, divided by the panel
+  edge (`sm:border-l`, a horizontal `border-t` below `sm`).
 - The sources historical minimum shows the `Mínimo histórico de las fuentes` kicker, then
   `.deal-price text-xl text-primary` prefixed `≈` when the candidate is approximate, then its source
   label (`text-sm font-semibold text-secondary`). It never uses `text-success`: on this page success
@@ -426,17 +461,16 @@ same source.
   `game.currency` is MXN: this figure is printed as an MXN amount, so a non-MXN card would print `MX$`
   over a foreign amount, right beside the badge that formats it in its own currency. It is the same
   condition `steamComparablePrice` already applies to the direct price.
-- `Mejor precio comparable` is separated with `border-t border-default pt-4`. One non-clickable
-  `.app-card` mini-card per provider that has a comparable offer, in `grid gap-3 md:grid-cols-2`; one
-  card uses the full available grid width. Each mini-card shows the provider heading, the comparable MXN
-  price, the winner label when green, the source link/plain label and **its own** observation date
-  (`Observado <fecha>` / `Sin fecha de observación`). Steam is never a card. The comparison disclaimer
-  remains below the grid. Empty state stays `Sin precio comparable en MXN por ahora.`.
-- A `border-t border-default pt-4` footer closes the card: the historical disclaimer (it combines the
-  local Steam minimum and provider minimums, non-MXN amounts are approximated, and sources and regions
-  differ, so it is a guide and not a single historical price). The two CTAs moved out of this footer into
-  the action row under the header. There is no "Referencia histórica" zone any more: the historical
-  figure moved to the top block.
+- `Mejor precio comparable` is a full-width section immediately after the summary card. One
+  non-clickable `.app-card` mini-card per provider that has a comparable offer, in `grid gap-3
+  md:grid-cols-2`; one card uses the full available grid width. Each mini-card shows the provider
+  heading, the comparable MXN price, the winner label when green, the source link/plain label and
+  **its own** observation date (`Observado <fecha>` / `Sin fecha de observación`). The winning card
+  also carries a success-token border (`border-[color:var(--color-success)]`), so the winner reads
+  without reading the figure. Steam is never a card. The comparison disclaimer remains below the
+  grid. Empty state stays `Sin precio comparable en MXN por ahora.`.
+- The two CTAs live in the action row under the hero header. There is no "Referencia histórica" zone:
+  the historical figure remains in the hero price panel.
 
 ### Posesión en el detalle (`game-client.tsx`)
 
@@ -460,6 +494,46 @@ same source.
 | everything empty or the property absent | nothing renders: the line does not exist, spacing is unchanged |
 | always | no price claim, no discount and no savings math from ownership; ownership never feeds the comparator or `bestGroupOffer` |
 
+### Discovery (`/discover`)
+
+- Rendered inside `ProductShell` (`title="Descubrir"`, meta badge `Steam · México`). The page is a
+  server component that redirects to `/login` without a session and delegates every state to
+  `discover-client.tsx`; the route is protected by the global matcher in `middleware.ts`
+  (`lib/security/route-policy.ts` is untouched). Nav entry «Descubrir» in `productNavItems`.
+- One loading state (`app-card p-5 text-sm text-muted` "Cargando..."), one failure state
+  (`Alert variant="danger"` + `Button variant="secondary"` "Reintentar"), then three sections fed by
+  one parallel fetch each (`discount | historic | recent`, `pageSize` default server-side).
+- Each section carries the shared kicker + `h2` + muted note shape: «Mayores descuentos» (by discount
+  desc, price + `-N%` success badge), «En su mínimo histórico» (current price at the local low, price +
+  `En su mínimo` success badge), «Recién observados» (by observation desc, price only, never green).
+  Green follows the standing semantics: discount and at-low only; recency is not cheapness.
+- Cards reuse the search result chrome (`app-card` + decorative `tiny_image` at 90×34 below `sm`
+  and 120×45 at `sm` and up + «Ver precios» on `sm` and up) in a `grid gap-3 md:grid-cols-2
+  xl:grid-cols-3` (one column on mobile, two on `md`, three on `xl`) and link to `/games/<appId>`.
+  The compact card keeps every fact (name clamped to two lines, AppID/type, price, discount badge,
+  observed date, link) without becoming a banner. Per-section Spanish empty states; no fake data,
+  no new tokens, no hardcoded colors.
+
+### Shared line with the game detail
+
+- `/discover` and `/games/[steamAppId]` speak the same chrome: `.app-card` surfaces, kicker
+  (`text-xs font-semibold uppercase tracking-widest text-muted`) + `text-xl` heading per section,
+  `tabler-badge-*` tones with words (never tone alone), `deal-price` numerals, guarded `es-MX` dates.
+- The detail's Steam source table now sits in the same `app-card space-y-4 p-5` section shape as every
+  other section (kicker «Precio oficial», `h2` «Precio en Steam», inner `.table-shell`); the table, its
+  `sr-only` caption and every cell are unchanged. No logic or copy moved: the restyle is JSX chrome only.
+
+### Wishlist and library cards
+
+- `/wishlist` and `/library` render the same capsule card as `/discover` (`app-card`, cover thumb, name,
+  figures with `deal-price`, state badges, «Ver precios» to `/games/<appId>` where an AppID exists) in a
+  `grid gap-3 md:grid-cols-2` (`/wishlist` adds `xl:grid-cols-3` with its compact card; `/library` stays
+  at two columns): two columns on desktop, one on mobile. No `DataGrid` remains on either page
+  (`/users` is its only consumer now); search, sort and paging live in a plain toolbar above the grid and
+  keep the same `localStorage` keys the tables used for page size and visible sections.
+- Green follows the standing semantics on both pages — wishlist discount badges and ≥7 deal scores, library
+  GOTY — never a historical figure.
+
 ### Wishlist (`/wishlist`)
 
 - Rendered inside `ProductShell` (`title="Wishlist de Steam"`). The page is a server component that
@@ -470,17 +544,20 @@ same source.
 - Summary badges: item count (`tabler-badge-muted`, only in state `ok`) plus "Última sincronización
   <fecha>" (`tabler-badge-info`) or "Sin fecha de sincronización" (`tabler-badge-warning`). Tone is never
   the only signal: every badge carries its words.
-- Items: a `ul` of bordered tiles below `md` and a `.table-shell` table from `md` up
-  (`Sel. | Portada | Juego | Precio base | % dto. oficial | % dto. keys | Deal oficial | Deal keys |
-  Mínimo histórico | Mín. oficial | Mín. keys | Prioridad | Alta | Actualizado | Acciones`), so the row
-  works at 360px and the desktop table is never squashed. `Prioridad` stays in the column menu but is
-  hidden by default (the user does not use Steam's rank) and it is not part of the mobile meta line. The game
-  name is an internal `Link` to `/games/<appId>`; the cover is the local `WishlistThumb` (90×34 below `sm`,
-  120×45 above, decorative `alt=""`, `Gamepad2` placeholder when the URL is missing or fails). The ITAD
-  identity is a badge ("Identificado en ITAD" info / "Sin identificar en ITAD" muted) in the row, never a
-  bare id. On the tiles the four price columns become a two-column `Precio base / Mínimo histórico /
-  Mín. oficial / Mín. keys` grid above the meta line, and the four new metrics (`% dto. oficial`,
-  `% dto. keys`, `Deal oficial`, `Deal keys`) join the same grid so mobile matches desktop.
+- Items: one compact capsule card per game (`WishlistCard`) in a `grid gap-3 md:grid-cols-2
+  xl:grid-cols-3` — the `/discover` shell (`app-card` + cover thumb + name link + «Ver precios» link to
+  `/games/<appId>`) — at every width. The sparse first surface shows the header row (selection
+  checkbox, 90×34 cover below `sm` / 120×45 above, name, AppID/priority, category badges), one price
+  line (`Mejor precio` + `Mayor descuento` + `Precio base`), the «Ver precios» link, then the category
+  and freshness actions (`Editar categorías`, per-row `Sincronizar`, `Actualizado`). A native
+  collapsed-by-default `<details>` zone («Más detalle») follows with the remaining facts (`Mínimo
+  histórico`, `Mín. oficial`, `Mín. keys`, the four `% dto.`/`Deal` metrics and the
+  `Alta`/`Actualizado`/per-provider sync badges). The row error stays visible outside the collapsed
+  zone. The «Ya adquirido en» line renders under the header when the game is owned elsewhere. The
+  game name is an internal `Link` to `/games/<appId>`; the cover is the local `WishlistThumb`
+  (decorative `alt=""`, `Gamepad2` placeholder when the URL is missing or fails). The ITAD identity
+  lives in the sync badges (the `IT` stamp); the Steam priority is a muted «Prioridad N» note beside
+  the AppID, not a hidden column.
 - **Money is shown in the currency it arrives in, never converted.** `Precio base` and
   `Mínimo histórico` use `Intl.NumberFormat("es-MX", { style: "currency", currency })` (via
   `lib/format/currency.ts`, the same helper the game detail uses), so a non-MXN code prints with its own
@@ -507,19 +584,21 @@ same source.
   backend preference: it commits on `blur` or `Enter` through `updateWishlistPreferences` →
   `PUT /api/bff/wishlist/preferences`, the local state only takes the value the server confirms, and a
   failure reverts the field to the current value and shows an inline `role="alert"` line. It changes both
-  deal scores immediately. Only visible columns, page size and density/sorting are local; this threshold
+  deal scores immediately. Only page size and sorting are local; this threshold
   is not.
-- **Filter and sorting:** desktop delegates to the shared `DataGrid` in client mode, with its own global
-  search input (`Buscar por nombre o AppID`), a per-column filter row and `getFilteredRowModel`/
-  `getSortedRowModel`. The custom global filter matches the game name or AppID text; the column filters use
-  the module default `includesString`. The page sizes are 10/25/50/100 plus `Todos`, and the chosen size and
-  the visible columns persist in `localStorage` (`wishlist.pageSize.v1`, `wishlist.columns.v1`). Mobile uses
-  a compact native input tied to the same global filter state before mapping its tiles, so filtering never
-  disappears at 360px. There is no server-side filter, pagination or reordering.
+- **Filter and sorting:** the server owns paging and ordering (`page`/`pageSize`/`sort`/`direction`,
+  mirrored in the URL and clamped to the supported sort keys); the cards render the current page only. The
+  toolbar above the grid holds the draft search input (`Buscar por nombre o AppID`, applied with the filter
+  panel), an `Ordenar por` select with the eight server sort keys plus `Sin orden`, and an `Asc`/`Desc`
+  direction button. The pager below the grid (`Filas` 10/25/50/100, `Anterior`/`Siguiente`,
+  `Página X de Y`) drives the same pagination state the table used, and the page size persists in
+  `localStorage` (`wishlist.pageSize.v1`). There is no per-column filter row: the table rendered one, but in
+  server mode it never filtered (the grid deliberately skips client filtering there, so it searched only the
+  dead input, never the snapshot).
 
-- **Package selection and subtotals:** the first column is a checkbox (its header checkbox selects the
-  current page from `table.getRowModel()`, with `indeterminate` when the page is partially selected) and the
-  mobile tiles carry the same checkbox and an accent border while selected. Selection is keyed by AppID in a
+- **Package selection and subtotals:** each card carries a checkbox and an accent border while
+  selected; a «Seleccionar página» checkbox above the grid selects the current page (with `indeterminate`
+  when the page is partially selected). Selection is keyed by AppID in a
   `Set`, so sorting, filtering or paginating never moves a mark onto another game.
   `app/wishlist/_lib/wishlist-package.ts` (pure module, no imports) owns `toggleAppId`, `setAppIds`,
   `pageSelectionState`, `reconcileAppIds`, `packageRequestAppIds` and `exceedsPackageLimit`; it is covered by
@@ -531,12 +610,11 @@ same source.
   read `Calculando...` and a scenario with nothing quoted reads `Sin cotizar`, never `MX$0.00`. The server's
   `unmatchedAppIds` are removed from the selection and reported. Above the 200-AppID cap the bar shows the
   message and no subtotals. The preview adds no rate-limit policy: the cap is the brake.
-- **Sortable columns:** `Juego` (alphabetical), `Prioridad`, `Alta`, `Actualizado`, `Precio base`,
-  `% dto. oficial`, `% dto. keys`, `Deal oficial`, `Deal keys`, `Mínimo histórico`, `Mín. oficial` and
-  `Mín. keys`. `Sel.`, `Portada` and `Acciones` are not sortable. Numeric and date values sort by their raw
-  number/timestamp, not their formatted label.
-- **Null sorting:** the column comparator explicitly places `null` values last in both ascending and
-  descending directions. A missing price is never coerced to zero, so it cannot appear as the cheapest row.
+- **Sortable keys:** `Prioridad`, `Juego`, `Mejor precio`, `Mayor descuento`, `% dto. oficial`,
+  `% dto. keys`, `Mín. oficial` and `Mín. keys` — exactly the server-supported keys (`WISHLIST_SORTS`);
+  anything else clears the sort and returns to the server default order.
+- **Null sorting:** a missing price is never coerced to zero — the card reads "—" — so it cannot appear as
+  the cheapest row.
 - The list never renders raw JSON, upstream error bodies, provider ids beyond `appId`, or filesystem paths.
 
 | Condition | Treatment |
@@ -568,14 +646,14 @@ same source.
 | item without `appId` or `name` | dropped by the normalizer, never rendered |
 | invalid `imageUrl` (not absolute `https:`) | treated as missing and replaced by the placeholder — the value is never used as a `src` |
 | row refresh in flight | only that row's button shows `loading`/`aria-busy`; the other rows' buttons are `disabled` so a burst cannot burn the 6-per-minute budget |
-| row refresh failure | `role="alert"` `.text-danger` line in an extra table row (`colSpan` across the table) / under the tile; the rest of the page and the previous prices stay untouched |
+| row refresh failure | `role="alert"` `.text-danger` line under the card; the rest of the page and the previous prices stay untouched |
 | row refresh rejected by the rate limiter | "Se alcanzó el límite de refrescos (6 por minuto por IP). Espera un minuto y vuelve a intentar." — a wait instruction, never the bare word "error" |
 | row refresh failed for another reason | the upstream message plus the factual limit note, so a rejection always ends in a wait instruction |
 | row refresh succeeded | the list is re-fetched with `getWishlist` and re-rendered in place; there is no navigation, so the scroll position is preserved |
 | row refresh succeeded but the reload failed | the page-level `Alert variant="danger"` in the summary says the prices were updated and asks for a page reload |
 | `state` missing or unknown | the whole response is rejected at the BFF (502 upstream error), never mapped to a guess |
 | a sync report count missing or invalid | the report is rejected at the BFF; no count is defaulted to 0 |
-| always | one `sr-only` `<caption>` on the table, `th scope="col"`, decorative covers with `alt=""` and the item name as adjacent text |
+| always | decorative covers with `alt=""` and the item name as adjacent text |
 
 ### Biblioteca (`/library`)
 
@@ -591,8 +669,17 @@ same source.
   with its count) and a second one for the played year (`Todos los años`, each year, and `Sin año` only when
   something has no dated review), plus a button group `Filtro de estado de juego` with `Todos | Por jugar |
   Terminado | Completado 100% | Dropeado` where **every option carries its count** (the group is the report:
-  "cuántos por estado"). 100 rows at a time behind "Mostrar N más". Each row shows the title, the store, the
-  state tag, "Instalado" when the backend says so, `Alta <fecha>` (or "Sin fecha de alta"), and the price block.
+  "cuántos por estado"). Below the filters, a search input (`Buscar por juego o tienda`, accent-insensitive
+  over title and store), an `Ordenar por` select (`Juego | Estado de juego | Última reseña | Años jugados`)
+  with an `Asc`/`Desc` direction button, and the `Columnas` menu toggling each card section. The list is one
+  capsule card per game in a `grid gap-3 md:grid-cols-2` (the `/discover` shell: `app-card` + cover + name +
+  «Ver precios» to `/games/<steamAppId>` when the row carries a Steam appid). Each card shows the title, the
+  store badges, the state tags (`En tu biblioteca` / `Wishlist` / Game Pass, plus `Instalado`), the
+  play-status badge, the favorite toggle, the last-review badges (or "—"), the played-year badges (or "—")
+  and the `Reseñas`/`Reseñar`, `Portada`/`Cambiar portada` and `Editar título` actions. A pager closes the
+  list (`Filas` 10/25/50/100, `Anterior`/`Siguiente`, `Página X de Y`); the page size and the visible sections
+  persist in `localStorage` (`library.pageSize.v1`, `library.columns.v1`, the same keys and shape the table
+  used). Searching or sorting returns to the first page; the store/year/status filters do not move it.
 - **Los conteos cuentan lo que se ve.** Tienda, estado y año se calculan sobre el conjunto ya filtrado por
   tienda, así que elegir una tienda reescribe los números de los otros dos filtros y nunca aparece un
   "12 juegos" que la grilla no pueda mostrar. Como un juego rejugado cuenta en cada año en que se jugó, la
@@ -609,15 +696,15 @@ same source.
   still used by `/wishlist`), so a missing amount reads "—" and no 0 is invented. A field whose amount or
   currency is null is omitted; if all four are missing the row shows one muted "Sin precio" and stays.
   `bindingSource` and `steamAppId` are normalized but never painted.
-- **Estado de juego (columna `Estado de juego`).** `Por jugar | Terminado | Completado 100% | Dropeado`,
-  derivado en el cliente con `playStatusOf`; el orden del encabezado es el del ciclo de vida
+- **Estado de juego (sección `Estado de juego`).** `Por jugar | Terminado | Completado 100% | Dropeado`,
+  derivado en el cliente con `playStatusOf`; el orden del selector es el del ciclo de vida
   (`Por jugar < Dropeado < Terminado < Completado 100%`), no el alfabético. «Por jugar» **no es una reseña**:
   es la ausencia de reseña, así que no se guarda en ninguna columna.
-- **Años jugados (columna `Años jugados`).** Un badge por año, del más nuevo al más viejo, con el año de
+- **Años jugados (sección `Años jugados`).** Un badge por año, del más nuevo al más viejo, con el año de
   `finishedMonth ?? startedMonth` de **todas** las reseñas del juego; un juego rejugado muestra dos badges y
   ordena por el más reciente. Sin años, un `—` muted. El servidor manda los años ya calculados
   (`playedYears`), el cliente no deriva fechas.
-- **Favorito (columna `Favorito`).** El interruptor es del **juego**, no de la reseña: marcar una fila marca
+- **Favorito (sección `Favorito`).** El interruptor es del **juego**, no de la reseña: marcar una tarjeta marca
   todas las que comparten `gameId`, y por eso la columna no depende de la plataforma elegida. Una fila sin
   `gameId` no ofrece el botón.
 - **Portadas (`Sincronizar portadas` y `Portada` por fila).** La portada es del **juego canónico**
@@ -816,7 +903,7 @@ de ahorro. Contrato en `lib/contracts/games-merge.ts`, cliente en
 
 ### DataGrid (`components/data-grid/data-grid.tsx`)
 
-Used by `/users` (admin) and `/wishlist` (product). Props are additive-only and the new capabilities are
+Used by `/users` (admin). Props are additive-only and the new capabilities are
 opt-in: with none of them set the grid behaves exactly as before. Column IDs are a public contract.
 Available: `columns, rows, mode, density, allowDensityToggle, densityStorageKey, loading, emptyMessage,
 errorMessage, manualSorting, sorting, onSortingChange, manualPagination, pagination,
@@ -932,6 +1019,10 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   `aria-labelledby` (the gg.deals list is a `ul`, so its entries are items, not cells). The refresh
   control announces its own state (`aria-busy` + live region), and the
   stale/refresh-date warnings are text badges rather than a color change alone.
+- Provider tabs: `role=tablist` labelled "Proveedores"; each tab carries `role=tab`, `aria-selected`,
+  `aria-controls` and a roving `tabIndex`, each panel `role=tabpanel` with `aria-labelledby` pointing
+  back at its tab. ArrowLeft/ArrowRight/Home/End move selection and focus; every tab has a visible
+  `focus-visible` ring.
 - Offer state is always carried by text ("Precio actual", "Datos incompletos", "Sin fecha de
   actualización") in addition to color; the same applies to classification ("Oficial", "Keyshop").
 - "Más barato" is a visible badge, so the cheapest rows are not signalled by green text alone; its
@@ -1052,10 +1143,9 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   and the rest is still uncovered. Run them from inside the `_lib` directory: `node --test bundle-card.test.ts`;
   from the repo root the bracketed path is read as a glob and matches nothing, which reports
   `tests 0` and **succeeds**.
-- **Wishlist has no filter, sort or pagination.** The API returns the whole snapshot and the page renders
-  it in one pass; the normalizer (`app/wishlist/_lib/wishlist-contract.ts`) caps a payload at 5000 items and
-  drops unknown/extra fields. Add server-side paging plus a title or store filter only against a real
-  oversized account, not speculatively.
+- **Wishlist pages on the server.** The API returns one page of the snapshot and the page renders it
+  as capsule cards; the normalizer (`app/wishlist/_lib/wishlist-contract.ts`) caps a payload at 5000 items and
+  drops unknown/extra fields. Widen the page sizes only against a real oversized account, not speculatively.
 - **Two wishlist trust boundaries, one shape.** The BFF route and the client share the same normalizer, so
   both reject an invalid `state` and default a malformed item to "dropped" instead of rendering it. The
   client re-validates what the BFF already normalized: cheap, and it keeps a future non-BFF consumer honest.
@@ -1065,13 +1155,12 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
 - **Manual sync only.** The wishlist page never polls and never syncs on load: a snapshot older than the
   last manual run is shown with its own `syncedAt` badge, and "Sin fecha de sincronización" when the API
   reports none. Scheduled refresh is out of scope.
-- **Client-side filtering, no pagination.** Wishlist filtering and sorting stay in the browser because
-  the expected list is around 600 rows and the API returns the complete snapshot. The shared `DataGrid`
-  is currently unpaged in this screen; add server-side filtering/pagination only when list size or measured
-  render cost makes this boundary real.
+- **Server cuts in the URL, draft search on the toolbar.** The store/price/category cuts travel as
+  query parameters and filter on the server; the name/AppID search is a draft applied with the filter panel.
+  Add more server cuts only when list size or measured render cost makes this boundary real.
 - **The library is unpaged on the server and filtered in the browser.** The API returns the whole
-  `user_library` snapshot (~2.6k rows), so `/library` filters by store client-side and reveals 100 rows per
-  "Mostrar más". The normalizer (`app/library/_lib/library-contract.ts`) caps a payload at 20000 items and
+  `user_library` snapshot (~2.6k rows), so `/library` filters by store client-side and pages it 10/25/50/100
+  with `Anterior`/`Siguiente`. The normalizer (`app/library/_lib/library-contract.ts`) caps a payload at 20000 items and
   drops any item whose `state` it does not know instead of guessing `owned`. The import size check exists in
   the browser (early feedback) and in the BFF (the real 10 MiB limit); the file is never persisted. Add
   server-side paging/filtering only when a real account outgrows this.

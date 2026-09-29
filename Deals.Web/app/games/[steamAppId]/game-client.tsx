@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { ExternalLink, Gamepad2, Star, Trophy } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -253,9 +253,20 @@ function historicalLowCandidate(offer: SteamGameOffer): HistoricalLowCandidate |
   const currency = offer.historyLowCurrency?.toUpperCase();
   if (low === null || currency === null) return null;
 
+  // La etiqueta nombra al proveedor real: antes todo lo que no era gg.deals caía en «ITAD» y las
+  // ofertas directas de Epic y Microsoft heredaban un nombre ajeno.
+  const providerLabel =
+    offer.source === "ggdeals"
+      ? offer.shopName
+      : offer.source === "epic"
+        ? "Epic Games Store"
+        : offer.source === "microsoft"
+          ? "Microsoft Store"
+          : "ITAD";
+
   if (currency === COMPARISON_CURRENCY) {
     return {
-      label: `${offer.source === "ggdeals" ? offer.shopName : "ITAD"} · mínimo histórico`,
+      label: `${providerLabel} · mínimo histórico`,
       mxnMinor: low,
       approximate: false
     };
@@ -267,7 +278,7 @@ function historicalLowCandidate(offer: SteamGameOffer): HistoricalLowCandidate |
   }
 
   return {
-    label: `${offer.source === "ggdeals" ? offer.shopName : "ITAD"} · mínimo histórico`,
+    label: `${providerLabel} · mínimo histórico`,
     mxnMinor: Math.round(low * offer.fxRate),
     approximate: true
   };
@@ -732,6 +743,8 @@ export function GameClient({ appId }: GameClientProps) {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [favoritePending, setFavoritePending] = useState(false);
   const [favoriteError, setFavoriteError] = useState<string | null>(null);
+  // Pestaña activa de proveedor. Solo estado local de UI: ningún dato, fetch ni refresco cambia.
+  const [activeProviderTab, setActiveProviderTab] = useState("steam");
 
   useEffect(() => {
     let active = true;
@@ -789,7 +802,7 @@ export function GameClient({ appId }: GameClientProps) {
     return (
       <div className="space-y-3">
         <Alert variant="danger">{error}</Alert>
-        <Link href="/search" className="btn-secondary-semantic inline-flex h-10 items-center px-4 text-sm font-semibold">
+        <Link href="/search" className="btn-secondary-semantic inline-flex h-10 items-center px-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">
           Volver a resultados
         </Link>
       </div>
@@ -846,7 +859,8 @@ export function GameClient({ appId }: GameClientProps) {
   ];
   const totalOffers = epicOffers.length + microsoftOffers.length + itadOffers.length + ggDealsOffers.length;
   const stale = game.offersStale || game.ggDealsStale;
-  // Activos primero; dentro de cada grupo se respeta el orden del proveedor.
+  // Orden del proveedor, sin reordenar: el nombre anterior («Activos primero») prometía un
+  // orden que este spread nunca aplicó.
   const sortedBundles = [...game.bundles];
   const historyCandidates = historicalLowCandidates(game, game.offers ?? []);
   const globalHistoricalLow = historyCandidates.length > 0
@@ -889,9 +903,49 @@ export function GameClient({ appId }: GameClientProps) {
   }));
   const bundleCard = bundleSummary(game.bundles);
 
+  interface ProviderTab {
+    readonly id: string;
+    readonly label: string;
+    readonly count: number | null;
+  }
+
+  // Pestañas de proveedor: una por grupo CON datos (Steam oficial siempre primero, luego las
+  // directas, ITAD, gg.deals y bundles solo si tienen filas). La etiqueta es el nombre del proveedor
+  // en español y el badge cuenta las filas que ese grupo ya contaba hoy; Steam no lleva cuenta porque
+  // su tabla es de una sola fila.
+  const providerTabs: readonly ProviderTab[] = [
+    { id: "steam", label: "Steam oficial", count: null },
+    ...groups.flatMap((group): readonly ProviderTab[] =>
+      group.offers.length > 0 ? [{ id: group.id, label: group.heading, count: group.offers.length }] : []
+    ),
+    ...(sortedBundles.length > 0
+      ? [{ id: "bundles", label: "Bundles", count: sortedBundles.length } as ProviderTab]
+      : [])
+  ];
+  // Si la pestaña activa se queda sin datos tras un refresco, se vuelve a la primera con datos.
+  const activeTab = providerTabs.some((tab) => tab.id === activeProviderTab)
+    ? activeProviderTab
+    : providerTabs[0].id;
+
+  // Flechas/Home/End mueven el foco entre pestañas (roving tabindex): la pestaña activa es la única
+  // alcanzable con Tab, como piden las pestañas accesibles.
+  function onProviderTabKeyDown(event: KeyboardEvent) {
+    const index = providerTabs.findIndex((tab) => tab.id === activeTab);
+    let next = -1;
+    if (event.key === "ArrowRight") next = (index + 1) % providerTabs.length;
+    else if (event.key === "ArrowLeft") next = (index - 1 + providerTabs.length) % providerTabs.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = providerTabs.length - 1;
+    else return;
+    event.preventDefault();
+    const tab = providerTabs[next];
+    setActiveProviderTab(tab.id);
+    document.getElementById(`provider-tab-${tab.id}`)?.focus();
+  }
+
   return (
     <div className="space-y-4">
-      <Link href="/search" className="btn-secondary-semantic inline-flex h-10 items-center px-4 text-sm font-semibold">
+      <Link href="/search" className="btn-secondary-semantic inline-flex h-10 items-center px-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">
         Volver a resultados
       </Link>
 
@@ -927,32 +981,35 @@ export function GameClient({ appId }: GameClientProps) {
         </section>
       ) : null}
 
-      <section className="app-card-accent space-y-5 p-5">
-        {/* Dos columnas solo desde `lg`: por debajo, la portada es una banda a todo lo ancho y el
-            contenido recibe el ancho completo. Entre 768 y 1023 la columna de contenido quedaba en
-            450-660px, que es donde los badges y la fila de acciones se amontonaban. */}
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+      <section className="app-card-accent overflow-hidden">
+        {/* Portada lateral: columna acotada a la izquierda en `lg` (`lg:col-span-4` frente a
+            `lg:col-span-8` del contenido), apilada encima debajo de `lg`. El marco conserva el aspecto
+            16:7 con `object-cover`, así que dentro no hay hueco muerto. */}
+        <div className="grid gap-5 p-5 lg:grid-cols-12">
           <div className="lg:col-span-4">
-            {coverUrl ? (
-              <img
-                src={coverUrl}
-                alt={`Portada de ${game.name}`}
-                width={460}
-                height={215}
-                decoding="async"
-                onError={() => setCoverFailed(true)}
-                className="aspect-[460/215] h-auto w-full rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] object-cover"
-              />
-            ) : (
-              <div
-                aria-hidden="true"
-                className="flex aspect-[460/215] w-full items-center justify-center rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] text-muted"
-              >
-                <Gamepad2 className="h-8 w-8" />
-              </div>
-            )}
+            <div className="overflow-hidden rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)]">
+              {coverUrl ? (
+                <img
+                  src={coverUrl}
+                  alt={`Portada de ${game.name}`}
+                  width={480}
+                  height={210}
+                  decoding="async"
+                  onError={() => setCoverFailed(true)}
+                  className="aspect-[16/7] h-auto w-full object-cover"
+                />
+              ) : (
+                <div
+                  aria-hidden="true"
+                  className="flex aspect-[16/7] w-full items-center justify-center bg-[var(--color-surface-3)] text-muted"
+                >
+                  <Gamepad2 className="h-8 w-8" />
+                </div>
+              )}
+            </div>
           </div>
-          <div className="min-w-0 space-y-3 lg:col-span-8">
+          <div className="min-w-0 space-y-5 lg:col-span-8">
+          <div className="min-w-0 space-y-3">
             <p className="text-xs font-semibold uppercase tracking-widest text-muted">Precio Steam · México</p>
             <h2 className="text-2xl font-semibold tracking-tight text-primary">{game.name}</h2>
             <div className="flex flex-wrap items-center gap-3">
@@ -989,267 +1046,216 @@ export function GameClient({ appId }: GameClientProps) {
                 ) : null}
               </div>
             ) : null}
-            {/* Precio oficial de Steam: el titular de la ficha y el árbitro de la comparación. */}
-            <div className="flex flex-wrap items-baseline gap-2">
-              <p className={cn("deal-price text-3xl", game.isFree ? "text-success" : hasPrice ? "text-primary" : "text-danger")}>
-                {priceDisplay}
-              </p>
-              {game.discountPercent ? (
-                <span className="tabler-badge tabler-badge-success">-{game.discountPercent}%</span>
-              ) : null}
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {game.isFree ? null : hasPrice ? (
-                <span className="tabler-badge tabler-badge-success">Precio actual</span>
-              ) : (
-                <span className="tabler-badge tabler-badge-danger">Sin precio</span>
-              )}
-              {incomplete ? <span className="tabler-badge tabler-badge-warning">Datos incompletos</span> : null}
-            </div>
+            {/* Panel de precio: lo que se paga hoy a la izquierda, el contexto histórico a la
+                derecha. En `sm` respiran en dos columnas separadas por el filo; en móvil se apilan y
+                el filo pasa a horizontal. */}
+            <div className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  {/* Precio oficial de Steam: el titular de la ficha y el árbitro de la comparación. */}
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <p className={cn("deal-price text-3xl", game.isFree ? "text-success" : hasPrice ? "text-primary" : "text-danger")}>
+                      {priceDisplay}
+                    </p>
+                    {game.discountPercent ? (
+                      <span className="tabler-badge tabler-badge-success">-{game.discountPercent}%</span>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {game.isFree ? null : hasPrice ? (
+                      <span className="tabler-badge tabler-badge-success">Precio actual</span>
+                    ) : (
+                      <span className="tabler-badge tabler-badge-danger">Sin precio</span>
+                    )}
+                    {incomplete ? <span className="tabler-badge tabler-badge-warning">Datos incompletos</span> : null}
+                  </div>
+                </div>
+                <div className="space-y-2 border-t border-default pt-4 sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0">
+                  {/* Mínimo histórico de las fuentes: mínimo de todos los proveedores (y el local de Steam), un dato
+                      heterogéneo de fuentes y regiones distintas. Nunca va en verde: en esta ficha el verde
+                      significa «el más barato ahora mismo», y esta cifra no lo es. */}
+                  {globalHistoricalLow ? (
+                    <div className="space-y-1">
+                      <p className="text-xs font-semibold uppercase tracking-widest text-muted">Mínimo histórico de las fuentes</p>
+                      <p className="deal-price text-xl text-primary">
+                        {`${globalHistoricalLow.approximate ? "≈ " : ""}${formatComparablePrice(globalHistoricalLow.mxnMinor)}`}
+                      </p>
+                      <p className="text-sm font-semibold text-secondary">{globalHistoricalLow.label}</p>
+                    </div>
+                  ) : null}
 
-            {/* Mínimo histórico de las fuentes: mínimo de todos los proveedores (y el local de Steam), un dato
-                heterogéneo de fuentes y regiones distintas. Nunca va en verde: en esta ficha el verde
-                significa «el más barato ahora mismo», y esta cifra no lo es. */}
-            {globalHistoricalLow ? (
-              <div className="space-y-1">
-                <p className="text-xs font-semibold uppercase tracking-widest text-muted">Mínimo histórico de las fuentes</p>
-                <p className="deal-price text-xl text-primary">
-                  {`${globalHistoricalLow.approximate ? "≈ " : ""}${formatComparablePrice(globalHistoricalLow.mxnMinor)}`}
-                </p>
-                <p className="text-sm font-semibold text-secondary">{globalHistoricalLow.label}</p>
+                  {/* El mínimo local de Steam es un hecho distinto del mínimo histórico de las fuentes: uno es lo que
+                      nuestra base observó para Steam, el otro es el mínimo de todos los proveedores. Van separados a
+                      propósito: dos cifras distintas bajo una misma etiqueta es el error que ya documentó esta ficha. */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {lowestDisplay ? (
+                      <span className={cn("tabler-badge", atLowest ? "tabler-badge-success" : "tabler-badge-info")}>
+                        Mínimo observado localmente {lowestDisplay}{lowestDate ? ` · ${lowestDate}` : ""}
+                      </span>
+                    ) : (
+                      <span className="tabler-badge tabler-badge-muted">Sin mínimo observado localmente</span>
+                    )}
+                  </div>
+                </div>
               </div>
-            ) : null}
-
-            {/* El mínimo local de Steam es un hecho distinto del mínimo histórico de las fuentes: uno es lo que
-                nuestra base observó para Steam, el otro es el mínimo de todos los proveedores. Van separados a
-                propósito: dos cifras distintas bajo una misma etiqueta es el error que ya documentó esta ficha. */}
-            <div className="flex flex-wrap items-center gap-2">
-              {lowestDisplay ? (
-                <span className={cn("tabler-badge", atLowest ? "tabler-badge-success" : "tabler-badge-info")}>
-                  Mínimo observado localmente {lowestDisplay}{lowestDate ? ` · ${lowestDate}` : ""}
-                </span>
-              ) : (
-                <span className="tabler-badge tabler-badge-muted">Sin mínimo observado localmente</span>
-              )}
             </div>
 
           </div>
-        </div>
 
-        {/* Fecha de actualización, el único «Actualizar ofertas» de la página y los accesos a las fichas de
-            tienda. Los cuatro viven en la misma fila, a todo lo ancho de la card: dentro de la columna de
-            contenido no caben, y separarlos dejaba los dos enlaces solos en un bloque al fondo.
-            «Ver en Steam» es el enlace canónico a la ficha; «Buscar en Ubisoft Store» es solo una búsqueda
-            por título (Ubisoft no tiene cliente de precio ni id construible) y se llama «buscar» por eso. */}
-        <div className="flex flex-wrap items-center gap-3">
-          {observedDisplay ? (
-            <span className="tabler-badge tabler-badge-info">Actualizado {observedDisplay}</span>
-          ) : (
-            <span className="tabler-badge tabler-badge-warning">Sin fecha de actualización</span>
-          )}
-          <Button
-            type="button"
-            variant="secondary"
-            loading={refreshing}
-            loadingText="Actualizando..."
-            onClick={() => void refreshOffers()}
-          >
-            Actualizar ofertas
-          </Button>
-          <a
-            href={storeUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn-secondary-semantic inline-flex h-10 items-center gap-2 px-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
-          >
-            Ver en Steam
-            <ExternalLink className="h-4 w-4" aria-hidden="true" />
-            <span className="sr-only">(se abre en una pestaña nueva)</span>
-          </a>
-          <a
-            href={ubisoftSearchUrl(game.name)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn-secondary-semantic inline-flex h-10 items-center gap-2 px-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
-          >
-            Buscar en Ubisoft Store
-            <ExternalLink className="h-4 w-4" aria-hidden="true" />
-            <span className="sr-only">(se abre en una pestaña nueva)</span>
-          </a>
-          <span className="text-xs text-muted" aria-live="polite">
-            {refreshing ? "Consultando tiendas..." : ""}
-          </span>
-        </div>
-        {refreshError ? <Alert variant="danger">{refreshError}</Alert> : null}
+          {/* Fecha de actualización, el único «Actualizar ofertas» de la página y los accesos a las fichas de
+              tienda. Los cuatro viven en la misma fila flexible a todo lo ancho de la columna de contenido:
+              «Ver en Steam» es el enlace canónico a la ficha; «Buscar en Ubisoft Store» es solo una búsqueda
+              por título (Ubisoft no tiene cliente de precio ni id construible) y se llama «buscar» por eso. */}
+          <div className="flex flex-wrap items-center gap-3">
+            {observedDisplay ? (
+              <span className="tabler-badge tabler-badge-info">Actualizado {observedDisplay}</span>
+            ) : (
+              <span className="tabler-badge tabler-badge-warning">Sin fecha de actualización</span>
+            )}
+            <Button
+              type="button"
+              variant="secondary"
+              loading={refreshing}
+              loadingText="Actualizando..."
+              onClick={() => void refreshOffers()}
+            >
+              Actualizar ofertas
+            </Button>
+            <a
+              href={storeUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-secondary-semantic inline-flex h-10 items-center gap-2 px-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+            >
+              Ver en Steam
+              <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              <span className="sr-only">(se abre en una pestaña nueva)</span>
+            </a>
+            <a
+              href={ubisoftSearchUrl(game.name)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-secondary-semantic inline-flex h-10 items-center gap-2 px-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+            >
+              Buscar en Ubisoft Store
+              <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              <span className="sr-only">(se abre en una pestaña nueva)</span>
+            </a>
+            <span className="text-xs text-muted" aria-live="polite">
+              {refreshing ? "Consultando tiendas..." : ""}
+            </span>
+          </div>
+          {refreshError ? <Alert variant="danger">{refreshError}</Alert> : null}
 
-        <div className="space-y-3 border-t border-default pt-4">
-          <h3 className="text-xs font-semibold uppercase tracking-widest text-muted">Mejor precio comparable</h3>
-          {bestPrices.length > 0 || bundleCard !== null ? (
-            <div className="grid gap-3 md:grid-cols-2">
-              {bestPrices.map(({ group, best, approximate, cheapest, beatsSteam }) => {
-                const dealUrl = safeDealUrl(best.offer.dealUrl);
-                const observed = formatObserved(best.offer.observedAt);
-                return (
-                  <article key={`${group.id}-${best.offer.offerKey}-${best.mxnMinor}`} className="app-card space-y-1 p-4">
-                    <p className="text-xs font-semibold uppercase tracking-widest text-muted">{group.heading}</p>
-                    <p className={cn("deal-price text-2xl", cheapest ? "text-success" : "text-primary")}>
-                      {approximate ? "≈ " : ""}
-                      {formatComparablePrice(best.mxnMinor)}
-                    </p>
-                    {cheapest ? (
-                      // En su propio bloque: la etiqueta es un `span` en línea y sin esto quedaba pegada al
-                      // enlace, que es el siguiente hermano.
-                      <div>
-                        <span className="tabler-badge tabler-badge-success">
-                          {beatsSteam ? "Más barato que Steam" : "El más barato de las tiendas"}
-                        </span>
-                      </div>
-                    ) : null}
-                    {dealUrl ? (
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-3" aria-labelledby="comparable-heading">
+        <h2 id="comparable-heading" className="text-xl font-semibold tracking-tight text-primary">Mejor precio comparable</h2>
+        {bestPrices.length > 0 || bundleCard !== null ? (
+              <div className="grid gap-3 md:grid-cols-2">
+                {bestPrices.map(({ group, best, approximate, cheapest, beatsSteam }) => {
+                  const dealUrl = safeDealUrl(best.offer.dealUrl);
+                  const observed = formatObserved(best.offer.observedAt);
+                  return (
+                    // La ganadora también se lee por el borde: el token de éxito, nunca un color nuevo. El
+                    // texto ya iba en verde; el borde lo hace visible sin leer la cifra.
+                    <article key={`${group.id}-${best.offer.offerKey}-${best.mxnMinor}`} className={cn("app-card space-y-1 p-4", cheapest && "border-[color:var(--color-success)]")}>
+                      <p className="text-xs font-semibold uppercase tracking-widest text-muted">{group.heading}</p>
+                      <p className={cn("deal-price text-2xl", cheapest ? "text-success" : "text-primary")}>
+                        {approximate ? "≈ " : ""}
+                        {formatComparablePrice(best.mxnMinor)}
+                      </p>
+                      {cheapest ? (
+                        // En su propio bloque: la etiqueta es un `span` en línea y sin esto quedaba pegada al
+                        // enlace, que es el siguiente hermano.
+                        <div>
+                          <span className="tabler-badge tabler-badge-success">
+                            {beatsSteam ? "Más barato que Steam" : "El más barato de las tiendas"}
+                          </span>
+                        </div>
+                      ) : null}
+                      {dealUrl ? (
+                        <a
+                          href={dealUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+                        >
+                          {best.offer.shopName}
+                          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span className="sr-only">(se abre en una pestaña nueva)</span>
+                        </a>
+                      ) : (
+                        <span className="text-sm font-semibold text-secondary">{best.offer.shopName}</span>
+                      )}
+                      <p className="text-xs text-muted">
+                        {observed ? `Observado ${observed}` : "Sin fecha de observación"}
+                      </p>
+                    </article>
+                  );
+                })}
+                {bundleCard ? (
+                  <article className="app-card space-y-1 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted">Bundle</p>
+                    <p className="deal-price text-2xl text-primary">{bundleCard.priceDisplay}</p>
+                    <span className="tabler-badge tabler-badge-info">Incluye este juego</span>
+                    {bundleCard.href ? (
                       <a
-                        href={dealUrl}
+                        href={bundleCard.href}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
                       >
-                        {best.offer.shopName}
+                        {bundleCard.title}
                         <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
                         <span className="sr-only">(se abre en una pestaña nueva)</span>
                       </a>
                     ) : (
-                      <span className="text-sm font-semibold text-secondary">{best.offer.shopName}</span>
+                      <span className="text-sm font-semibold text-secondary">{bundleCard.title}</span>
                     )}
-                    <p className="text-xs text-muted">
-                      {observed ? `Observado ${observed}` : "Sin fecha de observación"}
-                    </p>
+                    {bundleCard.currency.toUpperCase() !== COMPARISON_CURRENCY ? (
+                      <p className="text-xs text-muted">{`Precio en ${bundleCard.currency}, sin convertir.`}</p>
+                    ) : null}
+                    {bundleCard.bundleCount > 1 ? (
+                      <p className="text-xs text-muted">
+                        {`${bundleCard.bundleCount} bundles incluyen este juego: están abajo, en «Bundles encontrados».`}
+                      </p>
+                    ) : null}
                   </article>
-                );
-              })}
-              {bundleCard ? (
-                <article className="app-card space-y-1 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-widest text-muted">Bundle</p>
-                  <p className="deal-price text-2xl text-primary">{bundleCard.priceDisplay}</p>
-                  <span className="tabler-badge tabler-badge-info">Incluye este juego</span>
-                  {bundleCard.href ? (
-                    <a
-                      href={bundleCard.href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
-                    >
-                      {bundleCard.title}
-                      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                      <span className="sr-only">(se abre en una pestaña nueva)</span>
-                    </a>
-                  ) : (
-                    <span className="text-sm font-semibold text-secondary">{bundleCard.title}</span>
-                  )}
-                  {bundleCard.currency.toUpperCase() !== COMPARISON_CURRENCY ? (
-                    <p className="text-xs text-muted">{`Precio en ${bundleCard.currency}, sin convertir.`}</p>
-                  ) : null}
-                  {bundleCard.bundleCount > 1 ? (
-                    <p className="text-xs text-muted">
-                      {`${bundleCard.bundleCount} bundles incluyen este juego: están abajo, en «Bundles encontrados».`}
-                    </p>
-                  ) : null}
-                </article>
-              ) : null}
-            </div>
-          ) : (
-            <p className="text-sm text-muted">Sin precio comparable en MXN por ahora.</p>
-          )}
-          <p className="text-xs text-muted">
-            Cada tarjeta es el mejor precio en MXN de ese proveedor, y en verde queda el más bajo de todos:
-            la etiqueta dice si le gana al precio directo de Steam o si es el más barato sin llegar a
-            ganarle. El `≈` de un precio convertido y el tipo de tienda de la fila ya dicen de dónde sale
-            cada cifra. La tarjeta de bundle dice que este juego viene dentro de uno y cuánto cuesta el
-            bundle: ese importe no es el precio del juego y no entra en la comparación.
-          </p>
-        </div>
-
-        <div className="border-t border-default pt-4">
-          <p className="text-xs text-muted">
-            Combina el mínimo local de Steam y mínimos de proveedores; los importes no-MXN se convierten
-            de forma aproximada. Las fuentes y regiones pueden diferir; sirve como guía y no equivale a
-            un precio histórico único.
-          </p>
-        </div>
+                ) : null}
+              </div>
+            ) : (
+              <p className="text-sm text-muted">Sin precio comparable en MXN por ahora.</p>
+            )}
+        <p className="text-xs text-muted">
+          Cada tarjeta es el mejor precio en MXN de ese proveedor, y en verde queda el más bajo de todos:
+          la etiqueta dice si le gana al precio directo de Steam o si es el más barato sin llegar a
+          ganarle. El `≈` de un precio convertido y el tipo de tienda de la fila ya dicen de dónde sale
+          cada cifra. La tarjeta de bundle dice que este juego viene dentro de uno y cuánto cuesta el
+          bundle: ese importe no es el precio del juego y no entra en la comparación.
+        </p>
       </section>
 
-      <section className="table-shell overflow-x-auto">
-        <table className="w-full min-w-max text-left text-sm">
-          <caption className="sr-only">Precio de {game.name} en Steam y mínimo observado localmente</caption>
-          <thead className="table-head">
-            <tr>
-              <th scope="col" className="p-3">Fuente</th>
-              <th scope="col" className="p-3">Precio base</th>
-              <th scope="col" className="p-3">Precio con descuento</th>
-              <th scope="col" className="p-3">Mínimo observado localmente</th>
-              <th scope="col" className="p-3">Región</th>
-              <th scope="col" className="p-3">Observado</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr className="table-row">
-              <td className="table-cell p-3 font-medium text-primary">
-                <a
-                  href={storeUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
-                >
-                  Steam
-                  <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span className="sr-only">(se abre en una pestaña nueva)</span>
-                </a>
-                <span className="tabler-badge tabler-badge-success ml-1">Oficial</span>
-              </td>
-              <td className={cn("table-cell deal-price p-3", game.discountPercent ? "deal-price-strike" : "text-primary")}>
-                {game.initialPriceMinor !== null && currency
-                  ? formatMinor(game.initialPriceMinor, currency)
-                  : "—"}
-              </td>
-              <td className={cn("table-cell deal-price p-3", game.isFree ? "text-success" : hasPrice ? "text-primary" : "text-muted")}>
-                {game.isFree ? "Gratis" : hasPrice ? formatMinor(currentPrice, currency) : "—"}
-              </td>
-              <td className="table-cell p-3">
-                {lowestDisplay ? (
-                  <span className="block">
-                    <span className="deal-price text-primary">{lowestDisplay}</span>
-                    <span className="block text-xs text-muted">{lowestDate ?? "Sin fecha"}</span>
-                  </span>
-                ) : (
-                  <span className="text-muted">—</span>
-                )}
-              </td>
-              <td className="table-cell p-3 font-semibold uppercase text-primary">{game.region ?? "—"}</td>
-              <td className="table-cell p-3 text-muted">
-                {observedDisplay ?? "—"}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
+      {/* La tabla de Steam vive ahora en la pestaña «Steam oficial» de la sección de proveedores. */}
 
       <section className="app-card space-y-4 p-5" aria-labelledby="offers-heading">
         <div className="space-y-1">
-          <p className="text-xs font-semibold uppercase tracking-widest text-muted">Ofertas por proveedor</p>
+          <p className="text-xs font-semibold uppercase tracking-widest text-muted">Detalles</p>
           <h2 id="offers-heading" className="text-xl font-semibold tracking-tight text-primary">
-            Ofertas en otras tiendas
+            Ofertas y bundles por proveedor
           </h2>
           <p className="text-xs text-muted">
-            Dos proveedores con formas distintas: ITAD publica oferta por tienda; gg.deals, un precio
-            agregado por grupo de tiendas.
+            Cada pestaña muestra un proveedor: Steam oficial, tiendas directas (Epic, Microsoft), ITAD
+            por tienda y gg.deals como agregado por grupo de tiendas. Los bundles van en su pestaña y no
+            entran en la comparación.
           </p>
           <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm font-semibold text-secondary">
             <span>Datos de precios:</span>
             <AttributionLink href={ITAD_ATTRIBUTION_URL} label="IsThereAnyDeal" />
             <span aria-hidden="true">·</span>
             <AttributionLink href={GGDEALS_ATTRIBUTION_URL} label="GG.deals" />
-          </p>
-          <p className="text-xs text-muted">
-            GOG ya cobra en MXN en su tienda, pero su importe aquí llega vía ITAD en USD convertido a
-            MXN (≈) y puede diferir del precio final en caja.
           </p>
         </div>
 
@@ -1278,12 +1284,124 @@ export function GameClient({ appId }: GameClientProps) {
           <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
             Todavía no hay ofertas de las tiendas consultadas para este juego. Usa «Actualizar ofertas» para consultarlas.
           </p>
-        ) : (
-          <div className="space-y-5">
-            {groups.map((group) =>
-              group.aggregate ? (
+        ) : null}
+
+        {/* Pestañas accesibles: una por proveedor con datos. Cada panel pinta la tabla/lista que antes
+            vivía apilada, sin reescribirla: la tabla de Steam, `OfferGroup`, `AggregateOfferList` y las
+            `BundleCard` se mudan tal cual, con sus notas. */}
+        <div role="tablist" aria-label="Proveedores" onKeyDown={onProviderTabKeyDown} className="flex flex-wrap gap-2">
+          {providerTabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              id={`provider-tab-${tab.id}`}
+              aria-selected={tab.id === activeTab}
+              aria-controls={`provider-panel-${tab.id}`}
+              tabIndex={tab.id === activeTab ? 0 : -1}
+              onClick={() => setActiveProviderTab(tab.id)}
+              className={cn(
+                "inline-flex h-9 items-center gap-1.5 rounded-[var(--radius-sm)] border px-3 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]",
+                tab.id === activeTab
+                  ? "border-accent bg-[var(--color-accent-soft)] text-primary"
+                  : "border-default text-secondary hover:text-primary"
+              )}
+            >
+              {tab.label}
+              {tab.count !== null ? (
+                <span className="tabler-badge tabler-badge-muted">{tab.count}</span>
+              ) : null}
+            </button>
+          ))}
+        </div>
+
+        <div
+          role="tabpanel"
+          id="provider-panel-steam"
+          aria-labelledby="provider-tab-steam"
+          tabIndex={0}
+          hidden={activeTab !== "steam"}
+        >
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted">Precio oficial</p>
+            <h3 id="steam-source-heading" className="text-xl font-semibold tracking-tight text-primary">
+              Precio en Steam
+            </h3>
+          </div>
+          <div className="table-shell mt-3 overflow-x-auto">
+          <table className="w-full min-w-max text-left text-sm">
+            <caption className="sr-only">Precio de {game.name} en Steam y mínimo observado localmente</caption>
+            <thead className="table-head">
+              <tr>
+                <th scope="col" className="p-3">Fuente</th>
+                <th scope="col" className="p-3">Precio base</th>
+                <th scope="col" className="p-3">Precio con descuento</th>
+                <th scope="col" className="p-3">Mínimo observado localmente</th>
+                <th scope="col" className="p-3">Región</th>
+                <th scope="col" className="p-3">Observado</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="table-row">
+                <td className="table-cell p-3 font-medium text-primary">
+                  <a
+                    href={storeUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+                  >
+                    Steam
+                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span className="sr-only">(se abre en una pestaña nueva)</span>
+                  </a>
+                  <span className="tabler-badge tabler-badge-success ml-1">Oficial</span>
+                </td>
+                <td className={cn("table-cell deal-price p-3", game.discountPercent ? "deal-price-strike" : "text-primary")}>
+                  {game.initialPriceMinor !== null && currency
+                    ? formatMinor(game.initialPriceMinor, currency)
+                    : "—"}
+                </td>
+                <td className={cn("table-cell deal-price p-3", game.isFree ? "text-success" : hasPrice ? "text-primary" : "text-muted")}>
+                  {game.isFree ? "Gratis" : hasPrice ? formatMinor(currentPrice, currency) : "—"}
+                </td>
+                <td className="table-cell p-3">
+                  {lowestDisplay ? (
+                    <span className="block">
+                      <span className="deal-price text-primary">{lowestDisplay}</span>
+                      <span className="block text-xs text-muted">{lowestDate ?? "Sin fecha"}</span>
+                    </span>
+                  ) : (
+                    <span className="text-muted">—</span>
+                  )}
+                </td>
+                <td className="table-cell p-3 font-semibold uppercase text-primary">{game.region ?? "—"}</td>
+                <td className="table-cell p-3 text-muted">
+                  {observedDisplay ?? "—"}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          </div>
+        </div>
+
+        {groups.map((group) =>
+          group.offers.length === 0 ? null : (
+            <div
+              key={group.id}
+              role="tabpanel"
+              id={`provider-panel-${group.id}`}
+              aria-labelledby={`provider-tab-${group.id}`}
+              tabIndex={0}
+              hidden={activeTab !== group.id}
+            >
+              {group.id === "offers-itad" ? (
+                <p className="mb-3 text-xs text-muted">
+                  GOG ya cobra en MXN en su tienda, pero su importe aquí llega vía ITAD en USD convertido a
+                  MXN (≈) y puede diferir del precio final en caja.
+                </p>
+              ) : null}
+              {group.aggregate ? (
                 <AggregateOfferList
-                  key={group.id}
                   id={group.id}
                   heading={group.heading}
                   gameName={game.name}
@@ -1292,61 +1410,66 @@ export function GameClient({ appId }: GameClientProps) {
                 />
               ) : (
                 <OfferGroup
-                  key={group.id}
                   id={group.id}
                   heading={group.heading}
                   gameName={game.name}
                   offers={group.offers}
                   cheapest={group.cheapest}
                 />
-              )
-            )}
-          </div>
+              )}
+            </div>
+          )
         )}
+
+        {sortedBundles.length > 0 ? (
+          <div
+            role="tabpanel"
+            id="provider-panel-bundles"
+            aria-labelledby="provider-tab-bundles"
+            tabIndex={0}
+            hidden={activeTab !== "bundles"}
+          >
+            <div className="space-y-1">
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted">Bundles por proveedor</p>
+              <h3 className="text-xl font-semibold tracking-tight text-primary">Bundles encontrados</h3>
+              <p className="text-xs text-muted">
+                Paquetes que incluyen este juego, según ITAD. Se muestran aparte de las ofertas: un bundle
+                tiene tiers y varios ítems, y caduca. Cuando ITAD publica el precio individual de todos los
+                ítems, el tier compara el bundle contra comprarlos por separado; si falta algún dato, se
+                muestra el motivo y ninguna cifra de ahorro.
+              </p>
+              <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm font-semibold text-secondary">
+                <span>Datos de bundles:</span>
+                <AttributionLink href={ITAD_ATTRIBUTION_URL} label="IsThereAnyDeal" />
+              </p>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="tabler-badge tabler-badge-muted">
+                {sortedBundles.length === 1 ? "1 bundle" : `${sortedBundles.length} bundles`}
+              </span>
+              {bundlesRefreshedDisplay ? (
+                <span className="tabler-badge tabler-badge-info">Bundles actualizado {bundlesRefreshedDisplay}</span>
+              ) : (
+                <span className="tabler-badge tabler-badge-warning">Sin fecha de actualización de bundles</span>
+              )}
+              {game.bundlesStale ? (
+                <span className="tabler-badge tabler-badge-warning">Bundles posiblemente desactualizados</span>
+              ) : null}
+            </div>
+
+            <div className="mt-3 space-y-4">
+              {sortedBundles.map((bundle, bundleIndex) => (
+                <BundleCard
+                  key={bundle.bundleKey ?? `${bundle.title}-${bundleIndex}`}
+                  bundle={bundle}
+                  gameName={game.name}
+                />
+              ))}
+            </div>
+          </div>
+        ) : null}
       </section>
-
-      {sortedBundles.length > 0 ? (
-        <section className="app-card space-y-4 p-5" aria-labelledby="bundles-heading">
-          <div className="space-y-1">
-            <p className="text-xs font-semibold uppercase tracking-widest text-muted">Bundles por proveedor</p>
-            <h2 id="bundles-heading" className="text-xl font-semibold tracking-tight text-primary">Bundles encontrados</h2>
-            <p className="text-xs text-muted">
-              Paquetes que incluyen este juego, según ITAD. Se muestran aparte de las ofertas: un bundle
-              tiene tiers y varios ítems, y caduca. Cuando ITAD publica el precio individual de todos los
-              ítems, el tier compara el bundle contra comprarlos por separado; si falta algún dato, se
-              muestra el motivo y ninguna cifra de ahorro.
-            </p>
-            <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm font-semibold text-secondary">
-              <span>Datos de bundles:</span>
-              <AttributionLink href={ITAD_ATTRIBUTION_URL} label="IsThereAnyDeal" />
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="tabler-badge tabler-badge-muted">
-              {sortedBundles.length === 1 ? "1 bundle" : `${sortedBundles.length} bundles`}
-            </span>
-            {bundlesRefreshedDisplay ? (
-              <span className="tabler-badge tabler-badge-info">Bundles actualizado {bundlesRefreshedDisplay}</span>
-            ) : (
-              <span className="tabler-badge tabler-badge-warning">Sin fecha de actualización de bundles</span>
-            )}
-            {game.bundlesStale ? (
-              <span className="tabler-badge tabler-badge-warning">Bundles posiblemente desactualizados</span>
-            ) : null}
-          </div>
-
-          <div className="space-y-4">
-            {sortedBundles.map((bundle, bundleIndex) => (
-              <BundleCard
-                key={bundle.bundleKey ?? `${bundle.title}-${bundleIndex}`}
-                bundle={bundle}
-                gameName={game.name}
-              />
-            ))}
-          </div>
-        </section>
-      ) : null}
 
       {game.reviews.length > 0 ? (
         <section className="app-card space-y-4 p-5" aria-labelledby="reviews-heading">

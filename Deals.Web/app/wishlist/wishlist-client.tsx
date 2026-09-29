@@ -3,12 +3,10 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import type { ColumnDef, SortingFn } from "@tanstack/react-table";
-import { Gamepad2, RefreshCw, SlidersHorizontal, X } from "lucide-react";
-import { DataGrid } from "@/components/data-grid/data-grid";
+import { ArrowDown, ArrowUp, Gamepad2, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { PriceFact, PriceValue, formatMinor } from "@/components/ui/price-value";
+import { PriceFact, formatMinor } from "@/components/ui/price-value";
 import { refreshSteamGame } from "@/app/steam/_lib/steam-api";
 import { cn } from "@/lib/ui/cn";
 import { ToastStack } from "@/components/feedback/toast-stack";
@@ -24,7 +22,7 @@ import {
   setAppIds,
   toggleAppId
 } from "./_lib/wishlist-package";
-import { SYNC_STORES, latestSyncTime, syncStamp } from "./_lib/wishlist-sync";
+import { SYNC_STORES, syncStamp } from "./_lib/wishlist-sync";
 import type {
   WishlistItem,
   WishlistPackagePreview,
@@ -44,9 +42,6 @@ const MXN = "MXN";
 // ese es del backend (se guarda con `updateWishlistPreferences`).
 const WISHLIST_PAGE_SIZES = [10, 25, 50, 100];
 const PAGE_SIZE_STORAGE_KEY = "wishlist.pageSize.v1";
-const COLUMN_VISIBILITY_STORAGE_KEY = "wishlist.columns.v1";
-// La prioridad de Steam no se usa, así que nace oculta; sigue disponible en el menú «Columnas».
-const INITIAL_COLUMN_VISIBILITY = { priority: false };
 const WISHLIST_SORTS = ["priority", "name", "bestPrice", "bestDiscount", "officialDiscount", "keyshopDiscount", "officialPrice", "keyshopPrice"] as const;
 type WishlistSort = (typeof WISHLIST_SORTS)[number];
 type TriState = "all" | "yes" | "no";
@@ -104,8 +99,8 @@ function formatDateTime(value: string | null) {
 // El formateo de importes (`formatMinor`, `PriceValue`, `PriceFact`) vive en
 // `components/ui/price-value.tsx` y lo comparten esta página y la biblioteca.
 
-// La prioridad de Steam sigue en la tabla (por si algún día se usa) pero nace oculta: está disponible
-// en el menú «Columnas» y no aparece en la línea meta de las tiles móviles.
+// La prioridad de Steam no se usa para ordenar por defecto, así que en la tarjeta vive como dato
+// discreto junto al AppID, no como columna destacada.
 const RATE_LIMIT_HINT =
   "Los refrescos por juego están limitados a 6 por minuto por IP: si se alcanzó el límite, espera un minuto y vuelve a intentar.";
 
@@ -125,8 +120,8 @@ function withoutRowError(current: Readonly<Record<number, string>>, appId: numbe
   return next;
 }
 
-// 120x45 es el tamaño nativo de Steam; 90x34 en móvil para que la fila siga cabiendo a 360px. La
-// portada es decorativa (`alt=""`) porque el nombre del juego va al lado como texto.
+// El tamaño nativo de `tiny_image` hace que la carátula sea el ancla visual de la tarjeta sin
+// convertir la grilla de tres columnas en una lista. La portada es decorativa (`alt=""`).
 function WishlistThumb({ src, className }: { readonly src: string | null; readonly className?: string }) {
   const [failed, setFailed] = useState(false);
   const image = src && !failed ? src : null;
@@ -257,7 +252,8 @@ function itemScore(item: WishlistItem, bestMinor: number | null, minViableDiscou
   });
 }
 
-// Las tiles móviles muestran los mismos cuatro valores que la tabla de escritorio.
+// Los cuatro valores que no son importes directos (descuentos y scores): viven en la zona de
+// «Más detalle» de la tarjeta compacta.
 function MobileMetrics({ item, minViableDiscountPercent }: { readonly item: WishlistItem; readonly minViableDiscountPercent: number }) {
   return (
     <>
@@ -727,71 +723,278 @@ function CategoryModal({
   );
 }
 
-interface WishlistDataGridProps {
-  readonly columns: ColumnDef<WishlistItem>[];
-  readonly rows: readonly WishlistItem[];
-  readonly minViableDiscountPercent: number;
-  readonly onThresholdCommit: (next: number) => Promise<void>;
-  readonly pagination: PaginationState;
-  readonly onPaginationChange: (next: PaginationState) => void;
-  readonly sorting: SortingState;
-  readonly onSortingChange: (next: SortingState) => void;
-  readonly search: string;
-  readonly onSearchChange: (value: string) => void;
-  readonly rowCount: number;
-  readonly loading: boolean;
-  readonly error: string | null;
+// Etiquetas en español del selector de orden: las mismas claves ordenables que ofrecía la tabla
+// (`WISHLIST_SORTS`, el orden lo resuelve el servidor igual que antes).
+const WISHLIST_SORT_OPTIONS: readonly { readonly value: WishlistSort; readonly label: string }[] = [
+  { value: "priority", label: "Prioridad" },
+  { value: "name", label: "Juego" },
+  { value: "bestPrice", label: "Mejor precio" },
+  { value: "bestDiscount", label: "Mayor descuento" },
+  { value: "officialDiscount", label: "% dto. oficial" },
+  { value: "keyshopDiscount", label: "% dto. keys" },
+  { value: "officialPrice", label: "Mín. oficial" },
+  { value: "keyshopPrice", label: "Mín. keys" }
+];
+
+// El buscador y el orden sustituyen a la fila de búsqueda y a los encabezados ordenables del grid: leen
+// y escriben el mismo estado (`search`/`sorting`), así que el servidor recibe exactamente lo mismo.
+function WishlistSearchInput({ value, onChange }: { readonly value: string; readonly onChange: (value: string) => void }) {
+  const inputId = useId();
+
+  return (
+    <div className="flex items-center">
+      <label className="sr-only" htmlFor={inputId}>
+        Buscar por nombre o AppID
+      </label>
+      <div className="relative w-full max-w-xs">
+        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" aria-hidden="true" />
+        <input
+          id={inputId}
+          type="search"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="Buscar por nombre o AppID"
+          className="input-semantic h-8 w-full pl-7 pr-7 text-xs"
+        />
+        {value ? (
+          <button
+            type="button"
+            aria-label="Limpiar búsqueda"
+            onClick={() => onChange("")}
+            className="absolute right-1 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-muted hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+          >
+            <X className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
-// Keep DataGrid outside WishlistItems so category form/modal/feedback state does not render
-// its rows. Props are deliberately narrow: only table data or table-owned controls can invalidate it.
-const WishlistDataGrid = memo(function WishlistDataGrid({
-  columns,
-  rows,
-  minViableDiscountPercent,
-  onThresholdCommit,
-  pagination,
-  onPaginationChange,
+function WishlistSortControl({
   sorting,
-  onSortingChange,
-  search,
-  onSearchChange,
-  rowCount,
-  loading,
-  error
-}: WishlistDataGridProps) {
+  onSortingChange
+}: {
+  readonly sorting: SortingState;
+  readonly onSortingChange: (next: SortingState) => void;
+}) {
+  const sortId = useId();
+  const current = sorting.length > 0 && (WISHLIST_SORTS as readonly string[]).includes(sorting[0]?.id ?? "") ? sorting[0] : undefined;
+
   return (
-    <DataGrid
-      columns={columns}
-      rows={rows}
-      mode="server"
-      loading={loading}
-      errorMessage={error}
-      manualPagination
-      pagination={pagination}
-      onPaginationChange={onPaginationChange}
-      rowCount={rowCount}
-      manualSorting
-      sorting={sorting}
-      onSortingChange={onSortingChange}
-      density="compact"
-      stickyHeader
-      stickyActionsColumn
-      pageSizeOptions={WISHLIST_PAGE_SIZES}
-      pageSizeStorageKey={PAGE_SIZE_STORAGE_KEY}
-      enableGlobalFilter
-      globalFilter={search}
-      onGlobalFilterChange={onSearchChange}
-      globalFilterPlaceholder="Buscar por nombre o AppID"
-      enableColumnVisibility
-      columnVisibilityStorageKey={COLUMN_VISIBILITY_STORAGE_KEY}
-      initialColumnVisibility={INITIAL_COLUMN_VISIBILITY}
-      enableColumnFilters
-      toolbar={<ThresholdControl value={minViableDiscountPercent} onCommit={onThresholdCommit} />}
-      emptyMessage="Ningún juego coincide con la búsqueda."
-    />
+    <div className="flex flex-wrap items-center gap-2">
+      <label htmlFor={sortId} className="text-xs font-medium text-secondary">
+        Ordenar por
+      </label>
+      <select
+        id={sortId}
+        value={current?.id ?? ""}
+        onChange={(event) => {
+          const id = event.target.value;
+          onSortingChange(id === "" ? [] : [{ id, desc: current?.id === id ? (current?.desc ?? false) : false }]);
+        }}
+        className="input-semantic h-8 text-xs"
+      >
+        <option value="">Sin orden</option>
+        {WISHLIST_SORT_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <Button
+        type="button"
+        variant="secondary"
+        className="h-8 px-2 text-xs"
+        disabled={!current}
+        onClick={() => {
+          if (current) onSortingChange([{ id: current.id, desc: !current.desc }]);
+        }}
+        aria-label={current?.desc ? "Orden descendente: cambiar a ascendente" : "Orden ascendente: cambiar a descendente"}
+      >
+        {current?.desc ? (
+          <ArrowDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        ) : (
+          <ArrowUp className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        )}
+        {current?.desc ? "Desc" : "Asc"}
+      </Button>
+    </div>
   );
-});
+}
+
+// Paginador del servidor con la misma forma del grid: selector de filas, anterior/siguiente y
+// «Página X de Y». El tamaño persiste en la misma clave de localStorage que usaba la tabla.
+function WishlistPager({
+  pagination,
+  pageCount,
+  onPaginationChange
+}: {
+  readonly pagination: PaginationState;
+  readonly pageCount: number;
+  readonly onPaginationChange: (next: PaginationState) => void;
+}) {
+  const pagerButtonClass =
+    "btn-secondary-semantic h-7 px-2 text-[11px] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]";
+  const pageSizeId = useId();
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] px-2 py-1.5">
+      <div className="flex items-center gap-2">
+        <label htmlFor={pageSizeId} className="text-[11px] text-muted">
+          Filas
+        </label>
+        <select
+          id={pageSizeId}
+          value={String(pagination.pageSize)}
+          onChange={(event) => onPaginationChange({ pageIndex: 0, pageSize: Number(event.target.value) })}
+          className="input-semantic h-7 px-2 text-[11px]"
+        >
+          {WISHLIST_PAGE_SIZES.map((size) => (
+            <option key={size} value={String(size)}>
+              {size}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          className={pagerButtonClass}
+          onClick={() => onPaginationChange({ ...pagination, pageIndex: Math.max(0, pagination.pageIndex - 1) })}
+          disabled={pagination.pageIndex === 0}
+        >
+          Anterior
+        </button>
+        <span className="text-[11px] text-muted">
+          Página {pagination.pageIndex + 1} de {pageCount}
+        </span>
+        <button
+          type="button"
+          className={pagerButtonClass}
+          onClick={() => onPaginationChange({ ...pagination, pageIndex: pagination.pageIndex + 1 })}
+          disabled={pagination.pageIndex + 1 >= pageCount}
+        >
+          Siguiente
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// «Mejor precio» y «Mayor descuento» replican los accessors de las columnas que la tabla mostraba en
+// escritorio y las tiles no: el mínimo en MXN de los dos escenarios y el mayor descuento de ambos.
+function bestPriceMinor(item: WishlistItem): number | null {
+  if (item.bestOfficialMinor === null) return item.bestKeyshopMinor;
+  if (item.bestKeyshopMinor === null) return item.bestOfficialMinor;
+  return Math.min(item.bestOfficialMinor, item.bestKeyshopMinor);
+}
+
+function bestDiscountValue(item: WishlistItem): number | null {
+  const official = discountPercent(item.basePriceMinor, item.baseCurrency, item.bestOfficialMinor);
+  const keyshop = discountPercent(item.basePriceMinor, item.baseCurrency, item.bestKeyshopMinor);
+  if (official === null) return keyshop;
+  if (keyshop === null) return official;
+  return Math.max(official, keyshop);
+}
+
+interface WishlistCardProps {
+  readonly item: WishlistItem;
+  readonly selected: boolean;
+  readonly onToggleSelect: (appId: number, checked: boolean) => void;
+  readonly refreshingAppId: number | null;
+  readonly rowErrors: Readonly<Record<number, string>>;
+  readonly minViableDiscountPercent: number;
+  readonly onRefresh: (item: WishlistItem) => void;
+  readonly onEditCategories: (item: WishlistItem, trigger: HTMLButtonElement) => void;
+}
+
+// Tarjeta compacta: una por juego en todos los anchos, con la cáscara de /discover (`app-card` +
+// portada + `deal-price` + «Ver precios»). La cabecera (portada + nombre + categorías) y una sola
+// línea de precio (mejor precio + mayor descuento + precio base) quedan siempre visibles; el resto
+// (mínimos, scores, fechas por proveedor) vive en un `<details>` nativo colapsado por defecto, sin
+// estado JS. Sin quitar ningún dato ni ninguna acción: todo lo que la tarjeta ancha mostraba sigue
+// aquí, reordenado.
+function WishlistCard({
+  item,
+  selected,
+  onToggleSelect,
+  refreshingAppId,
+  rowErrors,
+  minViableDiscountPercent,
+  onRefresh,
+  onEditCategories
+}: WishlistCardProps) {
+  const refreshed = formatDateTime(item.refreshedAt);
+
+  return (
+    <li className={cn("app-card space-y-3 p-3", selected && "border-[color:var(--color-accent)]")}>
+      <div className="flex gap-3">
+        <div className="flex w-5 shrink-0 justify-center">
+          <input
+            type="checkbox"
+            aria-label={`Seleccionar ${item.name}`}
+            checked={selected}
+            onChange={(event) => onToggleSelect(item.appId, event.target.checked)}
+            className="mt-1 h-4 w-4 accent-[var(--color-accent)]"
+          />
+        </div>
+        <div className="min-w-0 flex-1 space-y-3">
+          <WishlistThumb src={item.imageUrl} className="h-auto w-full sm:h-auto sm:w-full" />
+          <div className="min-w-0">
+            <Link
+              href={`/games/${item.appId}`}
+              className="block text-base font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+            >
+              {item.name}
+            </Link>
+            <p className="mt-0.5 text-xs text-muted">
+              AppID {item.appId}
+              {item.priority !== null ? ` · Prioridad ${item.priority}` : ""}
+            </p>
+            <CategoryBadges categories={item.categories} />
+          </div>
+          {item.ownedStores.length > 0 ? <p className="text-xs font-medium text-success">Ya adquirido en: {item.ownedStores.join(", ")}</p> : null}
+          <div className="flex flex-wrap items-end justify-between gap-3 border-y border-default py-2">
+            <PriceFact label="Mejor precio" amountMinor={bestPriceMinor(item)} currency={MXN} />
+            <div className="flex flex-wrap items-end gap-3 text-xs">
+              <MetricFact label="Descuento"><DiscountValue value={bestDiscountValue(item)} /></MetricFact>
+              <PriceFact label="Precio base Steam" amountMinor={item.basePriceMinor} currency={item.baseCurrency} />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Link
+              href={`/games/${item.appId}`}
+              className="text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+            >
+              Ver precios
+            </Link>
+            <span className="text-xs text-muted">Actualizado {refreshed ?? "—"}</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 border-t border-default pt-2">
+            <Button type="button" variant="ghost" className="h-7 px-2 text-xs" onClick={(event) => onEditCategories(item, event.currentTarget)}>
+              Editar categorías
+            </Button>
+            <RowRefreshButton item={item} refreshing={refreshingAppId === item.appId} blocked={refreshingAppId !== null && refreshingAppId !== item.appId} onRefresh={onRefresh} />
+          </div>
+          <details className="rounded-[var(--radius-sm)] border border-default bg-[var(--color-surface-2)] px-2 py-1">
+            <summary className="cursor-pointer text-xs font-semibold text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">
+              Más detalle
+            </summary>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-2 pb-1 pt-2">
+              <PriceFact label="Mínimo histórico" amountMinor={item.historyLowMinor} currency={item.historyLowCurrency} />
+              <PriceFact label="Mín. oficial" amountMinor={item.bestOfficialMinor} currency={MXN} />
+              <PriceFact label="Mín. keys" amountMinor={item.bestKeyshopMinor} currency={MXN} />
+              <MobileMetrics item={item} minViableDiscountPercent={minViableDiscountPercent} />
+            </div>
+            <div className="pb-1"><WishlistRowMeta item={item} /></div>
+          </details>
+          {rowErrors[item.appId] ? <p role="alert" className="text-xs text-danger">{rowErrors[item.appId]}</p> : null}
+        </div>
+      </div>
+    </li>
+  );
+}
 
 interface WishlistItemsProps {
   readonly items: readonly WishlistItem[];
@@ -990,121 +1193,9 @@ function WishlistItems({
     finally { setCategoryBusy(false); }
   }
 
-  // Un valor ausente se expresa como `undefined`, nunca `null`, y cada columna ordenable lleva
-  // `sortUndefined: "last"`. El paquete resuelve ese caso con un `return` temprano ANTES de invertir
-  // por dirección, así que los juegos sin precio quedan al final tanto en asc como en desc. El default
-  // (`sortUndefined: 1`) sí se invierte: con él, ordenar descendente pone arriba los juegos sin precio
-  // como si fueran los más caros. Un comparador propio no puede arreglarlo; recibe la columna, no la
-  // dirección, y su resultado se invierte igual. `0` se conserva: un juego gratis ordena como el menor.
-  const numericSort: SortingFn<WishlistItem> = (rowA, rowB, columnId) =>
-    Number(rowA.getValue(columnId)) - Number(rowB.getValue(columnId));
-
-  const columns = useMemo<ColumnDef<WishlistItem>[]>(() => {
-    return [
-    {
-      // La selección vive en la columna y no en el DataGrid: el grid es compartido con /users y no necesita
-      // saber de paquetes. La identidad es el AppID, así que ordenar o filtrar no mueve la marca.
-      id: "select",
-      enableSorting: false,
-      enableHiding: false,
-      header: ({ table }) => {
-        const pageAppIds = table.getRowModel().rows.map((row) => row.original.appId);
-        const state = pageSelectionState(selectedAppIds, pageAppIds);
-        return (
-          <input
-            type="checkbox"
-            aria-label="Seleccionar los juegos de esta página"
-            checked={state === "all"}
-            ref={(node) => {
-              if (node) node.indeterminate = state === "some";
-            }}
-            disabled={pageAppIds.length === 0}
-            onChange={(event) =>
-              setSelectedAppIds((current) => setAppIds(current, pageAppIds, event.target.checked))
-            }
-            className="h-3.5 w-3.5 accent-[var(--color-accent)]"
-          />
-        );
-      },
-      cell: ({ row }) => (
-        <input
-          type="checkbox"
-          aria-label={`Seleccionar ${row.original.name}`}
-          checked={selectedAppIds.has(row.original.appId)}
-          onChange={(event) =>
-            setSelectedAppIds((current) => toggleAppId(current, row.original.appId, event.target.checked))
-          }
-          className="h-3.5 w-3.5 accent-[var(--color-accent)]"
-        />
-      )
-    },
-    { id: "cover", header: "Portada", enableSorting: false, cell: ({ row }) => <WishlistThumb src={row.original.imageUrl} /> },
-    {
-      accessorKey: "name", header: "Juego", sortingFn: (rowA, rowB, id) => String(rowA.getValue(id)).localeCompare(String(rowB.getValue(id)), "es-MX"),
-      cell: ({ row }) => <div className="min-w-48"><Link href={`/games/${row.original.appId}`} className="text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{row.original.name}</Link><p className="text-xs text-muted">AppID {row.original.appId}</p><CategoryBadges categories={row.original.categories} /><Button type="button" variant="ghost" className="mt-1 h-7 px-2 text-xs" onClick={(event) => { categoryTriggerRef.current = event.currentTarget; setCategoryItem(row.original); }}>Editar categorías</Button>{row.original.ownedStores.length > 0 ? <p className="text-xs font-medium text-success">Ya adquirido en: {row.original.ownedStores.join(", ")}</p> : null}{rowErrors[row.original.appId] ? <p role="alert" className="mt-1 text-xs text-danger">{rowErrors[row.original.appId]}</p> : null}</div>
-    },
-    { id: "priority", accessorFn: (item) => item.priority ?? undefined, header: "Prioridad", sortingFn: numericSort, sortUndefined: "last" },
-    { id: "bestPrice", accessorFn: (item) => item.bestOfficialMinor === null ? item.bestKeyshopMinor ?? undefined : item.bestKeyshopMinor === null ? item.bestOfficialMinor : Math.min(item.bestOfficialMinor, item.bestKeyshopMinor), header: "Mejor precio", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => { const { bestOfficialMinor, bestKeyshopMinor } = row.original; const best = bestOfficialMinor === null ? bestKeyshopMinor : bestKeyshopMinor === null ? bestOfficialMinor : Math.min(bestOfficialMinor, bestKeyshopMinor); return <PriceValue amountMinor={best} currency={MXN} />; } },
-    { id: "bestDiscount", accessorFn: (item) => { const official = discountPercent(item.basePriceMinor, item.baseCurrency, item.bestOfficialMinor); const keyshop = discountPercent(item.basePriceMinor, item.baseCurrency, item.bestKeyshopMinor); return official === null ? keyshop ?? undefined : keyshop === null ? official : Math.max(official, keyshop); }, header: "Mayor descuento", sortingFn: numericSort, sortUndefined: "last" },
-    { id: "addedAt", accessorFn: (item) => item.addedAt ? new Date(item.addedAt).getTime() : undefined, header: "Alta", enableSorting: false, cell: ({ row }) => formatDateTime(row.original.addedAt) ?? "—" },
-    { id: "refreshedAt", accessorFn: (item) => item.refreshedAt ? new Date(item.refreshedAt).getTime() : undefined, header: "Actualizado", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => formatDateTime(row.original.refreshedAt) ?? "—" },
-    // Ordena por el sello más reciente de los cinco, que es el que responde «¿cuán al día está esta fila?».
-    // Los juegos sin ningún sello salen `undefined` y quedan al final en las dos direcciones.
-    {
-      id: "sync",
-      accessorFn: latestSyncTime,
-      header: () => (
-        <div className="space-y-0.5">
-          <span className="block">Sincronización</span>
-          <span className="grid grid-cols-5 gap-x-1 text-center text-[0.625rem] font-normal leading-3 text-muted" aria-label="St Steam, IT ITAD, GG GG.deals, Ep Epic, MS Microsoft">
-            <span>St</span><span>IT</span><span>GG</span><span>Ep</span><span>MS</span>
-          </span>
-        </div>
-      ),
-      enableSorting: true,
-      sortingFn: numericSort,
-      sortUndefined: "last",
-      cell: ({ row }) => <SyncBadges item={row.original} />
-    },
-    { id: "basePriceMinor", accessorFn: (item) => item.basePriceMinor ?? undefined, header: "Precio base", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.basePriceMinor} currency={row.original.baseCurrency} /> },
-    {
-      id: "officialDiscount",
-      accessorFn: (item) => discountPercent(item.basePriceMinor, item.baseCurrency, item.bestOfficialMinor) ?? undefined,
-      header: "% dto. oficial",
-      sortingFn: numericSort,
-      sortUndefined: "last",
-      cell: ({ row }) => <DiscountValue value={row.getValue<number | undefined>("officialDiscount") ?? null} />
-    },
-    {
-      id: "keyshopDiscount",
-      accessorFn: (item) => discountPercent(item.basePriceMinor, item.baseCurrency, item.bestKeyshopMinor) ?? undefined,
-      header: "% dto. keys",
-      sortingFn: numericSort,
-      sortUndefined: "last",
-      cell: ({ row }) => <DiscountValue value={row.getValue<number | undefined>("keyshopDiscount") ?? null} />
-    },
-    {
-      id: "dealOfficial",
-      accessorFn: (item) => itemScore(item, item.bestOfficialMinor, minViableDiscountPercent) ?? undefined,
-      header: "Deal oficial",
-      sortingFn: numericSort,
-      sortUndefined: "last",
-      cell: ({ row }) => <ScoreValue score={row.getValue<number | undefined>("dealOfficial") ?? null} />
-    },
-    {
-      id: "dealKeyshop",
-      accessorFn: (item) => itemScore(item, item.bestKeyshopMinor, minViableDiscountPercent) ?? undefined,
-      header: "Deal keys",
-      sortingFn: numericSort,
-      sortUndefined: "last",
-      cell: ({ row }) => <ScoreValue score={row.getValue<number | undefined>("dealKeyshop") ?? null} />
-    },
-    { id: "historyLowMinor", accessorFn: (item) => item.historyLowMinor ?? undefined, header: "Mínimo histórico", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.historyLowMinor} currency={row.original.historyLowCurrency} /> },
-    { id: "officialPrice", accessorFn: (item) => item.bestOfficialMinor ?? undefined, header: "Mín. oficial", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.bestOfficialMinor} currency={MXN} /> },
-    { id: "keyshopPrice", accessorFn: (item) => item.bestKeyshopMinor ?? undefined, header: "Mín. keys", sortingFn: numericSort, sortUndefined: "last", cell: ({ row }) => <PriceValue amountMinor={row.original.bestKeyshopMinor} currency={MXN} /> },
-    { id: "actions", header: "Acciones", enableSorting: false, cell: ({ row }) => <RowRefreshButton item={row.original} refreshing={refreshingAppId === row.original.appId} blocked={refreshingAppId !== null && refreshingAppId !== row.original.appId} onRefresh={onRefresh} /> }
-    ];
-  }, [minViableDiscountPercent, onRefresh, refreshingAppId, rowErrors, selectedAppIds]);
+  // La selección vive en el estado del componente: la identidad es el AppID, así que ordenar,
+  // filtrar o paginar no mueve la marca.
+  const pageCount = Math.max(1, Math.ceil(totalItems / pagination.pageSize));
 
   return (
     <section className="app-card space-y-4 p-5" aria-labelledby="wishlist-items-heading">
@@ -1162,49 +1253,76 @@ function WishlistItems({
           <Button type="button" variant="ghost" className="h-8 px-3 text-xs" disabled={categoryBusy || batchCategoryId === ""} onClick={() => void applyBatchCategory(true)}>Quitar de categoría</Button>
         </div> : null}
       </div>
-      <ul className="space-y-3 md:hidden">
-        {filteredItems.map((item) => (
-          <li key={item.appId} className={cn("rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-3", selectedAppIds.has(item.appId) && "border-[color:var(--color-accent)]")}>
-            <div className="flex items-start gap-2"><input
-                type="checkbox"
-                aria-label={`Seleccionar ${item.name}`}
-                checked={selectedAppIds.has(item.appId)}
-                onChange={(event) => setSelectedAppIds((current) => toggleAppId(current, item.appId, event.target.checked))}
-                className="mt-1 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
-              /><WishlistThumb src={item.imageUrl} /><div className="min-w-0"><Link href={`/games/${item.appId}`} className="text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">{item.name}</Link><p className="text-xs text-muted">AppID {item.appId}</p><CategoryBadges categories={item.categories} /></div></div>
-            <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2"><PriceFact label="Precio base" amountMinor={item.basePriceMinor} currency={item.baseCurrency} /><PriceFact label="Mínimo histórico" amountMinor={item.historyLowMinor} currency={item.historyLowCurrency} /><PriceFact label="Mín. oficial" amountMinor={item.bestOfficialMinor} currency={MXN} /><PriceFact label="Mín. keys" amountMinor={item.bestKeyshopMinor} currency={MXN} /><MobileMetrics item={item} minViableDiscountPercent={minViableDiscountPercent} /></div>
-            <div className="mt-3"><WishlistRowMeta item={item} /></div><Button type="button" variant="ghost" className="mt-2 h-7 px-2 text-xs" onClick={(event) => { categoryTriggerRef.current = event.currentTarget; setCategoryItem(item); }}>Editar categorías</Button>
-            <div className="mt-3"><RowRefreshButton item={item} refreshing={refreshingAppId === item.appId} blocked={refreshingAppId !== null && refreshingAppId !== item.appId} onRefresh={onRefresh} /></div>
-            {rowErrors[item.appId] ? <p role="alert" className="mt-2 text-xs text-danger">{rowErrors[item.appId]}</p> : null}
-          </li>
-        ))}
-      </ul>
-      {filteredItems.length === 0 ? (
+      <ThresholdControl value={minViableDiscountPercent} onCommit={onThresholdCommit} />
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <WishlistSearchInput value={search} onChange={onSearchChange} />
+        <WishlistSortControl sorting={sorting} onSortingChange={onSortingChange} />
+        {filteredItems.length > 0 ? (
+          <label className="flex items-center gap-2 text-xs text-secondary">
+            <input
+              type="checkbox"
+              aria-label="Seleccionar los juegos de esta página"
+              checked={pageSelectionState(selectedAppIds, filteredItems.map((item) => item.appId)) === "all"}
+              ref={(node) => {
+                if (node) {
+                  node.indeterminate =
+                    pageSelectionState(selectedAppIds, filteredItems.map((item) => item.appId)) === "some";
+                }
+              }}
+              onChange={(event) =>
+                setSelectedAppIds((current) =>
+                  setAppIds(
+                    current,
+                    filteredItems.map((item) => item.appId),
+                    event.target.checked
+                  )
+                )
+              }
+              className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+            />
+            Seleccionar página
+          </label>
+        ) : null}
+      </div>
+      {loading ? (
+        <p className="app-card p-5 text-sm text-muted">Cargando...</p>
+      ) : tableError ? (
+        <Alert variant="danger">{tableError}</Alert>
+      ) : filteredItems.length === 0 ? (
         <div className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
           <p>Ningún juego coincide con los filtros actuales.</p>
           <Button type="button" variant="secondary" className="mt-3 h-8 px-3 text-xs" onClick={onClearFilters}>
             Limpiar filtros
           </Button>
         </div>
-      ) : null}
-      <p className="text-xs text-muted" aria-live="polite">
-        {rangeStart}-{rangeEnd} de {totalItems}
-      </p>
-      <WishlistDataGrid
-        columns={columns}
-        rows={filteredItems}
-        minViableDiscountPercent={minViableDiscountPercent}
-        onThresholdCommit={onThresholdCommit}
-        pagination={pagination}
-        onPaginationChange={onPaginationChange}
-        sorting={sorting}
-        onSortingChange={onSortingChange}
-        search={search}
-        onSearchChange={onSearchChange}
-        rowCount={totalItems}
-        loading={loading}
-        error={tableError ?? null}
-      />
+      ) : (
+        <>
+          <ul className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" aria-label="Juegos en la wishlist">
+            {filteredItems.map((item) => (
+              <WishlistCard
+                key={item.appId}
+                item={item}
+                selected={selectedAppIds.has(item.appId)}
+                onToggleSelect={(appId, checked) =>
+                  setSelectedAppIds((current) => toggleAppId(current, appId, checked))
+                }
+                refreshingAppId={refreshingAppId}
+                rowErrors={rowErrors}
+                minViableDiscountPercent={minViableDiscountPercent}
+                onRefresh={onRefresh}
+                onEditCategories={(cardItem, trigger) => {
+                  categoryTriggerRef.current = trigger;
+                  setCategoryItem(cardItem);
+                }}
+              />
+            ))}
+          </ul>
+          <p className="text-xs text-muted" aria-live="polite">
+            {rangeStart}-{rangeEnd} de {totalItems}
+          </p>
+          <WishlistPager pagination={pagination} pageCount={pageCount} onPaginationChange={onPaginationChange} />
+        </>
+      )}
       <CategoryModal item={categoryItem} categories={categories} disabled={categoryBusy} onClose={closeCategoryModal} onSaved={onCategoriesChanged} onItemCategoriesChanged={onItemCategoriesChanged} onError={(message) => { setCategoryFeedback(message); onToast(message, "error"); }} />
       {selectedAppIds.size > 0 ? (
         <div className="sticky bottom-2 z-10">
@@ -1298,6 +1416,25 @@ export function WishlistClient() {
     });
   }, [wishlist?.totalPages]);
 
+  // El tamaño de página persiste en localStorage (la misma clave que usaba la tabla): si hay un valor
+  // guardado válido, manda sobre el inicial, igual que hacía la hidratación del grid.
+  useEffect(() => {
+    try {
+      const persisted = window.localStorage.getItem(PAGE_SIZE_STORAGE_KEY);
+      const parsed = Number(persisted);
+      if (persisted && WISHLIST_PAGE_SIZES.includes(parsed)) {
+        setPagination((current) =>
+          current.pageIndex === 0 && current.pageSize === parsed
+            ? current
+            : { pageIndex: 0, pageSize: parsed }
+        );
+      }
+    } catch {
+      // localStorage bloqueado: se queda el tamaño inicial.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     void loadWishlist(wishlistQueryRef.current, controller.signal);
@@ -1336,6 +1473,11 @@ export function WishlistClient() {
 
   function changePagination(next: PaginationState) {
     setPagination(next);
+    try {
+      window.localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(next.pageSize));
+    } catch {
+      // localStorage lleno o bloqueado: la lista sigue funcionando en memoria.
+    }
     syncUrl({ ...queryFilters(appliedFilters), page: next.pageIndex + 1, pageSize: next.pageSize, sort: wishlistQuery.sort, direction: wishlistQuery.direction });
   }
 

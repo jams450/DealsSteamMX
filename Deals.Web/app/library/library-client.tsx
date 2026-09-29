@@ -1,10 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
-import type { ColumnDef, FilterFn, SortingFn } from "@tanstack/react-table";
-import { FileJson, Gamepad2, GitMerge, HardDriveDownload, Star, Trophy, Upload } from "lucide-react";
-import { DataGrid } from "@/components/data-grid/data-grid";
+import type { PaginationState, SortingState, VisibilityState } from "@tanstack/react-table";
+import { ArrowDown, ArrowUp, Columns3, FileJson, Gamepad2, GitMerge, HardDriveDownload, Search, Star, Trophy, Upload, X } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
@@ -224,31 +223,56 @@ function fold(value: string): string {
     .toLocaleLowerCase("es-MX");
 }
 
-// Buscador global: por título y por tienda. Es el filtro que el DataGrid aplica a la fila completa; se
-// ignoran `columnId` y el valor de cada columna porque lo que importa es el juego agrupado, no una celda.
-const libraryFilter: FilterFn<LibraryGame> = (row, _columnId, value) => {
+// Buscador global: por título y por tienda, sobre el juego agrupado, no sobre una celda.
+function matchesLibrarySearch(game: LibraryGame, value: string): boolean {
   const query = fold(String(value).trim());
   if (query === "") return true;
 
-  const game = row.original;
   if (fold(game.title).includes(query)) return true;
   return game.stores.some((store) => fold(storeLabel(store)).includes(query));
-};
+}
 
-// Un valor ausente se expresa como `undefined`, nunca `null`, y cada columna ordenable lleva
-// `sortUndefined: "last"`. El paquete resuelve ese caso con un `return` temprano ANTES de invertir por
-// dirección, así que los juegos sin nota o sin año quedan al final tanto en asc como en desc. El default
-// (`sortUndefined: 1`) sí se invierte: con él, ordenar descendente pondría arriba los vacíos como si
-// fueran los valores más altos.
-const numericSort: SortingFn<LibraryGame> = (rowA, rowB, columnId) =>
-  Number(rowA.getValue(columnId)) - Number(rowB.getValue(columnId));
+// Ordenables de la lista: las mismas columnas que la tabla permitía ordenar (título, estado de juego,
+// última reseña y años jugados). Un valor ausente queda al final en las dos direcciones, igual que el
+// `sortUndefined: "last"` que llevaban las columnas.
+type LibrarySortId = "title" | "playStatus" | "score" | "playedYears";
 
-const titleSort: SortingFn<LibraryGame> = (rowA, rowB, columnId) =>
-  String(rowA.getValue(columnId)).localeCompare(String(rowB.getValue(columnId)), "es-MX");
+const LIBRARY_SORT_OPTIONS: readonly { readonly value: LibrarySortId; readonly label: string }[] = [
+  { value: "title", label: "Juego" },
+  { value: "playStatus", label: "Estado de juego" },
+  { value: "score", label: "Última reseña" },
+  { value: "playedYears", label: "Años jugados" }
+];
 
-// Filtro de estado de juego del toolbar. El DataGrid solo sabe filtrar columnas con un input de texto, así
-// que un estado derivado no se puede resolver bien en la fila de filtros: se resuelve aquí, con el conteo
-// de cada opción para que el filtro sea también el reporte ("cuántos por año / por estado").
+function librarySortValue(game: LibraryGame, sortId: LibrarySortId): string | number | undefined {
+  switch (sortId) {
+    case "title":
+      return game.title;
+    case "playStatus":
+      return PLAY_STATUS_ORDER[game.playStatus];
+    case "score":
+      return game.lastReview?.score ?? undefined;
+    case "playedYears":
+      return game.playedYears[0] ?? undefined;
+  }
+}
+
+function compareLibraryGames(sortId: LibrarySortId, desc: boolean, left: LibraryGame, right: LibraryGame): number {
+  const leftValue = librarySortValue(left, sortId);
+  const rightValue = librarySortValue(right, sortId);
+  if (leftValue === undefined && rightValue === undefined) return 0;
+  if (leftValue === undefined) return 1;
+  if (rightValue === undefined) return -1;
+  const result =
+    typeof leftValue === "string" || typeof rightValue === "string"
+      ? String(leftValue).localeCompare(String(rightValue), "es-MX")
+      : Number(leftValue) - Number(rightValue);
+  return desc ? -result : result;
+}
+
+// Filtro de estado de juego del toolbar. Un estado derivado no se resuelve bien con un input de texto
+// por columna, así que se resuelve aquí, con el conteo de cada opción para que el filtro sea también
+// el reporte ("cuántos por año / por estado").
 type PlayStatusFilter = "all" | ReviewStatus | "backlog";
 
 const PLAY_STATUS_FILTERS: readonly { readonly value: PlayStatusFilter; readonly label: string }[] = [
@@ -387,7 +411,7 @@ function CoverSyncReportBadges({ report }: { readonly report: LibraryCoverSyncRe
   );
 }
 
-// Orden del ciclo de vida para la columna de estado: el índice es el valor que ordena.
+// Orden del ciclo de vida para el orden por estado: el índice es el valor que ordena.
 const PLAY_STATUS_ORDER: Readonly<Record<ReviewStatus | "backlog", number>> = {
   backlog: 0,
   dropped: 1,
@@ -439,6 +463,326 @@ function PlayStatusBadge({ game }: { readonly game: LibraryGame }) {
   return <span className={PLAY_STATUS_BADGES[game.playStatus]}>{reviewStatusLabel(game.playStatus)}</span>;
 }
 
+// Secciones de la tarjeta, con los mismos ids y etiquetas que las columnas de la tabla: la preferencia
+// guardada en `library.columns.v1` sigue valiendo porque habla el mismo vocabulario. `actions` no se
+// puede ocultar, igual que en el grid.
+const LIBRARY_COLUMN_OPTIONS: readonly { readonly id: string; readonly label: string }[] = [
+  { id: "cover", label: "Portada" },
+  { id: "title", label: "Juego" },
+  { id: "stores", label: "Tiendas" },
+  { id: "state", label: "Estado" },
+  { id: "playStatus", label: "Estado de juego" },
+  { id: "favorite", label: "Favorito" },
+  { id: "score", label: "Última reseña" },
+  { id: "playedYears", label: "Años jugados" }
+];
+
+const LIBRARY_PAGE_SIZES = [10, 25, 50, 100];
+const LIBRARY_PAGE_SIZE_STORAGE_KEY = "library.pageSize.v1";
+const LIBRARY_COLUMN_VISIBILITY_STORAGE_KEY = "library.columns.v1";
+
+function isSectionVisible(visibility: VisibilityState, id: string): boolean {
+  return visibility[id] !== false;
+}
+
+function LibrarySearchInput({ value, onChange }: { readonly value: string; readonly onChange: (value: string) => void }) {
+  const inputId = useId();
+
+  return (
+    <div className="flex items-center">
+      <label className="sr-only" htmlFor={inputId}>
+        Buscar por juego o tienda
+      </label>
+      <div className="relative w-full max-w-xs">
+        <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" aria-hidden="true" />
+        <input
+          id={inputId}
+          type="search"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="Buscar por juego o tienda"
+          className="input-semantic h-8 w-full pl-7 pr-7 text-xs"
+        />
+        {value ? (
+          <button
+            type="button"
+            aria-label="Limpiar búsqueda"
+            onClick={() => onChange("")}
+            className="absolute right-1 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-muted hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+          >
+            <X className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function LibrarySortControl({
+  sorting,
+  onSortingChange
+}: {
+  readonly sorting: SortingState;
+  readonly onSortingChange: (next: SortingState) => void;
+}) {
+  const sortId = useId();
+  const current = sorting.length > 0 ? sorting[0] : undefined;
+  const currentId = current !== undefined && LIBRARY_SORT_OPTIONS.some((option) => option.value === current.id)
+    ? current.id
+    : "";
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <label htmlFor={sortId} className="text-xs font-medium text-secondary">
+        Ordenar por
+      </label>
+      <select
+        id={sortId}
+        value={currentId}
+        onChange={(event) => {
+          const id = event.target.value;
+          onSortingChange(id === "" ? [] : [{ id, desc: current?.id === id ? (current?.desc ?? false) : false }]);
+        }}
+        className="input-semantic h-8 text-xs"
+      >
+        <option value="">Sin orden</option>
+        {LIBRARY_SORT_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <Button
+        type="button"
+        variant="secondary"
+        className="h-8 px-2 text-xs"
+        disabled={currentId === ""}
+        onClick={() => {
+          if (current) onSortingChange([{ id: current.id, desc: !current.desc }]);
+        }}
+        aria-label={current?.desc ? "Orden descendente: cambiar a ascendente" : "Orden ascendente: cambiar a descendente"}
+      >
+        {current?.desc ? (
+          <ArrowDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        ) : (
+          <ArrowUp className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        )}
+        {current?.desc ? "Desc" : "Asc"}
+      </Button>
+    </div>
+  );
+}
+
+// El mismo menú «Columnas» del grid, pero aplicado a las secciones de la tarjeta. Persiste en la misma
+// clave y con la misma forma (`{ id: boolean }`), así que lo guardado por la tabla sigue valiendo.
+function LibraryColumnsMenu({
+  visibility,
+  onChange
+}: {
+  readonly visibility: VisibilityState;
+  readonly onChange: (next: VisibilityState) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    function handlePointerDown(event: PointerEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [open ]);
+
+  function handleMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      setOpen(false);
+      buttonRef.current?.focus();
+    }
+  }
+
+  return (
+    <div className="relative ml-auto" ref={menuRef} onKeyDown={handleMenuKeyDown}>
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-haspopup="true"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="btn-secondary-semantic inline-flex h-7 items-center gap-1 px-2 text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+      >
+        <Columns3 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        Columnas
+      </button>
+      {open ? (
+        <div
+          role="group"
+          aria-label="Columnas visibles"
+          className="absolute right-0 z-30 mt-1 min-w-40 rounded-[var(--radius-md)] border border-strong bg-[var(--color-surface-1)] p-1 shadow-[var(--shadow-md)]"
+        >
+          {LIBRARY_COLUMN_OPTIONS.map((option) => (
+            <label
+              key={option.id}
+              className="flex cursor-pointer items-center gap-2 px-2 py-1 text-xs text-secondary hover:text-primary"
+            >
+              <input
+                type="checkbox"
+                checked={isSectionVisible(visibility, option.id)}
+                onChange={() => onChange({ ...visibility, [option.id]: !isSectionVisible(visibility, option.id) })}
+                className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+              />
+              <span>{option.label}</span>
+            </label>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function LibraryPager({
+  pagination,
+  pageCount,
+  onPaginationChange
+}: {
+  readonly pagination: PaginationState;
+  readonly pageCount: number;
+  readonly onPaginationChange: (next: PaginationState) => void;
+}) {
+  const pagerButtonClass =
+    "btn-secondary-semantic h-7 px-2 text-[11px] disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]";
+  const pageSizeId = useId();
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] px-2 py-1.5">
+      <div className="flex items-center gap-2">
+        <label htmlFor={pageSizeId} className="text-[11px] text-muted">
+          Filas
+        </label>
+        <select
+          id={pageSizeId}
+          value={String(pagination.pageSize)}
+          onChange={(event) => onPaginationChange({ ...pagination, pageIndex: 0, pageSize: Number(event.target.value) })}
+          className="input-semantic h-7 px-2 text-[11px]"
+        >
+          {LIBRARY_PAGE_SIZES.map((size) => (
+            <option key={size} value={String(size)}>
+              {size}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          className={pagerButtonClass}
+          onClick={() => onPaginationChange({ ...pagination, pageIndex: Math.max(0, pagination.pageIndex - 1) })}
+          disabled={pagination.pageIndex === 0}
+        >
+          Anterior
+        </button>
+        <span className="text-[11px] text-muted">
+          Página {pagination.pageIndex + 1} de {pageCount}
+        </span>
+        <button
+          type="button"
+          className={pagerButtonClass}
+          onClick={() => onPaginationChange({ ...pagination, pageIndex: pagination.pageIndex + 1 })}
+          disabled={pagination.pageIndex + 1 >= pageCount}
+        >
+          Siguiente
+        </button>
+      </div>
+    </div>
+  );
+}
+
+interface LibraryCardProps {
+  readonly game: LibraryGame;
+  readonly visibility: VisibilityState;
+  readonly favoritePending: boolean;
+  readonly onToggleFavorite: (game: LibraryGame) => void;
+  readonly onReview: (game: LibraryGame) => void;
+  readonly onPickCover: (game: LibraryGame) => void;
+  readonly onEditTitle: (game: LibraryGame) => void;
+}
+
+// Una sola tarjeta por juego en todos los anchos, con la cáscara de /discover (`app-card` + portada +
+// «Ver precios»): reúne las columnas de la tabla en el orden en que aparecían, sin quitar ningún dato
+// ni ninguna acción. «Ver precios» solo existe cuando la fila trae appid de Steam.
+function LibraryCard({
+  game,
+  visibility,
+  favoritePending,
+  onToggleFavorite,
+  onReview,
+  onPickCover,
+  onEditTitle
+}: LibraryCardProps) {
+  return (
+    <li className="app-card flex items-start gap-3 p-4">
+      {isSectionVisible(visibility, "cover") ? <LibraryThumb src={game.imageUrl} /> : null}
+      <div className="min-w-0 flex-1 space-y-2">
+        {isSectionVisible(visibility, "title") ? (
+          <p className="text-sm font-semibold text-primary">{game.title}</p>
+        ) : null}
+        {isSectionVisible(visibility, "stores") ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {game.stores.map((store) => (
+              <StoreBadge key={store} store={store} />
+            ))}
+          </div>
+        ) : null}
+        {isSectionVisible(visibility, "state") ? <StateCell game={game} /> : null}
+        {isSectionVisible(visibility, "playStatus") ? <PlayStatusBadge game={game} /> : null}
+        {isSectionVisible(visibility, "favorite") ? (
+          <div>
+            <FavoriteToggle game={game} pending={favoritePending} onToggle={onToggleFavorite} />
+          </div>
+        ) : null}
+        {isSectionVisible(visibility, "score") ? (
+          game.lastReview === null ? (
+            <span className="text-xs text-muted">—</span>
+          ) : (
+            <ReviewBadges review={game.lastReview} />
+          )
+        ) : null}
+        {isSectionVisible(visibility, "playedYears") ? (
+          game.playedYears.length === 0 ? (
+            <span className="text-xs text-muted">—</span>
+          ) : (
+            <div className="flex flex-wrap items-center gap-1">
+              {game.playedYears.map((year) => (
+                <span key={year} className="tabler-badge tabler-badge-muted tabular-nums">
+                  {year}
+                </span>
+              ))}
+            </div>
+          )
+        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {game.item.steamAppId !== null ? (
+            <Link
+              href={`/games/${game.item.steamAppId}`}
+              className="text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+            >
+              Ver precios
+            </Link>
+          ) : null}
+          <ReviewAction game={game} onReview={onReview} />
+          <CoverAction game={game} onPickCover={onPickCover} />
+          <TitleAction game={game} onEditTitle={onEditTitle} />
+        </div>
+      </div>
+    </li>
+  );
+}
+
 export function LibraryClient() {
   const [library, setLibrary] = useState<LibraryResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -446,6 +790,12 @@ export function LibraryClient() {
   const [storeFilter, setStoreFilter] = useState("");
   const [playStatusFilter, setPlayStatusFilter] = useState<PlayStatusFilter>("all");
   const [yearFilter, setYearFilter] = useState<string>("all");
+  // Buscador, orden, paginación y columnas visibles: lo que el DataGrid resolvía en el navegador, ahora
+  // en estado propio con la misma semántica (mismas claves de localStorage, mismos comparadores).
+  const [search, setSearch] = useState("");
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 10 });
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   // El favorito es del juego, no de la reseña: se cambia con el mismo `applyFavorite` que se usa para
   // pintar el resultado, así que un juego en dos tiendas se marca en las dos filas a la vez.
   const [favoritePendingId, setFavoritePendingId] = useState<number | null>(null);
@@ -642,8 +992,8 @@ export function LibraryClient() {
     }
   }, [playedYearCounts, yearFilter]);
 
-  // La paginación, el orden y el buscador global los resuelve el DataGrid en el navegador; aquí solo se
-  // aplican los tres filtros propios, así que el grid recibe ya la lista que debe paginar.
+  // La paginación, el orden y el buscador se resuelven en el navegador; aquí solo se aplican los
+  // tres filtros propios, y sobre ese conjunto corren búsqueda, orden y paginación.
   const filteredGames = useMemo(
     () =>
       storeFilteredGames.filter((game) => {
@@ -656,6 +1006,62 @@ export function LibraryClient() {
     [storeFilteredGames, playStatusFilter, yearFilter]
   );
 
+  const searchedGames = useMemo(
+    () => filteredGames.filter((game) => matchesLibrarySearch(game, search)),
+    [filteredGames, search]
+  );
+
+  // Sin orden explícito manda el orden del agrupador (título es-MX ascendente).
+  const sortedGames = useMemo(() => {
+    const sort = sorting.length > 0 ? sorting[0] : undefined;
+    if (sort === undefined || !LIBRARY_SORT_OPTIONS.some((option) => option.value === sort.id)) {
+      return searchedGames;
+    }
+    return [...searchedGames].sort((left, right) =>
+      compareLibraryGames(sort.id as LibrarySortId, sort.desc, left, right)
+    );
+  }, [searchedGames, sorting]);
+
+  const pageCount = Math.max(1, Math.ceil(sortedGames.length / pagination.pageSize));
+  const pagedGames = useMemo(
+    () => sortedGames.slice(pagination.pageIndex * pagination.pageSize, (pagination.pageIndex + 1) * pagination.pageSize),
+    [sortedGames, pagination]
+  );
+
+  // El tamaño de página y las columnas visibles persisten en localStorage con las mismas claves y la
+  // misma forma que usaba el grid, así que lo guardado sigue valiendo.
+  useEffect(() => {
+    try {
+      const persistedSize = window.localStorage.getItem(LIBRARY_PAGE_SIZE_STORAGE_KEY);
+      const parsedSize = Number(persistedSize);
+      if (persistedSize && LIBRARY_PAGE_SIZES.includes(parsedSize)) {
+        setPagination((current) =>
+          current.pageIndex === 0 && current.pageSize === parsedSize
+            ? current
+            : { pageIndex: 0, pageSize: parsedSize }
+        );
+      }
+      const persistedVisibility = window.localStorage.getItem(LIBRARY_COLUMN_VISIBILITY_STORAGE_KEY);
+      if (persistedVisibility) {
+        const parsed = JSON.parse(persistedVisibility) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          setColumnVisibility(parsed as VisibilityState);
+        }
+      }
+    } catch {
+      // Valores corruptos o almacenamiento bloqueado: se queda lo visible por defecto.
+    }
+  }, []);
+
+  // Si la lista se encoge bajo la página actual (una recarga con menos juegos), se vuelve a la última
+  // página válida en vez de pintar un vacío sin explicación.
+  useEffect(() => {
+    setPagination((current) => {
+      const maxPageIndex = Math.max(0, Math.ceil(sortedGames.length / current.pageSize) - 1);
+      return current.pageIndex > maxPageIndex ? { ...current, pageIndex: maxPageIndex } : current;
+    });
+  }, [sortedGames.length]);
+
   const gamePassCount = useMemo(() => games.filter((game) => game.states.includes("subscription")).length, [games]);
   const gameCountLabel = games.length === 1 ? "1 juego" : `${games.length} juegos`;
 
@@ -663,109 +1069,35 @@ export function LibraryClient() {
   const onPickCover = useCallback((game: LibraryGame) => setCoverGame(game), []);
   const onEditTitle = useCallback((game: LibraryGame) => setTitleGame(game), []);
 
-  const columns = useMemo<ColumnDef<LibraryGame>[]>(
-    () => [
-      {
-        id: "cover",
-        header: "Portada",
-        enableSorting: false,
-        cell: ({ row }) => <LibraryThumb src={row.original.imageUrl} />
-      },
-      {
-        id: "title",
-        accessorKey: "title",
-        header: "Juego",
-        sortingFn: titleSort,
-        cell: ({ row }) => <p className="min-w-48 text-sm font-semibold text-primary">{row.original.title}</p>
-      },
-      {
-        id: "stores",
-        header: "Tiendas",
-        enableSorting: false,
-        cell: ({ row }) => (
-          <div className="flex flex-wrap items-center gap-2">
-            {row.original.stores.map((store) => (
-              <StoreBadge key={store} store={store} />
-            ))}
-          </div>
-        )
-      },
-      {
-        id: "state",
-        header: "Estado",
-        enableSorting: false,
-        cell: ({ row }) => <StateCell game={row.original} />
-      },
-      {
-        id: "playStatus",
-        // El orden del header es el del ciclo de vida: por jugar, terminado, completado, dropeado.
-        accessorFn: (game) => PLAY_STATUS_ORDER[game.playStatus],
-        header: "Estado de juego",
-        sortingFn: numericSort,
-        cell: ({ row }) => <PlayStatusBadge game={row.original} />
-      },
-      {
-        id: "favorite",
-        accessorFn: (game) => (game.isFavorite ? 1 : 0),
-        header: "Favorito",
-        sortingFn: numericSort,
-        enableSorting: false,
-        cell: ({ row }) => (
-          <FavoriteToggle
-            game={row.original}
-            pending={favoritePendingId === row.original.gameId}
-            onToggle={(game) => void onToggleFavorite(game)}
-          />
-        )
-      },
-      {
-        id: "score",
-        accessorFn: (game) => game.lastReview?.score ?? undefined,
-        header: "Última reseña",
-        sortingFn: numericSort,
-        sortUndefined: "last",
-        cell: ({ row }) =>
-          row.original.lastReview === null ? (
-            <span className="text-muted">—</span>
-          ) : (
-            <ReviewBadges review={row.original.lastReview} />
-          )
-      },
-      {
-        id: "playedYears",
-        // Ordena por el año más reciente: un juego rejugado vale por su última partida.
-        accessorFn: (game) => game.playedYears[0] ?? undefined,
-        header: "Años jugados",
-        sortingFn: numericSort,
-        sortUndefined: "last",
-        cell: ({ row }) =>
-          row.original.playedYears.length === 0 ? (
-            <span className="text-muted">—</span>
-          ) : (
-            <div className="flex flex-wrap items-center gap-1">
-              {row.original.playedYears.map((year) => (
-                <span key={year} className="tabler-badge tabler-badge-muted tabular-nums">
-                  {year}
-                </span>
-              ))}
-            </div>
-          )
-      },
-      {
-        id: "actions",
-        header: "Acciones",
-        enableSorting: false,
-        cell: ({ row }) => (
-          <div className="flex flex-wrap items-center gap-2">
-            <ReviewAction game={row.original} onReview={onReview} />
-            <CoverAction game={row.original} onPickCover={onPickCover} />
-            <TitleAction game={row.original} onEditTitle={onEditTitle} />
-          </div>
-        )
-      }
-    ],
-    [favoritePendingId, onEditTitle, onPickCover, onReview, onToggleFavorite]
-  );
+  // Buscar y ordenar vuelven a la primera página, igual que el reseteo automático del grid; los
+  // filtros de tienda, año y estado no la mueven (son un cambio de datos externo al paginador).
+  function onSearchChange(value: string) {
+    setSearch(value);
+    setPagination((current) => (current.pageIndex === 0 ? current : { ...current, pageIndex: 0 }));
+  }
+
+  function onSortingChange(next: SortingState) {
+    setSorting(next);
+    setPagination((current) => (current.pageIndex === 0 ? current : { ...current, pageIndex: 0 }));
+  }
+
+  function onPaginationChange(next: PaginationState) {
+    setPagination(next);
+    try {
+      window.localStorage.setItem(LIBRARY_PAGE_SIZE_STORAGE_KEY, String(next.pageSize));
+    } catch {
+      // localStorage lleno o bloqueado: la lista sigue funcionando en memoria.
+    }
+  }
+
+  function onVisibilityChange(next: VisibilityState) {
+    setColumnVisibility(next);
+    try {
+      window.localStorage.setItem(LIBRARY_COLUMN_VISIBILITY_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // localStorage lleno o bloqueado: la lista sigue funcionando en memoria.
+    }
+  }
 
   function onStoreFilterChange(event: ChangeEvent<HTMLSelectElement>) {
     setStoreFilter(event.target.value);
@@ -914,7 +1246,7 @@ export function LibraryClient() {
             muestra una sola vez, con todas sus tiendas y sus estados. Cuando la fila mezcla estados (comprado
             y además en Game Pass, por ejemplo) se pintan los dos, con la suscripción primero, para que no se
             lea como compra donde solo hay suscripción. La lista se pagina, se ordena y se busca en tu
-            navegador; el menú «Columnas» permite ocultar las que no uses.
+            navegador; el menú «Columnas» permite ocultar las secciones que no uses.
           </p>
           <p className="text-xs text-muted">
             Las reseñas son por juego y plataforma, y puedes tener varias: cada vez que lo terminas agregas
@@ -981,74 +1313,87 @@ export function LibraryClient() {
             Tu biblioteca está vacía. Sube el JSON del export de Playnite para llenarla.
           </p>
         ) : (
-          <DataGrid
-            columns={columns}
-            rows={filteredGames}
-            density="compact"
-            stickyHeader
-            stickyActionsColumn
-            pageSizeOptions={[10, 25, 50, 100]}
-            pageSizeStorageKey="library.pageSize.v1"
-            enableColumnVisibility
-            columnVisibilityStorageKey="library.columns.v1"
-            enableGlobalFilter
-            globalFilterPlaceholder="Buscar por juego o tienda"
-            globalFilterFn={libraryFilter}
-            toolbar={
-              <div className="flex flex-wrap items-end gap-3">
-                <div className="w-full sm:w-64">
-                  <Select
-                    id="library-store-filter"
-                    label="Filtrar por tienda"
-                    value={storeFilter}
-                    onChange={onStoreFilterChange}
-                  >
-                    <option value="">Todas las tiendas ({games.length})</option>
-                    {storeCounts.map((entry) => (
-                      <option key={entry.store} value={entry.store}>
-                        {storeLabel(entry.store)} ({entry.count})
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <div className="w-full sm:w-52">
-                  <Select id="library-year-filter" label="Filtrar por año jugado" value={yearFilter} onChange={onYearFilterChange}>
-                    <option value="all">Todos los años</option>
-                    {playedYearOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label} ({playedYearCounts.get(option.value) ?? 0})
-                      </option>
-                    ))}
-                    {playedYearCounts.has(NO_YEAR) ? (
-                      <option value={NO_YEAR}>Sin año ({playedYearCounts.get(NO_YEAR) ?? 0})</option>
-                    ) : null}
-                  </Select>
-                </div>
-                <FilterToggle
-                  id="library-play-status-filter"
-                  label="Filtrar por estado de juego"
-                  options={PLAY_STATUS_FILTERS}
-                  value={playStatusFilter}
-                  counts={playStatusCounts}
-                  totalCount={storeFilteredGames.length}
-                  onChange={setPlayStatusFilter}
-                />
-                <div className="space-y-1.5">
-                  <p className="text-sm font-medium text-primary">Portadas</p>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    className="h-9 whitespace-nowrap px-3 text-xs"
-                    loading={coverSyncing}
-                    onClick={() => void onSyncCovers()}
-                  >
-                    Sincronizar portadas
-                  </Button>
-                </div>
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="w-full sm:w-64">
+                <Select
+                  id="library-store-filter"
+                  label="Filtrar por tienda"
+                  value={storeFilter}
+                  onChange={onStoreFilterChange}
+                >
+                  <option value="">Todas las tiendas ({games.length})</option>
+                  {storeCounts.map((entry) => (
+                    <option key={entry.store} value={entry.store}>
+                      {storeLabel(entry.store)} ({entry.count})
+                    </option>
+                  ))}
+                </Select>
               </div>
-            }
-            emptyMessage="Ningún juego coincide con los filtros o la búsqueda."
-          />
+              <div className="w-full sm:w-52">
+                <Select id="library-year-filter" label="Filtrar por año jugado" value={yearFilter} onChange={onYearFilterChange}>
+                  <option value="all">Todos los años</option>
+                  {playedYearOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label} ({playedYearCounts.get(option.value) ?? 0})
+                    </option>
+                  ))}
+                  {playedYearCounts.has(NO_YEAR) ? (
+                    <option value={NO_YEAR}>Sin año ({playedYearCounts.get(NO_YEAR) ?? 0})</option>
+                  ) : null}
+                </Select>
+              </div>
+              <FilterToggle
+                id="library-play-status-filter"
+                label="Filtrar por estado de juego"
+                options={PLAY_STATUS_FILTERS}
+                value={playStatusFilter}
+                counts={playStatusCounts}
+                totalCount={storeFilteredGames.length}
+                onChange={setPlayStatusFilter}
+              />
+              <div className="space-y-1.5">
+                <p className="text-sm font-medium text-primary">Portadas</p>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="h-9 whitespace-nowrap px-3 text-xs"
+                  loading={coverSyncing}
+                  onClick={() => void onSyncCovers()}
+                >
+                  Sincronizar portadas
+                </Button>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <LibrarySearchInput value={search} onChange={onSearchChange} />
+              <LibrarySortControl sorting={sorting} onSortingChange={onSortingChange} />
+              <LibraryColumnsMenu visibility={columnVisibility} onChange={onVisibilityChange} />
+            </div>
+            {sortedGames.length === 0 ? (
+              <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
+                Ningún juego coincide con los filtros o la búsqueda.
+              </p>
+            ) : (
+              <>
+                <ul className="grid gap-3 md:grid-cols-2" aria-label="Juegos en la biblioteca">
+                  {pagedGames.map((game) => (
+                    <LibraryCard
+                      key={game.key}
+                      game={game}
+                      visibility={columnVisibility}
+                      favoritePending={favoritePendingId === game.gameId}
+                      onToggleFavorite={(target) => void onToggleFavorite(target)}
+                      onReview={onReview}
+                      onPickCover={onPickCover}
+                      onEditTitle={onEditTitle}
+                    />
+                  ))}
+                </ul>
+                <LibraryPager pagination={pagination} pageCount={pageCount} onPaginationChange={onPaginationChange} />
+              </>
+            )}
+          </div>
         )}
       </section>
 

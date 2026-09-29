@@ -19,4 +19,16 @@ public interface ISteamGameService
     Task<SteamGameDetails?> GetAppDetailsOnlyAsync(int appId, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<SteamSearchResult>> GetSuggestionsAsync(string? query, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Read-only discovery lists over persisted <c>steam_games</c> rows (region MX with a current
+    /// price). <c>list</c> is one of <c>discount</c> (by discount desc), <c>historic</c> (current
+    /// price at the local low) or <c>recent</c> (by observation date desc). Throws
+    /// <see cref="ArgumentException"/> for an unknown list.
+    /// </summary>
+    Task<IReadOnlyList<SteamDiscoverItem>> GetDiscoverAsync(
+        string list,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken);
 }

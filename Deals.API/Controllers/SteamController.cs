@@ -44,6 +44,17 @@ public sealed class SteamController(
         return Ok(results.Select(ToResponse));
     }
 
+    [HttpGet("discover")]
+    public async Task<ActionResult<IReadOnlyList<SteamDiscoverResponse>>> Discover(
+        [FromQuery] string? list,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 12,
+        CancellationToken cancellationToken = default)
+    {
+        var items = await steamGameService.GetDiscoverAsync(list ?? string.Empty, page, pageSize, cancellationToken);
+        return Ok(items.Select(ToResponse));
+    }
+
     [HttpGet("games/{appId:int}")]
     public Task<ActionResult<SteamGameResponse>> GetGame(
         int appId,
@@ -86,6 +97,13 @@ public sealed class SteamController(
 
     private static SteamSearchResponse ToResponse(SteamSearchResult result) =>
         new(result.AppId, result.Name, result.Type, result.ImageUrl, result.HasDetails, result.RefreshedAt);
+
+    private static SteamDiscoverResponse ToResponse(SteamDiscoverItem result) =>
+        new(result.AppId, result.Name, result.Type, result.ImageUrl, result.Currency,
+            result.InitialPriceMinor, result.CurrentPriceMinor, result.LowestPriceMinor,
+            result.ObservedAt, result.BestCurrentPriceMinor, result.BestPriceCurrency, result.BestPriceSource,
+            result.BestPriceLabel, result.BestPriceClassification, result.BestPricePricingType,
+            result.BestDiscountPercent, result.UsesSteamFallback);
 
     private static SteamGameResponse ToResponse(
         SteamGameDetails game,

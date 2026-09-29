@@ -304,6 +304,69 @@ export function normalizeSteamSearch(input: unknown): readonly SteamSearchResult
   });
 }
 
+// Ficha de descubrimiento: lo que la tarjeta pinta (identidad, arte, snapshot de Steam y fecha).
+// Sin ofertas, sin bundles, sin estado de usuario: la lista es de lectura sobre filas ya observadas.
+export type SteamDiscoverItem = {
+  readonly appId: number;
+  readonly name: string;
+  readonly type: string | null;
+  readonly imageUrl: string | null;
+  readonly currency: string | null;
+  readonly initialPriceMinor: number | null;
+  readonly currentPriceMinor: number | null;
+  readonly lowestPriceMinor: number | null;
+  readonly observedAt: string | null;
+  readonly bestCurrentPriceMinor: number | null;
+  readonly bestPriceCurrency: string | null;
+  readonly bestPriceSource: string | null;
+  readonly bestPriceLabel: string | null;
+  readonly bestPriceClassification: SteamOfferClassification | null;
+  readonly bestPricePricingType: SteamPricingType | null;
+  readonly bestDiscountPercent: number | null;
+  readonly usesSteamFallback: boolean;
+};
+
+function normalizeDiscoverItem(value: unknown): SteamDiscoverItem | null {
+  if (!isRecord(value)) return null;
+
+  const appId = toPositiveInteger(value.appId ?? value.AppId);
+  const name = toText(value.name ?? value.Name);
+  if (appId === null || name === null) return null;
+
+  return {
+    appId,
+    name,
+    type: toText(value.type ?? value.Type),
+    imageUrl: toText(value.imageUrl ?? value.ImageUrl),
+    currency: toCurrencyCode(value.currency ?? value.Currency),
+    initialPriceMinor: toPriceMinor(value.initialPriceMinor ?? value.InitialPriceMinor),
+    currentPriceMinor: toPriceMinor(value.currentPriceMinor ?? value.CurrentPriceMinor),
+    lowestPriceMinor: toPriceMinor(value.lowestPriceMinor ?? value.LowestPriceMinor),
+    observedAt: toIsoDateTime(value.observedAt ?? value.ObservedAt),
+    bestCurrentPriceMinor: toPriceMinor(value.bestCurrentPriceMinor ?? value.BestCurrentPriceMinor),
+    bestPriceCurrency: toCurrencyCode(value.bestPriceCurrency ?? value.BestPriceCurrency),
+    bestPriceSource: toText(value.bestPriceSource ?? value.BestPriceSource),
+    bestPriceLabel: toText(value.bestPriceLabel ?? value.BestPriceLabel),
+    bestPriceClassification: toClassification(value.bestPriceClassification ?? value.BestPriceClassification),
+    bestPricePricingType: toPricingType(value.bestPricePricingType ?? value.BestPricePricingType),
+    bestDiscountPercent: toPercent(value.bestDiscountPercent ?? value.BestDiscountPercent),
+    usesSteamFallback: value.usesSteamFallback === true || value.UsesSteamFallback === true
+  };
+}
+
+export function normalizeSteamDiscover(input: unknown): readonly SteamDiscoverItem[] {
+  const items: unknown[] = Array.isArray(input)
+    ? input
+    : isRecord(input) && Array.isArray(input.items ?? input.Items)
+      ? (input.items ?? input.Items) as unknown[]
+      : [];
+
+  return items.flatMap((item) => {
+    const game = normalizeDiscoverItem(item);
+    return game === null ? [] : [game];
+  });
+}
+
 function normalizeOffer(value: unknown): SteamGameOffer | null {
   if (!isRecord(value)) return null;
 
