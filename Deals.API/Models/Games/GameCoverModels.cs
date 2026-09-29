@@ -6,25 +6,30 @@ namespace Deals.API.Models.Games;
 
 /// <summary>
 /// Body of a manual cover pick. The shape is discriminated and strict: exactly one of
-/// <c>{ "steamAppId": 123 }</c> or <c>{ "igdbId": 456 }</c>, and no other property at all. Sending both,
-/// neither, an extra member or a non-positive id is a 400. The client never sends a URL or a title — the
-/// server re-reads the provider row by the id it picked, so a caller cannot point the catalog at an
-/// arbitrary image. A null value counts as "not sent", the same convention <c>GameTitleRequest</c> uses.
+/// <c>{ "steamAppId": 123 }</c>, <c>{ "igdbId": 456 }</c> or <c>{ "steamGridDbId": 789 }</c>, and no other
+/// property at all. Sending more than one, none, an extra member or a non-positive id is a 400. The client
+/// never sends a URL or a title — the server re-reads the provider row by the id it picked, so a caller cannot
+/// point the catalog at an arbitrary image. A null value counts as "not sent", the same convention
+/// <c>GameTitleRequest</c> uses.
 /// </summary>
 public sealed class GameCoverRequest
 {
-    /// <summary><c>steam</c> source: required, > 0, and forbidden together with <see cref="IgdbId"/>.</summary>
+    /// <summary><c>steam</c> source: required, > 0, and forbidden together with the other two ids.</summary>
     // Strict numbers: the MVC web defaults read "620" as 620, and a body that only has to be understood
     // loosely is not the discriminated shape this endpoint promises.
     [JsonNumberHandling(JsonNumberHandling.Strict)]
     public int? SteamAppId { get; set; }
 
-    /// <summary><c>igdb</c> source: required, > 0, and forbidden together with <see cref="SteamAppId"/>.</summary>
+    /// <summary><c>igdb</c> source: required, > 0, and forbidden together with the other two ids.</summary>
     [JsonNumberHandling(JsonNumberHandling.Strict)]
     public long? IgdbId { get; set; }
 
+    /// <summary><c>steamgriddb</c> source: required, > 0, and forbidden together with the other two ids.</summary>
+    [JsonNumberHandling(JsonNumberHandling.Strict)]
+    public int? SteamGridDbId { get; set; }
+
     /// <summary>
-    /// Any member the two known fields do not cover. It exists only to be rejected: an added <c>imageUrl</c>
+    /// Any member the three known fields do not cover. It exists only to be rejected: an added <c>imageUrl</c>
     /// or <c>title</c> is a malformed body (400), never a silently ignored field.
     /// </summary>
     [JsonExtensionData]
@@ -40,16 +45,19 @@ public sealed class GameCoverRequest
         if (AdditionalProperties is { Count: > 0 })
         {
             throw new ArgumentException(
-                "El cuerpo de la portada solo admite steamAppId o igdbId.", nameof(AdditionalProperties));
+                "El cuerpo de la portada solo admite steamAppId, igdbId o steamGridDbId.",
+                nameof(AdditionalProperties));
         }
 
         var hasSteamAppId = SteamAppId is not null;
         var hasIgdbId = IgdbId is not null;
+        var hasSteamGridDbId = SteamGridDbId is not null;
 
-        if (hasSteamAppId == hasIgdbId)
+        var provided = (hasSteamAppId ? 1 : 0) + (hasIgdbId ? 1 : 0) + (hasSteamGridDbId ? 1 : 0);
+        if (provided != 1)
         {
             throw new ArgumentException(
-                "Envía exactamente uno: steamAppId o igdbId.", nameof(SteamAppId));
+                "Envía exactamente uno: steamAppId, igdbId o steamGridDbId.", nameof(SteamAppId));
         }
 
         if (hasSteamAppId)
@@ -59,15 +67,25 @@ public sealed class GameCoverRequest
                 throw new ArgumentException("El appid de Steam debe ser mayor que cero.", nameof(SteamAppId));
             }
 
-            return new GameCoverCommand(GameCoverSource.Steam, SteamAppId, null);
+            return new GameCoverCommand(GameCoverSource.Steam, SteamAppId, null, null);
         }
 
-        if (IgdbId <= 0)
+        if (hasIgdbId)
         {
-            throw new ArgumentException("El id de IGDB debe ser mayor que cero.", nameof(IgdbId));
+            if (IgdbId <= 0)
+            {
+                throw new ArgumentException("El id de IGDB debe ser mayor que cero.", nameof(IgdbId));
+            }
+
+            return new GameCoverCommand(GameCoverSource.Igdb, null, IgdbId, null);
         }
 
-        return new GameCoverCommand(GameCoverSource.Igdb, null, IgdbId);
+        if (SteamGridDbId <= 0)
+        {
+            throw new ArgumentException("El id de SteamGridDB debe ser mayor que cero.", nameof(SteamGridDbId));
+        }
+
+        return new GameCoverCommand(GameCoverSource.SteamGridDb, null, null, SteamGridDbId);
     }
 }
 

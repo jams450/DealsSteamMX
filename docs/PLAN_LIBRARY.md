@@ -321,26 +321,125 @@ Decisiones:
   y el juego tiene **todos** los años de **todas** sus reseñas: un juego rejugado aparece en cada año en que se
   jugó y se filtra por el más reciente. Presupuesto de una columna por partida, no de un campo nuevo.
 
-### Portadas desde Steam
+### Portadas
 
 La portada de una fila de biblioteca es `games.image_url` (dato de catálogo, compartido por las plataformas
-del juego) y se guarda **solo como URL** de Steam, igual que la wishlist: no se descarga ni se reescala
-ninguna imagen. Hasta ahora esa columna solo la había llenado el backfill de `2026-09-27_games_backfill.sql`
-desde `steam_games`, así que la mayoría de los juegos estaban sin portada.
+del juego) y se guarda **solo como URL**: no se descarga ni se reescala ninguna imagen. Hasta la fase 4 esa
+columna solo la había llenado el backfill de `2026-09-27_games_backfill.sql` desde `steam_games`, así que la
+mayoría de los juegos estaban sin portada.
 
 Dos caminos, y ninguno toca identidad ni precios:
 
 | Camino | Ruta | Qué escribe | Reemplaza |
 |---|---|---|---|
-| Pasada automática | `POST /api/library/covers/sync` | `games.image_url` de los juegos de la biblioteca que el catálogo ya liga a un appid de Steam (`game_external_ids`, namespace `steam`) | Nunca: solo llena lo vacío |
-| Elección manual | `PUT /api/games/{gameId}/cover` `{ steamAppId }` | `games.image_url` del juego indicado, con el `header_image` de ese appid | Sí: la eligió el usuario |
+| Pasada automática | `POST /api/library/covers/sync` | `games.image_url` de los juegos de la biblioteca **sin portada**, resueltos por una cadena de proveedores | Nunca: solo llena lo vacío |
+| Elección manual | `PUT /api/games/{gameId}/cover` `{ steamAppId }`, `{ igdbId }` o `{ steamGridDbId }` | `games.image_url` del juego indicado, con el `header_image` de ese appid, la portada de ese id de IGDB o el grid de ese id de SteamGridDB | Sí: la eligió el usuario |
 
-- **La pasada es acotada a propósito** (25 juegos por defecto, tope 100): cada juego cuesta una petición a
-  Steam, así que un clic no puede convertirse en 2.600 peticiones. El reporte dice `missing`,
-  `missingWithoutSteamId`, `updated`, `failed` y `remaining`; repetir el botón avanza.
-- **El cliente nunca manda una URL**, solo el appid: la fuente de la imagen la decide el servidor.
+#### La cadena
+
+Por juego se prueban las fuentes en orden y **se para en la primera que devuelve una URL**:
+
+1. **Steam por appid conocido** — `game_external_ids` con namespace `steam` → `appdetails` → `header_image`.
+2. **Steam por título** — `storesearch`; el candidato se acepta solo si `StoreTitleMatcher.Matches` (la misma
+   guarda que el respaldo por título de `IStorePriceProvider`), y después se lee su `header_image`.
+3. **IGDB por título** — `search` con `cover.url`; se acepta el primer hit cuyo título normalizado sea el
+   mismo **y** que traiga portada. Una coincidencia exacta de título basta aquí y es deliberado: IGDB devuelve
+   varias filas del mismo título por plataforma y el error solo es cosmético —no se escribe nada más que
+   `games.image_url`—, así que la pasada no reclama identidad al elegir una.
+4. **SteamGridDB** — autocomplete por título → coincidencia exacta de nombre normalizado (se prefiere
+   `verified: true`, si no el primer exacto) → `grids` con `dimensions=600x900&types=static` → la de mayor
+   `score` (la primera cuando todas son 0).
+
+El orden depende de las tiendas del juego y usa el **mismo criterio** que `resolveCoverSource` del selector
+manual —la fuente preferida del grupo—, para que el catálogo que el automático prueba primero y el que el
+manual preselecciona coincidan:
+
+| Tiendas del juego | Orden de la cadena |
+|---|---|
+| Alguna llave canónica de `StoreKeys` (solo PC o mixto) | Steam (appid → título) → IGDB → SteamGridDB |
+| Ninguna llave canónica, solo slugs de plataforma abierta (consola) | IGDB → SteamGridDB → Steam (appid → título) |
+
+La diferencia es el orden, nunca la cobertura: las dos variantes terminan en las mismas tres fuentes.
+
+- **La pasada es acotada a propósito** (25 juegos por defecto, tope `LibraryCoverLimits.Max = 100`) y visita
+  **primero** los juegos cuyo appid ya conoce, para gastar el tope en lo barato antes de gastarlo en conjeturas.
+  Peor caso por juego visitado: **seis peticiones** —appid (1), título (búsqueda + detalles = 2), IGDB (1) y
+  SteamGridDB (autocomplete + grids = 2)— y todas secuenciales, así que un clic no puede convertirse en miles.
+- **El reporte** trae `missing`, `updated`, `updatedBySteam`, `updatedByIgdb`, `updatedBySteamGridDb`,
+  `unmatched`, `failed` y `remaining`. `updated` es la suma de las tres fuentes; `unmatched` significa «la
+  cadena entera respondió sin una URL usable» (no hay arte, nada está roto) y `failed` significa «alguna fuente
+  no se pudo consultar» (transporte, sin configurar, carga ilegible). Ninguno de los dos aborta la pasada.
+  `remaining` son los juegos que la pasada no visitó porque llegó a su tope: repetir el botón lo baja.
+- **El cliente nunca manda una URL**, solo el appid de Steam, el id de IGDB o el id de SteamGridDB: la fuente
+  de la imagen la decide el servidor.
+- **Nunca se pisa una portada**: la pasada solo llena lo vacío, así que una elección manual sobrevive.
+- **Nunca se reclama identidad**, y el motivo no es cosmético: si la pasada escribiera una fila de
+  `game_external_ids` con namespace `steam`, `LibraryPriceBindingService` empezaría a cotizar esos juegos
+  **desde Steam** a partir de una coincidencia de título. La pasada mueve `games.image_url` y nada más.
 - **Una fila sin `gameId` no tiene dónde guardar portada**, así que la grilla no le ofrece la acción.
-- Un appid retirado, sin `header_image` o una caída de Steam cuentan como `Failed` y no abortan la pasada.
+
+#### El selector manual
+
+El `Portada` de una fila abre `CoverPicker`, que ofrece **siempre los tres catálogos**: Steam, IGDB y
+SteamGridDB. Las tiendas del grupo solo deciden cuál llega **preseleccionado** (`resolveCoverSource`: un grupo
+solo de PC propone Steam, uno solo de consola propone IGDB, uno mixto no propone ninguno), nunca lo fijan:
+con una tercera fuente sin plataforma, un grupo solo de PC también necesita una vía que no sea Steam, y una
+fuente bloqueada la dejaría inalcanzable para casi toda la biblioteca. La búsqueda arranca sola con el título
+del juego en la fuente elegida y cambia de catálogo al pulsar otro.
+
+Cada catálogo tiene su endpoint de solo lectura, y ninguno escribe ni reclama identidad:
+
+| Catálogo | Búsqueda | Lista |
+|---|---|---|
+| Steam | `GET /api/steam/search` (vía `storesearch`) | appid, nombre, tipo y la miniatura del header |
+| IGDB | `GET /api/library/manual/enrich` | id, título, año, plataformas y la portada |
+| SteamGridDB | `GET /api/library/covers/steamgriddb/search` | id, nombre y `verified`; **sin miniatura** |
+
+El autocomplete de SteamGridDB no publica arte (su payload solo trae `id`, `name`, `types` y `verified`), así
+que la lista identifica cada fila por id y nombre y la portada se resuelve recién al elegirla, con el segundo
+request del cliente (`grids` del id elegido). En los tres catálogos, `source === null` en la respuesta de
+búsqueda significa «proveedor no disponible» y el selector lo muestra como tal, nunca como «sin resultados».
+
+#### Trampas medidas
+
+(a) **Steam `storesearch` corre con `cc=mx&l=spanish`**, así que devuelve el nombre **localizado** del
+candidato. Un título canónico en inglés no casa con él: es un falso negativo, nunca una portada equivocada, y
+la cadena lo cubre porque sigue con IGDB y SteamGridDB. Sonda y salida esperada:
+
+```bash
+curl -sS "https://store.steampowered.com/api/storesearch/?term=Floppy%20Knights&cc=mx&l=spanish"
+# total=2; items=[(1057800, "Caballeros Floppy"), (1913250, "Floppy Knights (Original Soundtrack)")]
+# El juego canónico se llama "Floppy Knights"; el resultado de Steam se llama "Caballeros Floppy" → no casa.
+```
+
+Y el control positivo, el mismo comando con el nombre que Steam sí conoce:
+
+```bash
+curl -sS "https://store.steampowered.com/api/storesearch/?term=Caballeros%20Floppy&cc=mx&l=spanish"
+# total=1; items=[(1057800, "Caballeros Floppy")] → aquí el paso sí resuelve.
+```
+
+(b) **IGDB devuelve la miniatura por defecto.** Su documentación
+(`https://api-docs.igdb.com/` → Reference > Images) dice literalmente que pedir imágenes por la API
+«returns a default image url using the `t_thumb` format», que las imágenes grandes se construyen a mano
+reemplazando el token de tamaño de `https://images.igdb.com/igdb/image/upload/t_{size}/{hash}.jpg`, que
+`cover_big` mide 264 x 374 y que `_2x` agrega retina. `ManualSearchService.AbsoluteCover` cambia `t_thumb`
+por `t_cover_big` y deja cualquier otro token intacto; el comentario del método lleva la fuente y el síntoma.
+Sin esto, la pasada y la elección manual guardaban una miniatura de 90 x 128.
+
+(c) **SteamGridDB no documenta default para `dimensions` ni publica límite de tasa.** Su OpenAPI
+(`https://www.steamgriddb.com/static/openapi.yml`, v2.10.0) enumera los tamaños pero no declara default, así
+que la petición manda `dimensions=600x900` explícito —la rejilla de la biblioteca es vertical—; y no hay
+`429` ni texto de rate limit en ninguna parte, así que `SteamGridDbClient` no paraleliza y no reintenta: un
+límite que no está publicado no se adivina, se respeta con una petición secuencial a la vez dentro de una
+pasada ya acotada.
+
+#### Pendientes
+
+- El selector manual ya ofrece las tres fuentes (Steam, IGDB y SteamGridDB), con `resolveCoverSource` como
+  **preferida** del grupo y no como candado. Queda fuera de la fase la miniatura de los candidatos de
+  SteamGridDB, cuyo autocomplete no publica ninguna.
+- Si 264 x 374 queda corto en la ficha, el sufijo `_2x` de IGDB es la siguiente talla; hoy no hace falta.
 
 ### Fusión manual de duplicados
 
@@ -472,7 +571,7 @@ Fase 0 no dependía de nada. Las cinco están hechas; lo que este documento deja
 | 2 | Un juego de Steam liga por appid; uno de GOG/Amazon liga por fusión y muestra el mismo precio que su detalle; un título ajeno al catálogo muestra "Sin precios vinculados" y **ningún** precio |
 | 3 | `pnpm build`; un juego en Steam y Amazon aparece **una sola vez** con las dos tiendas |
 | 4 | Reseñas múltiples: el mismo juego en dos tiendas admite dos reseñas y el mismo juego dos veces en la misma tienda también; el drawer edita la vieja y agrega otra sin perder ninguna; reimportar el export no las borra; un cambio de estado en `user_library` no las afecta |
-| 4c | Portadas: la pasada rellena solo lo vacío y reporta los juegos sin appid de Steam; el selector manual pone y reemplaza la portada desde un appid elegido; una fila sin `gameId` no ofrece la acción; repetir la pasada reduce `remaining` |
+| 4c | Portadas: la pasada rellena solo lo vacío y prueba la cadena (Steam, IGDB, SteamGridDB) en el orden que sugieren las tiendas, reportando portadas puestas por fuente, juegos sin resultado y fallos de fuente por separado; el selector manual ofrece los tres catálogos con la fuente del grupo preseleccionada y pone y reemplaza la portada desde un appid de Steam, un id de IGDB o un id de SteamGridDB (su lista de candidatos es de solo lectura y sin miniatura); una fila sin `gameId` no ofrece la acción; repetir la pasada reduce `remaining` |
 | 4b | Estado y favorito: crear una reseña exige estado y editar no lo pierde; «por jugar» es el estado de todo juego sin reseña; el filtro de año muestra el conteo por año (un juego rejugado cuenta en los dos) y el de estado cuadra con la grilla; marcar favorito en una fila lo marca en todas las tiendas del juego y sobrevive a una fusión de duplicados |
 
 Comandos del repositorio:

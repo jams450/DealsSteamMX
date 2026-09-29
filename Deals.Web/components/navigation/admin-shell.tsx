@@ -2,7 +2,7 @@
 
 import { ChevronDown, LogOut, Menu, X } from "lucide-react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Logo } from "@/components/brand/logo";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
@@ -10,12 +10,11 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { csrfFetch } from "@/lib/security/csrf-client";
 import { cn } from "@/lib/ui/cn";
-import { appNavItems, isRouteActive } from "./nav-config";
+import { AppNavigation } from "./app-navigation";
 
 type AdminShellProps = { username: string; section: string; title: string; subtitle?: string; meta?: ReactNode; actions?: ReactNode; children: ReactNode };
 
 export function AdminShell({ username, section, title, subtitle, meta, actions, children }: AdminShellProps) {
-  const pathname = usePathname();
   const router = useRouter();
   const [loggingOut, setLoggingOut] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -92,9 +91,20 @@ export function AdminShell({ username, section, title, subtitle, meta, actions, 
   }
 
   function Navigation({ mobile = false }: { mobile?: boolean }) {
-    return <nav className={cn("flex items-center gap-1 overflow-x-auto", mobile && "grid items-stretch gap-1 overflow-visible sm:grid-cols-2")} aria-label={mobile ? "Navegación móvil principal" : "Navegación principal"}>
-      {appNavItems.map((item) => { const Icon = item.icon; const active = isRouteActive(pathname, item.href); return <Link key={item.href} href={item.href} onClick={() => mobile && setMobileOpen(false)} aria-current={active ? "page" : undefined} className={cn("flex h-10 shrink-0 items-center rounded-[var(--radius-sm)] border px-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]", active ? "border-accent bg-[var(--color-accent-soft)] text-primary" : "border-transparent text-secondary hover:border-accent hover:bg-[var(--color-accent-soft)] hover:text-primary")}><Icon className="mr-2 h-4 w-4 shrink-0" aria-hidden="true" />{item.label}</Link>; })}
-    </nav>;
+    return (
+      <AppNavigation
+        mobile={mobile}
+        onNavigate={mobile ? () => setMobileOpen(false) : undefined}
+        getItemClassName={(active) =>
+          cn(
+            "flex h-10 shrink-0 items-center rounded-[var(--radius-sm)] border px-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]",
+            active
+              ? "border-accent bg-[var(--color-accent-soft)] text-primary"
+              : "border-transparent text-secondary hover:border-accent hover:bg-[var(--color-accent-soft)] hover:text-primary"
+          )
+        }
+      />
+    );
   }
 
   const session = <section className="space-y-3 rounded-[var(--radius-md)] border border-accent bg-[var(--color-accent-soft)] p-3"><p className="text-[11px] font-semibold uppercase tracking-wide text-secondary">Sesión activa</p><div className="flex items-center gap-3"><span className="inline-flex h-9 w-9 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-xs font-bold text-[var(--color-accent-contrast)]">{shortName}</span><div className="min-w-0"><p className="truncate text-sm font-semibold text-primary">{username}</p><p className="text-[11px] text-muted">Administrador</p></div></div><ThemeToggle className="w-full" /><Button type="button" variant="ghost" loading={loggingOut} loadingText="Saliendo..." className="w-full" onClick={() => void onLogout()}><LogOut className="h-4 w-4" aria-hidden="true" />Cerrar sesión</Button></section>;

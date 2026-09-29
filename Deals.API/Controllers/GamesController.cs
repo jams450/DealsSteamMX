@@ -35,11 +35,11 @@ public class GamesController : ControllerBase
     }
 
     /// <summary>
-    /// Places the cover of a canonical game from an id the admin picked in a search: a Steam appid or an
-    /// IGDB game id, exactly one of the two. The stored URL always comes from the provider the id names —
-    /// never from the body and never from the client — and this is the one path that replaces an existing
-    /// cover. A malformed body is a 400, a missing game or a provider row without artwork is a 404 and an
-    /// unreachable provider is a 503; none of them writes.
+    /// Places the cover of a canonical game from an id the admin picked in a search: a Steam appid, an IGDB
+    /// game id or a SteamGridDB game id, exactly one of the three. The stored URL always comes from the provider
+    /// the id names — never from the body and never from the client — and this is the one path that replaces an
+    /// existing cover. A malformed body is a 400, a missing game or a provider row without artwork is a 404 and
+    /// an unreachable provider is a 503; none of them writes.
     /// </summary>
     [HttpPut("{gameId:long}/cover")]
     public async Task<IActionResult> SetCover(
@@ -54,6 +54,8 @@ public class GamesController : ControllerBase
                 gameId, command.SteamAppId!.Value, cancellationToken),
             GameCoverSource.Igdb => await _libraryCoverService.SetCoverFromIgdbAsync(
                 gameId, command.IgdbId!.Value, cancellationToken),
+            GameCoverSource.SteamGridDb => await _libraryCoverService.SetCoverFromSteamGridDbAsync(
+                gameId, command.SteamGridDbId!.Value, cancellationToken),
             _ => throw new ArgumentException("La fuente de la portada no es válida.", nameof(request))
         };
 

@@ -32,6 +32,32 @@ public static class ServiceCollectionExtensions
     services.AddScoped<IManualLibraryService, ManualLibraryService>();
     services.AddScoped<IConsoleLibraryImportService, ConsoleLibraryImportService>();
     services.AddHttpClient<IManualSearchService, ManualSearchService>();
+
+    // SteamGridDB is the last source of the automatic cover chain (docs/PLAN_LIBRARY.md §9). Sequential and
+    // never retried on purpose: the provider documents no rate limit, so the pass stays one bounded request at
+    // a time instead of designing against a limit nobody published. The key is a flat env setting read inside
+    // the client, never a URL segment.
+    services.AddOptions<SteamGridDbOptions>()
+        .Validate(
+            options => IsHttps(options.BaseUrl),
+            "SteamGridDb:BaseUrl must be an absolute HTTPS URL.")
+        .Validate(
+            options => options.TimeoutSeconds is > 0 and <= 60,
+            "SteamGridDb:TimeoutSeconds must be between 1 and 60.")
+        .ValidateOnStart();
+
+    services.AddHttpClient<ISteamGridDbClient, SteamGridDbClient>((serviceProvider, client) =>
+    {
+        var options = serviceProvider.GetRequiredService<IOptions<SteamGridDbOptions>>().Value;
+        if (!IsHttps(options.BaseUrl))
+        {
+            throw new InvalidOperationException("SteamGridDb:BaseUrl must be an absolute HTTPS URL.");
+        }
+
+        client.BaseAddress = new Uri(options.BaseUrl);
+        client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.TimeoutSeconds, 1, 60));
+    });
+
         services.AddScoped<ILibraryCoverService, LibraryCoverService>();
         services.AddScoped<IRepository, Repository>();
         services.AddHttpClient<ISteamStoreClient, SteamStoreClient>((serviceProvider, client) =>

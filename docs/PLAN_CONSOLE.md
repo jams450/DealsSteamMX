@@ -298,7 +298,7 @@ En la misma cabecera vive **«Importar consolas»** (Fase 6, §7): otro botón, 
 | `LibraryStorePriceService` | Filtra `Store == StoreKeys.Xbox`: ignora las filas de consola por completo |
 | Import de Playnite (tiendas) | **Invariante: nunca elimina, desactiva ni reescribe filas manuales** (§6.1). Sin cambios: no acepta `Source: null` |
 | Import de consola (Fase 6, §7) | Camino **nuevo y paralelo**: exige `Source: null`, escribe solo decisiones explícitas y es insert-only. No toca las filas de tienda ni las manuales (§7.4) |
-| `covers/sync` | Ya reporta `missingWithoutSteamId` para filas sin appid; las consolas caen en ese bucket, sin error |
+| `covers/sync` | Desde la cadena de portadas (`PLAN_LIBRARY.md` §9) un juego solo de consola prueba **IGDB primero**, así que ya no cae en un bucket muerto: si ninguna fuente tiene arte se cuenta en `unmatched`, sin error |
 | Reseñas y favoritos | Funcionan sobre `game_id` + vocabulario: solo necesitan §3 |
 | `SQL/schema.sql` | Ninguna línea nueva |
 

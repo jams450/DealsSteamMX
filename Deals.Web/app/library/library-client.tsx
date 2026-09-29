@@ -358,24 +358,30 @@ function TitleAction({
 }
 
 // Reporte de una pasada de sincronización. Los números describen lo que hizo la pasada, no lo que falta en
-// total: "Sin appid" son los juegos que la pasada no puede resolver sola y que necesitan el selector.
+// total: «Actualizadas» se abre por fuente, «Sin resultado» son los juegos que ninguna fuente pudo resolver y
+// «Fallidas» los que se quedaron sin consultar alguna. Ni unos ni otros abortan la pasada.
 function CoverSyncReportBadges({ report }: { readonly report: LibraryCoverSyncReport }) {
   return (
     <div className="space-y-2" aria-live="polite">
       <p className="text-sm font-semibold text-primary">Resultado de la sincronización de portadas</p>
       <div className="flex flex-wrap items-center gap-2">
         <span className="tabler-badge tabler-badge-success">Puestas {report.updated}</span>
+        <span className="tabler-badge tabler-badge-info">Steam {report.updatedBySteam}</span>
+        <span className="tabler-badge tabler-badge-info">IGDB {report.updatedByIgdb}</span>
+        <span className="tabler-badge tabler-badge-info">SteamGridDB {report.updatedBySteamGridDb}</span>
         <span className={cn("tabler-badge", report.failed > 0 ? "tabler-badge-warning" : "tabler-badge-muted")}>
           Fallidas {report.failed}
         </span>
-        <span className="tabler-badge tabler-badge-info">Pendientes de otra pasada {report.remaining}</span>
-        <span className="tabler-badge tabler-badge-muted">Sin appid de Steam {report.missingWithoutSteamId}</span>
+        <span className="tabler-badge tabler-badge-muted">Sin resultado {report.unmatched}</span>
+        <span className="tabler-badge tabler-badge-muted">Pendientes de otra pasada {report.remaining}</span>
         <span className="tabler-badge tabler-badge-muted">Sin portada {report.missing}</span>
       </div>
       <p className="text-xs text-muted">
-        Cada pasada revisa hasta 25 juegos y solo rellena portadas que falten: nunca reemplaza una que ya
-        exista. «Sin appid de Steam» son los juegos que el catálogo no liga a Steam; para esos usa
-        «Portada» en la fila y elige el resultado a mano.
+        Cada pasada revisa hasta 25 juegos y prueba las fuentes en cadena —Steam, IGDB y SteamGridDB, en el
+        orden que sugieren las tiendas del juego—, y solo rellena portadas que falten: nunca reemplaza una que
+        ya exista. «Sin resultado» son los juegos que ninguna fuente pudo resolver; para esos usa «Portada» en
+        la fila y elige el resultado a mano. «Fallidas» son los que dejaron alguna fuente sin consultar, y
+        «Pendientes de otra pasada» se vacía repitiendo el botón.
       </p>
     </div>
   );
@@ -1036,7 +1042,7 @@ export function LibraryClient() {
                     loading={coverSyncing}
                     onClick={() => void onSyncCovers()}
                   >
-                    Sincronizar con Steam
+                    Sincronizar portadas
                   </Button>
                 </div>
               </div>

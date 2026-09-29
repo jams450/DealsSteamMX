@@ -15,7 +15,7 @@ import {
   useReactTable
 } from "@tanstack/react-table";
 import { ArrowDown, ArrowUp, ChevronsUpDown, Columns3, Search, X } from "lucide-react";
-import { Fragment, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { Fragment, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/ui/cn";
 
 export type DataGridMode = "client" | "server";
@@ -205,6 +205,10 @@ export function DataGrid<TData>({
   const effectiveSorting = sorting ?? internalSorting;
   const effectivePagination = pagination ?? internalPagination;
   const effectiveDensity = density ?? internalDensity;
+  // TanStack compara la referencia de `data`. Copiar `rows` dentro del render producía una referencia
+  // nueva en cada actualización; en desarrollo, sus auto-resets de paginación se reprogramaban sin fin.
+  // Los callers ya entregan arreglos inmutables, así que conservar la referencia evita ese ciclo.
+  const tableData = useMemo(() => [...rows], [rows]);
   const effectiveGlobalFilter = enableGlobalFilter ? (globalFilter ?? internalGlobalFilter) : undefined;
   // `getFilteredRowModel` sirve a la búsqueda global y a los filtros por columna: se activa con
   // cualquiera de los dos y sigue apagado cuando ninguno se usa.
@@ -213,7 +217,7 @@ export function DataGrid<TData>({
   const filteringEnabled = mode !== "server" && (enableGlobalFilter || enableColumnFilters);
 
   const table = useReactTable({
-    data: [...rows],
+    data: tableData,
     columns,
     state: {
       sorting: effectiveSorting,

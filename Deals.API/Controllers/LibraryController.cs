@@ -45,6 +45,7 @@ public class LibraryController : ControllerBase
     private readonly IManualLibraryService _manualLibraryService;
     private readonly IManualSearchService _manualSearchService;
     private readonly IConsoleLibraryImportService _consoleLibraryImportService;
+    private readonly ISteamGridDbClient _steamGridDbClient;
 
     public LibraryController(
         IRepository repository,
@@ -56,7 +57,8 @@ public class LibraryController : ControllerBase
         ILibraryStorePriceService libraryStorePriceService,
         IManualLibraryService manualLibraryService,
         IManualSearchService manualSearchService,
-        IConsoleLibraryImportService consoleLibraryImportService)
+        IConsoleLibraryImportService consoleLibraryImportService,
+        ISteamGridDbClient steamGridDbClient)
     {
         _repository = repository;
         _gameIdentityResolver = gameIdentityResolver;
@@ -68,6 +70,7 @@ public class LibraryController : ControllerBase
         _manualLibraryService = manualLibraryService;
         _manualSearchService = manualSearchService;
         _consoleLibraryImportService = consoleLibraryImportService;
+        _steamGridDbClient = steamGridDbClient;
     }
 
     [HttpPost("import")]
@@ -208,9 +211,11 @@ public class LibraryController : ControllerBase
     }
 
     /// <summary>
-    /// Fills missing covers from Steam for the games already identified by the catalog. One pass is bounded
-    /// by <paramref name="request"/>'s limit and writes nothing but <c>games.image_url</c>: rows the pass
-    /// cannot solve come back counted and are placed by hand from the grid.
+    /// Fills missing covers through the provider chain (Steam by known appid, Steam by title, IGDB,
+    /// SteamGridDB), in the order the game's stores suggest. One pass is bounded by
+    /// <paramref name="request"/>'s limit and writes nothing but <c>games.image_url</c>: games no source
+    /// could resolve come back counted, split between "no provider had art" and "a provider could not be
+    /// consulted", and are placed by hand from the grid if needed.
     /// </summary>
     [HttpPost("covers/sync")]
     public async Task<IActionResult> SyncCovers(
@@ -269,6 +274,22 @@ public class LibraryController : ControllerBase
     {
         var result = await _manualSearchService.SearchAsync(title ?? string.Empty, cancellationToken);
         return Ok(ManualSearchResponse.From(result));
+    }
+
+    /// <summary>
+    /// Read-only SteamGridDB title search for the manual cover picker: the candidates to choose from, never
+    /// artwork. It never writes, never claims identity and never resolves a URL — the autocomplete payload
+    /// carries no image, so the cover is resolved only when an id is picked through
+    /// <c>PUT /api/games/{gameId}/cover</c>. A null <c>source</c> means the provider is unavailable, which the
+    /// picker shows as such — not as "no hits".
+    /// </summary>
+    [HttpGet("covers/steamgriddb/search")]
+    public async Task<IActionResult> SearchSteamGridDbCovers(
+        [FromQuery] string? title,
+        CancellationToken cancellationToken)
+    {
+        var result = await _steamGridDbClient.SearchAsync(title ?? string.Empty, cancellationToken);
+        return Ok(SteamGridDbCoverSearchResponse.From(result));
     }
 
     /// <summary>

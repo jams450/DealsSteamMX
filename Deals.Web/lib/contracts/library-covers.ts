@@ -1,7 +1,7 @@
 // Contrato del relleno de portadas de la biblioteca. El cliente manda un id de proveedor — el appid de
-// Steam o el id de IGDB, exactamente uno de los dos —, nunca una URL: la portada la resuelve y la guarda
-// el servidor (Steam o IGDB), igual que el resto de datos de proveedor. La elección es tan estricta como
-// la del backend: los dos campos a la vez, ninguno, o un tercer campo (`imageUrl`, `title`) es inválido
+// Steam, el id de IGDB o el id de SteamGridDB, exactamente uno de los tres —, nunca una URL: la portada la
+// resuelve y la guarda el servidor, igual que el resto de datos de proveedor. La elección es tan estricta como
+// la del backend: dos o más campos a la vez, ninguno, o un tercer campo (`imageUrl`, `title`) es inválido
 // aquí y 400 allá, porque la forma es discriminada y no se adivina qué quiso el llamador.
 // La portada es decorativa: ninguna operación de este contrato reclama identidad ni toca precios.
 //
@@ -17,11 +17,19 @@ export const COVER_SYNC_DEFAULT_LIMIT = 25;
 export type LibraryCoverSyncReport = {
   /** Juegos canónicos de la biblioteca sin portada (se cuentan juegos, no filas). */
   readonly missing: number;
-  /** De los anteriores, los que no tienen appid de Steam conocido: ahí solo sirve la elección manual. */
-  readonly missingWithoutSteamId: number;
+  /** Portadas que la pasada llenó, sumando las tres fuentes. */
   readonly updated: number;
+  /** De `updated`, las que resolvió Steam (por appid ya conocido o por búsqueda de título). */
+  readonly updatedBySteam: number;
+  /** De `updated`, las que resolvió la búsqueda por título en IGDB. */
+  readonly updatedByIgdb: number;
+  /** De `updated`, las que resolvió SteamGridDB. */
+  readonly updatedBySteamGridDb: number;
+  /** Juegos que la cadena completa respondió sin una URL usable: no había arte, nada está roto. */
+  readonly unmatched: number;
+  /** Juegos donde alguna fuente no se pudo consultar (transporte, sin configurar, carga ilegible). */
   readonly failed: number;
-  /** Con appid conocido que quedaron para la siguiente pasada, porque la pasada es acotada. */
+  /** Juegos que la pasada no visitó porque llegó a su tope: quedan para la siguiente. */
   readonly remaining: number;
 };
 
@@ -57,41 +65,50 @@ export function normalizeCoverSyncReport(input: unknown): LibraryCoverSyncReport
   if (!isRecord(input)) return null;
 
   const missing = toCount(input.missing);
-  const missingWithoutSteamId = toCount(input.missingWithoutSteamId);
   const updated = toCount(input.updated);
+  const updatedBySteam = toCount(input.updatedBySteam);
+  const updatedByIgdb = toCount(input.updatedByIgdb);
+  const updatedBySteamGridDb = toCount(input.updatedBySteamGridDb);
+  const unmatched = toCount(input.unmatched);
   const failed = toCount(input.failed);
   const remaining = toCount(input.remaining);
 
   if (
     missing === null ||
-    missingWithoutSteamId === null ||
     updated === null ||
+    updatedBySteam === null ||
+    updatedByIgdb === null ||
+    updatedBySteamGridDb === null ||
+    unmatched === null ||
     failed === null ||
     remaining === null
   ) {
     return null;
   }
 
-  return { missing, missingWithoutSteamId, updated, failed, remaining };
+  return { missing, updated, updatedBySteam, updatedByIgdb, updatedBySteamGridDb, unmatched, failed, remaining };
 }
 
-/** Catálogo donde se busca y se resuelve la portada: Steam (PC) o IGDB (consola). */
-export type CoverSource = "steam" | "igdb";
+/** Catálogo donde se busca y se resuelve la portada: Steam (PC), IGDB o SteamGridDB (arte de la comunidad). */
+export type CoverSource = "steam" | "igdb" | "steamgriddb";
 
 /**
- * Elección manual de portada: exactamente UNO de los dos ids, nunca los dos ni ninguno, y jamás una URL
- * o un título. El servidor relee la portada por este id, así que un llamador no puede apuntar el catálogo
- * hacia una imagen arbitraria.
+ * Elección manual de portada: exactamente UNO de los tres ids, nunca dos ni ninguno, y jamás una URL o un
+ * título. El servidor relee la portada por este id, así que un llamador no puede apuntar el catálogo hacia
+ * una imagen arbitraria.
  */
 export type CoverPick =
   | { readonly steamAppId: number }
-  | { readonly igdbId: number };
+  | { readonly igdbId: number }
+  | { readonly steamGridDbId: number };
 
 /**
- * Fuente que corresponde a un grupo de plataformas según sus tiendas. Un grupo solo de PC (todas con
- * llave de `toStoreKey`) busca en Steam; uno solo de consola (ninguna con esa llave) busca en IGDB; un
- * grupo mixto —o uno sin plataformas— devuelve `null` y el usuario elige a mano. La portada es una sola
- * para todo el grupo, así que una fuente no se adivina a partir de la primera fila.
+ * Fuente que corresponde a un grupo de plataformas según sus tiendas, como fuente **preferida**: un grupo solo
+ * de PC (todas con llave de `toStoreKey`) propone Steam; uno solo de consola (ninguna con esa llave) propone
+ * IGDB; un grupo mixto —o uno sin plataformas— devuelve `null` y no propone ninguna. Es solo el punto de
+ * partida del selector manual, que ofrece siempre las tres fuentes: con SteamGridDB (arte de la comunidad, sin
+ * plataforma) un grupo solo de PC también necesita una vía que no sea Steam. La portada es una sola para todo
+ * el grupo, así que la fuente preferida no se adivina a partir de la primera fila.
  */
 export function resolveCoverSource(stores: readonly string[]): CoverSource | null {
   let hasPc = false;
@@ -108,9 +125,9 @@ export function resolveCoverSource(stores: readonly string[]): CoverSource | nul
   return null;
 }
 
-// Los dos y únicos campos que el backend acepta en el cuerpo. Cualquier otra llave es 400 allá
+// Los tres y únicos campos que el backend acepta en el cuerpo. Cualquier otra llave es 400 allá
 // (`JsonExtensionData` existe solo para rechazarla), así que se descarta aquí antes de gastar el viaje.
-const COVER_PICK_FIELDS = new Set(["steamAppId", "igdbId"]);
+const COVER_PICK_FIELDS = new Set(["steamAppId", "igdbId", "steamGridDbId"]);
 
 function toPositiveId(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
@@ -123,9 +140,9 @@ function isAbsent(value: unknown): boolean {
 
 /**
  * Cuerpo válido de una elección manual, o `null`. Es estricto en las dos direcciones: solo los campos
- * `steamAppId`/`igdbId`, exactamente uno de ellos presente con un id entero positivo (el otro ausente o
- * nulo) y nada más. Los dos a la vez, ninguno, un id que no sea número entero positivo o un campo
- * desconocido devuelven `null`, igual que un 400 sin nada escrito en el backend.
+ * `steamAppId`/`igdbId`/`steamGridDbId`, exactamente uno de ellos presente con un id entero positivo (los
+ * otros ausentes o nulos) y nada más. Dos o más a la vez, ninguno, un id que no sea número entero positivo o
+ * un campo desconocido devuelven `null`, igual que un 400 sin nada escrito en el backend.
  */
 export function parseCoverPick(input: unknown): CoverPick | null {
   if (!isRecord(input)) return null;
@@ -136,19 +153,89 @@ export function parseCoverPick(input: unknown): CoverPick | null {
 
   const rawSteamAppId = input.steamAppId;
   const rawIgdbId = input.igdbId;
+  const rawSteamGridDbId = input.steamGridDbId;
   const hasSteamAppId = !isAbsent(rawSteamAppId);
   const hasIgdbId = !isAbsent(rawIgdbId);
+  const hasSteamGridDbId = !isAbsent(rawSteamGridDbId);
 
-  // Los dos a la vez es ambiguo y ninguno no elige nada: los dos casos se rechazan, no se recortan.
-  if (hasSteamAppId === hasIgdbId) return null;
+  // Dos o más a la vez es ambiguo y ninguno no elige nada: los dos casos se rechazan, no se recortan.
+  const provided = (hasSteamAppId ? 1 : 0) + (hasIgdbId ? 1 : 0) + (hasSteamGridDbId ? 1 : 0);
+  if (provided !== 1) return null;
 
   if (hasSteamAppId) {
     const steamAppId = toPositiveId(rawSteamAppId);
     return steamAppId === null ? null : { steamAppId };
   }
 
-  const igdbId = toPositiveId(rawIgdbId);
-  return igdbId === null ? null : { igdbId };
+  if (hasIgdbId) {
+    const igdbId = toPositiveId(rawIgdbId);
+    return igdbId === null ? null : { igdbId };
+  }
+
+  const steamGridDbId = toPositiveId(rawSteamGridDbId);
+  return steamGridDbId === null ? null : { steamGridDbId };
+}
+
+/** Un candidato de la búsqueda por título de SteamGridDB: id para elegir, nombre y si es la fila verificada. */
+export type SteamGridDbCoverCandidate = {
+  readonly id: number;
+  readonly name: string;
+  readonly verified: boolean;
+};
+
+/**
+ * Resultado de la búsqueda de candidatos en SteamGridDB. `source === null` significa «proveedor no
+ * disponible», que el selector distingue de «sin candidatos»; la lista va vacía cuando el proveedor
+ * respondió y no conoce ningún juego con ese título. No hay URL: el autocomplete no publica arte.
+ */
+export type SteamGridDbCoverSearch = {
+  readonly source: string | null;
+  readonly candidates: readonly SteamGridDbCoverCandidate[];
+};
+
+/**
+ * Respuesta válida de la búsqueda en SteamGridDB, o `null` si la forma no es la documentada. Es estricta en
+ * todo: `source` debe ser `null` o una cadena no vacía, cada candidato necesita un id entero positivo, un
+ * nombre no vacío y un `verified` booleano. Un candidato roto invalida la respuesta entera en vez de recortar
+ * la lista, porque un id que la UI no puede mandar de vuelta es un botón que falla al pulsarlo.
+ */
+export function normalizeSteamGridDbCoverSearch(input: unknown): SteamGridDbCoverSearch | null {
+  if (!isRecord(input)) return null;
+
+  // El API omite los miembros nulos (`DefaultIgnoreCondition = WhenWritingNull`), así que «proveedor no
+  // disponible» llega como llave AUSENTE, no como `null` literal: ausente y nulo son la misma respuesta, igual
+  // que en `normalizeManualSearchResponse`. Lo que sí invalida la carga es un `source` presente que no sea una
+  // cadena con contenido.
+  const rawSource = input.source;
+  let source: string | null;
+  if (rawSource === null || rawSource === undefined) {
+    source = null;
+  } else if (typeof rawSource === "string" && rawSource.trim() !== "") {
+    source = rawSource;
+  } else {
+    return null;
+  }
+
+  const rawCandidates = input.candidates;
+  if (!Array.isArray(rawCandidates)) return null;
+
+  const candidates: SteamGridDbCoverCandidate[] = [];
+  for (const raw of rawCandidates) {
+    if (!isRecord(raw)) return null;
+
+    const id = toPositiveId(raw.id);
+    if (id === null) return null;
+
+    const name = raw.name;
+    if (typeof name !== "string" || name.trim() === "") return null;
+
+    const verified = raw.verified;
+    if (typeof verified !== "boolean") return null;
+
+    candidates.push({ id, name, verified });
+  }
+
+  return { source, candidates };
 }
 
 /** URL de portada devuelta por el servidor, o `null` si no vino ninguna. */

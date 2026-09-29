@@ -3,8 +3,10 @@ import { csrfFetch } from "@/lib/security/csrf-client";
 import {
   normalizeCoverSyncReport,
   normalizeCoverUrl,
+  normalizeSteamGridDbCoverSearch,
   type CoverPick,
-  type LibraryCoverSyncReport
+  type LibraryCoverSyncReport,
+  type SteamGridDbCoverSearch
 } from "@/lib/contracts/library-covers";
 import {
   normalizeLibraryImportResponse,
@@ -41,9 +43,10 @@ export async function importLibrary(entries: readonly unknown[]): Promise<Librar
 }
 
 /**
- * Rellena las portadas que faltan desde Steam. Solo escribe la URL en el juego canónico: no reclama
- * identidad, no toca precios y nunca reemplaza una portada que ya exista. La pasada es acotada, así que
- * repetirla avanza; el reporte dice cuánto queda.
+ * Rellena las portadas que faltan desde la cadena de proveedores (Steam, IGDB y SteamGridDB). Solo escribe
+ * la URL en el juego canónico: no reclama identidad, no toca precios y nunca reemplaza una portada que ya
+ * exista. La pasada es acotada, así que repetirla avanza; el reporte dice cuánto queda y qué fuente puso cada
+ * portada.
  */
 export async function syncLibraryCovers(limit?: number): Promise<LibraryCoverSyncReport> {
   const response = await csrfFetch("/api/bff/library/covers/sync", {
@@ -60,9 +63,9 @@ export async function syncLibraryCovers(limit?: number): Promise<LibraryCoverSyn
 }
 
 /**
- * Coloca la portada de un juego canónico desde el id elegido en la búsqueda: el appid de Steam o el de
- * IGDB, exactamente uno de los dos (`CoverPick`) y nunca una URL — la resuelve el servidor. Devuelve la
- * URL que guardó el servidor, que es la que la grilla debe pintar.
+ * Coloca la portada de un juego canónico desde el id elegido en la búsqueda: el appid de Steam, el id de IGDB
+ * o el id de SteamGridDB, exactamente uno de los tres (`CoverPick`) y nunca una URL — la resuelve el servidor.
+ * Devuelve la URL que guardó el servidor, que es la que la grilla debe pintar.
  */
 export async function setGameCover(gameId: number, pick: CoverPick): Promise<string> {
   const response = await csrfFetch(`/api/bff/games/${gameId}/cover`, {
@@ -76,4 +79,21 @@ export async function setGameCover(gameId: number, pick: CoverPick): Promise<str
   const imageUrl = normalizeCoverUrl(await response.json());
   if (imageUrl === null) throw new Error("El servidor no devolvió la portada guardada");
   return imageUrl;
+}
+
+/**
+ * Candidatos de SteamGridDB para el selector manual de portada. `source === null` significa «proveedor no
+ * disponible», que el selector distingue de «sin candidatos». Solo lectura y sin URLs: el autocomplete no
+ * publica arte, así que la portada se resuelve al elegir una fila.
+ */
+export async function searchSteamGridDbCovers(title: string): Promise<SteamGridDbCoverSearch> {
+  const response = await csrfFetch(
+    `/api/bff/library/covers/steamgriddb/search?title=${encodeURIComponent(title)}`,
+    { cache: "no-store" }
+  );
+  if (!response.ok) throw await parseApiError(response, "No se pudo buscar en SteamGridDB");
+
+  const search = normalizeSteamGridDbCoverSearch(await response.json());
+  if (search === null) throw new Error("El servidor devolvió una búsqueda inválida");
+  return search;
 }

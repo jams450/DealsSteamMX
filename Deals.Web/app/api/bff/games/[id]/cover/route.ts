@@ -14,10 +14,10 @@ function parseId(value: string) {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
-// Elección manual de portada: el cuerpo es estricto y discriminado — exactamente un `steamAppId` (PC) o
-// un `igdbId` (consola), nunca los dos, nunca ninguno y jamás una URL — y el servidor resuelve y guarda
-// la URL con ese id. Es la única ruta que reemplaza una portada existente. El admin lo decide con
-// `AdminWithId` y el PUT pasa por el CSRF de `middleware.ts` como todo `/api/bff/*` mutante.
+// Elección manual de portada: el cuerpo es estricto y discriminado — exactamente un `steamAppId` (Steam), un
+// `igdbId` (IGDB) o un `steamGridDbId` (SteamGridDB), nunca dos, nunca ninguno y jamás una URL — y el servidor
+// resuelve y guarda la URL con ese id. Es la única ruta que reemplaza una portada existente. El admin lo
+// decide con `AdminWithId` y el PUT pasa por el CSRF de `middleware.ts` como todo `/api/bff/*` mutante.
 // El segmento se llama `id`, como el de `[id]/merge`: Next no admite dos nombres para el mismo nivel
 // dinámico, así que el gameId se lee de `id`.
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -31,7 +31,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
 
   const payload = parseCoverPick(await request.json().catch(() => null));
   if (payload === null) {
-    return badRequest(request, "La portada necesita exactamente un steamAppId o un igdbId válido");
+    return badRequest(request, "La portada necesita exactamente un steamAppId, un igdbId o un steamGridDbId válido");
   }
 
   const { response, session: updatedSession } = await fetchApiWithAutoRefresh(

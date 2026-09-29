@@ -61,6 +61,10 @@ services:
       - Microsoft__Currency=${Microsoft__Currency}
       - Microsoft__UserAgent=${Microsoft__UserAgent}
       - Microsoft__TimeoutSeconds=${Microsoft__TimeoutSeconds}
+      - IGDB_CLIENT_ID=${IGDB_CLIENT_ID}
+      - IGDB_CLIENT_SECRET=${IGDB_CLIENT_SECRET}
+      - IGDB_TOKEN=${IGDB_TOKEN}
+      - STEAMGRIDDB_API_KEY=${STEAMGRIDDB_API_KEY}
     networks:
       - dealext-network
       - server-data

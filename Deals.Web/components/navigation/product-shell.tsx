@@ -2,13 +2,12 @@
 
 import { Menu, X } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Logo } from "@/components/brand/logo";
 import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/ui/cn";
-import { appNavItems, isRouteActive } from "./nav-config";
+import { AppNavigation } from "./app-navigation";
 
 type ProductShellProps = {
   title: string;
@@ -18,7 +17,6 @@ type ProductShellProps = {
 };
 
 export function ProductShell({ title, subtitle, meta, children }: ProductShellProps) {
-  const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -65,32 +63,18 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
 
   function Navigation({ mobile = false }: { mobile?: boolean }) {
     return (
-      <nav
-        aria-label={mobile ? "Navegación móvil principal" : "Navegación principal"}
-        className={cn("flex items-center gap-1 overflow-x-auto", mobile && "grid items-stretch gap-1 overflow-visible sm:grid-cols-2")}
-      >
-        {appNavItems.map((item) => {
-          const Icon = item.icon;
-          const active = isRouteActive(pathname, item.href);
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              onClick={() => mobile && setMobileOpen(false)}
-              aria-current={active ? "page" : undefined}
-              className={cn(
-                "flex h-10 items-center rounded-lg border px-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]",
-                active
-                  ? "border-accent bg-[var(--color-accent-soft)] text-primary"
-                  : "border-transparent text-secondary hover:border-accent hover:bg-[var(--color-accent-soft)] hover:text-primary"
-              )}
-            >
-              <Icon className="mr-2 h-4 w-4 shrink-0" aria-hidden="true" />
-              {item.label}
-            </Link>
-          );
-        })}
-      </nav>
+      <AppNavigation
+        mobile={mobile}
+        onNavigate={mobile ? () => setMobileOpen(false) : undefined}
+        getItemClassName={(active) =>
+          cn(
+            "flex h-10 items-center rounded-lg border px-3 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]",
+            active
+              ? "border-accent bg-[var(--color-accent-soft)] text-primary"
+              : "border-transparent text-secondary hover:border-accent hover:bg-[var(--color-accent-soft)] hover:text-primary"
+          )
+        }
+      />
     );
   }
 

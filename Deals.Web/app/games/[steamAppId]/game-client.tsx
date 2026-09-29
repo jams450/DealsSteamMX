@@ -60,15 +60,39 @@ function offerMxnCell(offer: SteamGameOffer) {
     ? "—"
     : `${approximate ? "≈ " : ""}${formatMinor(value, "MXN")}`;
 
-  const rate = offer.fxRate === null || offer.fxRate === undefined ? null : rateFormatter.format(offer.fxRate);
-  const date = formatIsoDate(offer.fxRateDate);
-  const parts = [rate ? `Tasa ${rate}` : null, date, offer.fxSource].filter((part): part is string => Boolean(part));
-
   return {
     display,
-    note: approximate && parts.length > 0 ? parts.join(" · ") : null,
     unconverted: offer.pricingType === "unconverted"
   };
+}
+
+interface FxReference {
+  readonly rate: number;
+  readonly date: string | null;
+  readonly source: string | null;
+}
+
+/**
+ * Referencias de tipo de cambio que respaldan un precio pintado, no la tasa del día por sí sola: solo
+ * cuentan las ofertas con `pricingType === "fx_estimate"` que traen `fxRate`.
+ *
+ * Se deduplican por la tupla (tasa, fecha, fuente) conservando el orden de aparición. Normalmente hay una
+ * sola, pero una ficha refrescada en dos días puede traer dos tasas distintas: inventar una tasa «general»
+ * sería mentir sobre el día en que se convirtió cada precio, así que se pinta una línea por tupla.
+ */
+function fxReferences(offers: readonly SteamGameOffer[]): readonly FxReference[] {
+  const seen = new Set<string>();
+  const references: FxReference[] = [];
+
+  for (const offer of offers) {
+    if (offer.pricingType !== "fx_estimate" || offer.fxRate === null) continue;
+    const key = `${offer.fxRate}|${offer.fxRateDate ?? ""}|${offer.fxSource ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    references.push({ rate: offer.fxRate, date: formatIsoDate(offer.fxRateDate), source: offer.fxSource });
+  }
+
+  return references;
 }
 
 function offerKey(offer: SteamGameOffer) {
@@ -250,7 +274,12 @@ function historicalLowCandidate(offer: SteamGameOffer): HistoricalLowCandidate |
 }
 
 function historicalLowCandidates(game: SteamGame, offers: readonly SteamGameOffer[]): readonly HistoricalLowCandidate[] {
-  const steam = game.lowestPriceMinor === null
+  // El mínimo local de Steam solo entra si la ficha está en MXN. Este candidato se pinta después como
+  // cifra MXN (`formatComparablePrice`), así que una ficha en otra moneda produciría un «MX$» sobre un
+  // importe ajeno — y justo al lado del badge que sí lo formatea en su moneda. Es la misma condición que
+  // ya usa `steamComparablePrice`: sin precio comparable en MXN, Steam no compite ni entra en el mínimo.
+  const steamIsComparable = game.currency?.toUpperCase() === COMPARISON_CURRENCY;
+  const steam = game.lowestPriceMinor === null || !steamIsComparable
     ? []
     : [{ label: "Steam · observado localmente", mxnMinor: game.lowestPriceMinor, approximate: false }];
 
@@ -436,7 +465,6 @@ function AggregateOfferList({ id, heading, gameName, offers, cheapest }: Aggrega
                   ) : (
                     <span className={cn("deal-price", isCheapest ? "text-success" : "text-primary")}>{mxn.display}</span>
                   )}
-                  {mxn.note ? <span className="text-xs text-muted">{mxn.note}</span> : null}
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
                   {historyLow ? (
@@ -547,7 +575,6 @@ function OfferGroup({ id, heading, gameName, offers, cheapest }: OfferGroupProps
                     ) : (
                       <span className={cn("deal-price", isCheapest ? "text-success" : "text-primary")}>{mxn.display}</span>
                     )}
-                    {mxn.note ? <span className="block text-xs text-muted">{mxn.note}</span> : null}
                   </td>
                   <td className="table-cell p-3 text-muted">
                     {formatObserved(offer.observedAt) ?? "—"}
@@ -826,6 +853,9 @@ export function GameClient({ appId }: GameClientProps) {
     ? historyCandidates.reduce((lowest, candidate) => candidate.mxnMinor < lowest.mxnMinor ? candidate : lowest)
     : null;
 
+  // Referencia general de tipo de cambio, no una nota por fila: la tasa pertenece a la página entera.
+  const fxRefs = fxReferences(game.offers ?? []);
+
   // Una tarjeta por proveedor **con** ofertas comparables, con el precio de ese proveedor. El número de
   // tarjetas refleja entonces qué tiendas tienen dato, y no quién gana cada comparación: con el resumen
   // anterior, un grupo donde Steam ganaba dejaba fuera el precio de su tienda y el conteo cambiaba de un
@@ -865,9 +895,44 @@ export function GameClient({ appId }: GameClientProps) {
         Volver a resultados
       </Link>
 
+      {fxRefs.length > 0 ? (
+        <section className="app-card space-y-2 p-4" aria-labelledby="fx-reference-heading">
+          <h2 id="fx-reference-heading" className="text-xs font-semibold uppercase tracking-widest text-muted">
+            Tipo de cambio de referencia
+          </h2>
+          <ul className="space-y-1">
+            {fxRefs.map((reference) => {
+              // «USD → MXN» se escribe literal a propósito: es el único par que este producto convierte.
+              // Cualquier otra moneda llega como `unconverted` y no tiene tasa que mostrar (docs/PLAN_ITAD.md).
+              const parts = [
+                "USD → MXN",
+                `Tasa ${rateFormatter.format(reference.rate)}`,
+                reference.date,
+                reference.source
+              ].filter((part): part is string => Boolean(part));
+              return (
+                <li
+                  key={`${reference.rate}|${reference.date ?? ""}|${reference.source ?? ""}`}
+                  className="text-sm text-secondary"
+                >
+                  {parts.join(" · ")}
+                </li>
+              );
+            })}
+          </ul>
+          <p className="text-xs text-muted">
+            Los precios marcados con ≈ son conversiones de USD a MXN con las tasas de arriba y no son el precio
+            regional de la tienda.
+          </p>
+        </section>
+      ) : null}
+
       <section className="app-card-accent space-y-5 p-5">
-        <div className="grid grid-cols-1 gap-5 md:grid-cols-12">
-          <div className="md:col-span-4">
+        {/* Dos columnas solo desde `lg`: por debajo, la portada es una banda a todo lo ancho y el
+            contenido recibe el ancho completo. Entre 768 y 1023 la columna de contenido quedaba en
+            450-660px, que es donde los badges y la fila de acciones se amontonaban. */}
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+          <div className="lg:col-span-4">
             {coverUrl ? (
               <img
                 src={coverUrl}
@@ -887,7 +952,7 @@ export function GameClient({ appId }: GameClientProps) {
               </div>
             )}
           </div>
-          <div className="min-w-0 space-y-3 md:col-span-8">
+          <div className="min-w-0 space-y-3 lg:col-span-8">
             <p className="text-xs font-semibold uppercase tracking-widest text-muted">Precio Steam · México</p>
             <h2 className="text-2xl font-semibold tracking-tight text-primary">{game.name}</h2>
             <div className="flex flex-wrap items-center gap-3">
@@ -924,6 +989,7 @@ export function GameClient({ appId }: GameClientProps) {
                 ) : null}
               </div>
             ) : null}
+            {/* Precio oficial de Steam: el titular de la ficha y el árbitro de la comparación. */}
             <div className="flex flex-wrap items-baseline gap-2">
               <p className={cn("deal-price text-3xl", game.isFree ? "text-success" : hasPrice ? "text-primary" : "text-danger")}>
                 {priceDisplay}
@@ -938,6 +1004,26 @@ export function GameClient({ appId }: GameClientProps) {
               ) : (
                 <span className="tabler-badge tabler-badge-danger">Sin precio</span>
               )}
+              {incomplete ? <span className="tabler-badge tabler-badge-warning">Datos incompletos</span> : null}
+            </div>
+
+            {/* Mínimo histórico de las fuentes: mínimo de todos los proveedores (y el local de Steam), un dato
+                heterogéneo de fuentes y regiones distintas. Nunca va en verde: en esta ficha el verde
+                significa «el más barato ahora mismo», y esta cifra no lo es. */}
+            {globalHistoricalLow ? (
+              <div className="space-y-1">
+                <p className="text-xs font-semibold uppercase tracking-widest text-muted">Mínimo histórico de las fuentes</p>
+                <p className="deal-price text-xl text-primary">
+                  {`${globalHistoricalLow.approximate ? "≈ " : ""}${formatComparablePrice(globalHistoricalLow.mxnMinor)}`}
+                </p>
+                <p className="text-sm font-semibold text-secondary">{globalHistoricalLow.label}</p>
+              </div>
+            ) : null}
+
+            {/* El mínimo local de Steam es un hecho distinto del mínimo histórico de las fuentes: uno es lo que
+                nuestra base observó para Steam, el otro es el mínimo de todos los proveedores. Van separados a
+                propósito: dos cifras distintas bajo una misma etiqueta es el error que ya documentó esta ficha. */}
+            <div className="flex flex-wrap items-center gap-2">
               {lowestDisplay ? (
                 <span className={cn("tabler-badge", atLowest ? "tabler-badge-success" : "tabler-badge-info")}>
                   Mínimo observado localmente {lowestDisplay}{lowestDate ? ` · ${lowestDate}` : ""}
@@ -945,55 +1031,100 @@ export function GameClient({ appId }: GameClientProps) {
               ) : (
                 <span className="tabler-badge tabler-badge-muted">Sin mínimo observado localmente</span>
               )}
-              {incomplete ? <span className="tabler-badge tabler-badge-warning">Datos incompletos</span> : null}
-              {observedDisplay ? (
-                <span className="tabler-badge tabler-badge-info">Actualizado {observedDisplay}</span>
-              ) : (
-                <span className="tabler-badge tabler-badge-warning">Sin fecha de actualización</span>
-              )}
             </div>
+
           </div>
         </div>
+
+        {/* Fecha de actualización, el único «Actualizar ofertas» de la página y los accesos a las fichas de
+            tienda. Los cuatro viven en la misma fila, a todo lo ancho de la card: dentro de la columna de
+            contenido no caben, y separarlos dejaba los dos enlaces solos en un bloque al fondo.
+            «Ver en Steam» es el enlace canónico a la ficha; «Buscar en Ubisoft Store» es solo una búsqueda
+            por título (Ubisoft no tiene cliente de precio ni id construible) y se llama «buscar» por eso. */}
+        <div className="flex flex-wrap items-center gap-3">
+          {observedDisplay ? (
+            <span className="tabler-badge tabler-badge-info">Actualizado {observedDisplay}</span>
+          ) : (
+            <span className="tabler-badge tabler-badge-warning">Sin fecha de actualización</span>
+          )}
+          <Button
+            type="button"
+            variant="secondary"
+            loading={refreshing}
+            loadingText="Actualizando..."
+            onClick={() => void refreshOffers()}
+          >
+            Actualizar ofertas
+          </Button>
+          <a
+            href={storeUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn-secondary-semantic inline-flex h-10 items-center gap-2 px-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+          >
+            Ver en Steam
+            <ExternalLink className="h-4 w-4" aria-hidden="true" />
+            <span className="sr-only">(se abre en una pestaña nueva)</span>
+          </a>
+          <a
+            href={ubisoftSearchUrl(game.name)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn-secondary-semantic inline-flex h-10 items-center gap-2 px-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+          >
+            Buscar en Ubisoft Store
+            <ExternalLink className="h-4 w-4" aria-hidden="true" />
+            <span className="sr-only">(se abre en una pestaña nueva)</span>
+          </a>
+          <span className="text-xs text-muted" aria-live="polite">
+            {refreshing ? "Consultando tiendas..." : ""}
+          </span>
+        </div>
+        {refreshError ? <Alert variant="danger">{refreshError}</Alert> : null}
 
         <div className="space-y-3 border-t border-default pt-4">
           <h3 className="text-xs font-semibold uppercase tracking-widest text-muted">Mejor precio comparable</h3>
           {bestPrices.length > 0 || bundleCard !== null ? (
             <div className="grid gap-3 md:grid-cols-2">
-              {bestPrices.map(({ group, best, approximate, cheapest, beatsSteam }) => (
-                <article key={`${group.id}-${best.offer.offerKey}-${best.mxnMinor}`} className="app-card space-y-1 p-4">
-                  <p className="text-xs font-semibold uppercase tracking-widest text-muted">{group.heading}</p>
-                  <p className={cn("deal-price text-2xl", cheapest ? "text-success" : "text-primary")}>
-                    {approximate ? "≈ " : ""}
-                    {formatComparablePrice(best.mxnMinor)}
-                  </p>
-                  {cheapest ? (
-                    // En su propio bloque: la etiqueta es un `span` en línea y sin esto quedaba pegada al
-                    // enlace, que es el siguiente hermano.
-                    <div>
-                      <span className="tabler-badge tabler-badge-success">
-                        {beatsSteam ? "Más barato que Steam" : "El más barato de las tiendas"}
-                      </span>
-                    </div>
-                  ) : null}
-                  {safeDealUrl(best.offer.dealUrl) ? (
-                    <a
-                      href={safeDealUrl(best.offer.dealUrl) ?? undefined}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
-                    >
-                      {best.offer.shopName}
-                      <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-                      <span className="sr-only">(se abre en una pestaña nueva)</span>
-                    </a>
-                  ) : (
-                    <span className="text-sm font-semibold text-secondary">{best.offer.shopName}</span>
-                  )}
-                  {offerMxnCell(best.offer).note ? (
-                    <p className="text-xs text-muted">{offerMxnCell(best.offer).note}</p>
-                  ) : null}
-                </article>
-              ))}
+              {bestPrices.map(({ group, best, approximate, cheapest, beatsSteam }) => {
+                const dealUrl = safeDealUrl(best.offer.dealUrl);
+                const observed = formatObserved(best.offer.observedAt);
+                return (
+                  <article key={`${group.id}-${best.offer.offerKey}-${best.mxnMinor}`} className="app-card space-y-1 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-widest text-muted">{group.heading}</p>
+                    <p className={cn("deal-price text-2xl", cheapest ? "text-success" : "text-primary")}>
+                      {approximate ? "≈ " : ""}
+                      {formatComparablePrice(best.mxnMinor)}
+                    </p>
+                    {cheapest ? (
+                      // En su propio bloque: la etiqueta es un `span` en línea y sin esto quedaba pegada al
+                      // enlace, que es el siguiente hermano.
+                      <div>
+                        <span className="tabler-badge tabler-badge-success">
+                          {beatsSteam ? "Más barato que Steam" : "El más barato de las tiendas"}
+                        </span>
+                      </div>
+                    ) : null}
+                    {dealUrl ? (
+                      <a
+                        href={dealUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+                      >
+                        {best.offer.shopName}
+                        <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span className="sr-only">(se abre en una pestaña nueva)</span>
+                      </a>
+                    ) : (
+                      <span className="text-sm font-semibold text-secondary">{best.offer.shopName}</span>
+                    )}
+                    <p className="text-xs text-muted">
+                      {observed ? `Observado ${observed}` : "Sin fecha de observación"}
+                    </p>
+                  </article>
+                );
+              })}
               {bundleCard ? (
                 <article className="app-card space-y-1 p-4">
                   <p className="text-xs font-semibold uppercase tracking-widest text-muted">Bundle</p>
@@ -1036,44 +1167,12 @@ export function GameClient({ appId }: GameClientProps) {
           </p>
         </div>
 
-        <div className="space-y-2 border-t border-default pt-4">
-          <h3 className="text-xs font-semibold uppercase tracking-widest text-muted">Referencia histórica</h3>
-          {globalHistoricalLow ? (
-            <>
-              <p className="deal-price text-lg text-primary">
-                {`Menor mínimo disponible: ${globalHistoricalLow.approximate ? "≈ " : ""}${formatComparablePrice(globalHistoricalLow.mxnMinor)}`}
-              </p>
-              <p className="text-sm font-semibold text-secondary">{globalHistoricalLow.label}</p>
-              <p className="text-xs text-muted">
-                Combina el mínimo local de Steam y mínimos de proveedores; los importes no-MXN se convierten
-                de forma aproximada. Las fuentes y regiones pueden diferir; sirve como guía y no equivale a
-                un precio histórico único.
-              </p>
-            </>
-          ) : null}
-          <a
-            href={storeUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn-secondary-semantic inline-flex h-10 items-center gap-2 px-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
-          >
-            Ver en Steam
-            <ExternalLink className="h-4 w-4" aria-hidden="true" />
-            <span className="sr-only">(se abre en una pestaña nueva)</span>
-          </a>
-          {/* Ubisoft no tiene cliente de precio ni id construible: lo único honesto es un enlace de búsqueda
-              por título, y se llama «buscar» porque eso es lo que hace. Dice «Ubisoft Store» en el texto
-              visible, así que no se confunde con una oferta de la comparación. */}
-          <a
-            href={ubisoftSearchUrl(game.name)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn-secondary-semantic inline-flex h-10 items-center gap-2 px-4 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
-          >
-            Buscar en Ubisoft Store
-            <ExternalLink className="h-4 w-4" aria-hidden="true" />
-            <span className="sr-only">(se abre en una pestaña nueva)</span>
-          </a>
+        <div className="border-t border-default pt-4">
+          <p className="text-xs text-muted">
+            Combina el mínimo local de Steam y mínimos de proveedores; los importes no-MXN se convierten
+            de forma aproximada. Las fuentes y regiones pueden diferir; sirve como guía y no equivale a
+            un precio histórico único.
+          </p>
         </div>
       </section>
 
@@ -1133,41 +1232,25 @@ export function GameClient({ appId }: GameClientProps) {
       </section>
 
       <section className="app-card space-y-4 p-5" aria-labelledby="offers-heading">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="space-y-1">
-            <p className="text-xs font-semibold uppercase tracking-widest text-muted">Ofertas por proveedor</p>
-            <h2 id="offers-heading" className="text-xl font-semibold tracking-tight text-primary">
-              Ofertas en otras tiendas
-            </h2>
-            <p className="text-xs text-muted">
-              Dos proveedores con formas distintas: ITAD publica oferta por tienda; gg.deals, un precio
-              agregado por grupo de tiendas.
-            </p>
-            <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm font-semibold text-secondary">
-              <span>Datos de precios:</span>
-              <AttributionLink href={ITAD_ATTRIBUTION_URL} label="IsThereAnyDeal" />
-              <span aria-hidden="true">·</span>
-              <AttributionLink href={GGDEALS_ATTRIBUTION_URL} label="GG.deals" />
-            </p>
-            <p className="text-xs text-muted">
-              GOG ya cobra en MXN en su tienda, pero su importe aquí llega vía ITAD en USD convertido a
-              MXN (≈) y puede diferir del precio final en caja.
-            </p>
-          </div>
-          <div className="flex flex-col items-start gap-1 sm:items-end">
-            <Button
-              variant="secondary"
-              className="w-full sm:w-auto"
-              loading={refreshing}
-              loadingText="Actualizando..."
-              onClick={() => void refreshOffers()}
-            >
-              Actualizar ofertas
-            </Button>
-            <span className="text-xs text-muted" aria-live="polite">
-              {refreshing ? "Consultando tiendas..." : ""}
-            </span>
-          </div>
+        <div className="space-y-1">
+          <p className="text-xs font-semibold uppercase tracking-widest text-muted">Ofertas por proveedor</p>
+          <h2 id="offers-heading" className="text-xl font-semibold tracking-tight text-primary">
+            Ofertas en otras tiendas
+          </h2>
+          <p className="text-xs text-muted">
+            Dos proveedores con formas distintas: ITAD publica oferta por tienda; gg.deals, un precio
+            agregado por grupo de tiendas.
+          </p>
+          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm font-semibold text-secondary">
+            <span>Datos de precios:</span>
+            <AttributionLink href={ITAD_ATTRIBUTION_URL} label="IsThereAnyDeal" />
+            <span aria-hidden="true">·</span>
+            <AttributionLink href={GGDEALS_ATTRIBUTION_URL} label="GG.deals" />
+          </p>
+          <p className="text-xs text-muted">
+            GOG ya cobra en MXN en su tienda, pero su importe aquí llega vía ITAD en USD convertido a
+            MXN (≈) y puede diferir del precio final en caja.
+          </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -1190,8 +1273,6 @@ export function GameClient({ appId }: GameClientProps) {
             <span className="tabler-badge tabler-badge-warning">Datos posiblemente desactualizados</span>
           ) : null}
         </div>
-
-        {refreshError ? <Alert variant="danger">{refreshError}</Alert> : null}
 
         {totalOffers === 0 ? (
           <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">

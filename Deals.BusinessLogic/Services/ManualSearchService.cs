@@ -14,8 +14,9 @@ namespace Deals.BusinessLogic.Services;
 /// (covers + years, measured 5/5 in <c>docs/PLAN_CONSOLE.md</c> §2.3) and an id lookup for the cover of a
 /// row being created. Credentials: <c>IGDB_CLIENT_ID</c> is required for the <c>Client-ID</c> header;
 /// auth is <c>IGDB_TOKEN</c> when present, else the <c>IGDB_CLIENT_SECRET</c> exchange cached here.
-/// Measured traps (§2.3): cover URLs arrive protocol-relative (<c>//images.igdb.com/...</c>) and a title
-/// search returns one row per platform — never trust row order, the dialog only displays and the id is
+/// Measured traps (§2.3): cover URLs arrive protocol-relative (<c>//images.igdb.com/...</c>) **and** with the
+/// default <c>t_thumb</c> size (90x128), which is upgraded to <c>t_cover_big</c> in <see cref="AbsoluteCover"/>;
+/// a title search returns one row per platform — never trust row order, the dialog only displays and the id is
 /// refetched. No credential is ever logged or written to the repo.
 /// </summary>
 public class ManualSearchService : IManualSearchService
@@ -239,13 +240,26 @@ public class ManualSearchService : IManualSearchService
     }
 
     // IGDB serves protocol-relative cover URLs (measured: //images.igdb.com/igdb/image/upload/t_thumb/...).
+    // That default thumbnail is 90x128, too small for a library card, and IGDB's image reference
+    // (https://api-docs.igdb.com/ → Reference > Images) states that API requests return a default size and
+    // that larger images are built by replacing the size token of
+    // https://images.igdb.com/igdb/image/upload/t_{size}/{hash}.jpg — documented sizes include cover_big
+    // (264x374) and 720p, and `_2x` appends retina. So `t_thumb` becomes `t_cover_big` and any other token is
+    // left alone (a URL that already carries a bigger size is not downgraded, and a shape IGDB has not
+    // documented is not guessed at). This is what makes both the automatic pass and the manual IGDB pick
+    // store art that survives a card instead of a postage stamp.
     private static string? AbsoluteCover(string? url) => url switch
     {
         null or "" => null,
-        _ when url.StartsWith("//") => $"https:{url}",
-        _ when url.StartsWith("http") => url,
+        _ when url.StartsWith("//") => $"https:{ReplaceThumbnailSize(url)}",
+        _ when url.StartsWith("http") => ReplaceThumbnailSize(url),
         _ => null
     };
+
+    private static string ReplaceThumbnailSize(string url) =>
+        url.Contains("/t_thumb/", StringComparison.Ordinal)
+            ? url.Replace("/t_thumb/", "/t_cover_big/", StringComparison.Ordinal)
+            : url;
 
     private static int? YearOf(long? unixSeconds) =>
         unixSeconds is > 0

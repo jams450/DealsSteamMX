@@ -1,19 +1,36 @@
 import { Bookmark, GitMerge, Home, Library, Search, Users, Activity } from "lucide-react";
 
-export type NavItem = {
+export type NavLink = {
   href: string;
   label: string;
   icon: typeof Users;
 };
+
+export type NavMenu = {
+  label: string;
+  icon: typeof Users;
+  items: readonly NavLink[];
+};
+
+export type NavItem = NavLink | NavMenu;
+
+export function isNavMenu(item: NavItem): item is NavMenu {
+  return "items" in item;
+}
 
 export const productNavItems: NavItem[] = [
   { href: "/", label: "Inicio", icon: Home },
   { href: "/search", label: "Comparar", icon: Search },
   { href: "/wishlist", label: "Wishlist", icon: Bookmark },
   { href: "/library", label: "Biblioteca", icon: Library },
-  // Mantenimiento del catálogo: separado de la Biblioteca porque fusionar es irreversible.
-  { href: "/library/duplicates", label: "Duplicados", icon: GitMerge },
-  { href: "/library/reconciliation", label: "Reconciliación", icon: GitMerge }
+  {
+    label: "Merge",
+    icon: GitMerge,
+    items: [
+      { href: "/library/duplicates", label: "Duplicados", icon: GitMerge },
+      { href: "/library/reconciliation", label: "Reconciliación", icon: GitMerge }
+    ]
+  }
 ];
 
 export const adminNavItems: NavItem[] = [
@@ -23,7 +40,7 @@ export const adminNavItems: NavItem[] = [
 
 export const appNavItems: NavItem[] = [...productNavItems, ...adminNavItems];
 
-const NAV_HREFS: readonly string[] = appNavItems.map((item) => item.href);
+const NAV_HREFS: readonly string[] = appNavItems.flatMap((item) => (isNavMenu(item) ? item.items.map((child) => child.href) : item.href));
 
 // Una ruta que es prefijo de otra solo se marca activa por coincidencia exacta: en
 // `/library/duplicates`, «Biblioteca» y «Duplicados» no pueden estar activas a la vez.

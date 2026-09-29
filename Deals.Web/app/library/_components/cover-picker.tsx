@@ -1,12 +1,13 @@
 "use client";
 
-// Selector de portada de un juego. La fuente la decide el grupo de plataformas, no una casualidad: un
-// grupo solo de PC busca en Steam, uno solo de consola busca en IGDB y uno mixto pide que se elija una
-// de las dos. Elegir un resultado manda un id — `steamAppId` o `igdbId`, exactamente uno — y el servidor
-// resuelve y guarda la URL: este componente jamás envía una imagen. La portada vive en el juego
-// canónico, así que es compartida por todas sus copias. Es manual a propósito: la búsqueda por título
-// acierta casi siempre, pero no siempre (remakes, ediciones, títulos repetidos), y una portada equivocada
-// es visible. Vive fuera de la grilla porque abre encima, no dentro de una celda.
+// Selector de portada de un juego. Ofrece siempre los tres catálogos —Steam, IGDB y SteamGridDB— y las
+// tiendas del grupo solo deciden cuál llega preseleccionado: un grupo solo de PC propone Steam, uno solo de
+// consola propone IGDB y uno mixto no propone ninguno. Elegir un resultado manda un id — `steamAppId`,
+// `igdbId` o `steamGridDbId`, exactamente uno — y el servidor resuelve y guarda la URL: este componente jamás
+// envía una imagen. La portada vive en el juego canónico, así que es compartida por todas sus copias. Es
+// manual a propósito: la búsqueda por título acierta casi siempre, pero no siempre (remakes, ediciones,
+// títulos repetidos), y una portada equivocada es visible. Vive fuera de la grilla porque abre encima, no
+// dentro de una celda.
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Search, X } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
@@ -16,14 +17,20 @@ import { cn } from "@/lib/ui/cn";
 import { storeLabel } from "@/lib/contracts/stores";
 import type { SteamSearchResult } from "@/lib/contracts/steam";
 import type { ManualSearchHit } from "@/lib/contracts/manual-library";
-import { resolveCoverSource, type CoverSource } from "@/lib/contracts/library-covers";
+import {
+  resolveCoverSource,
+  type CoverPick,
+  type CoverSource,
+  type SteamGridDbCoverCandidate
+} from "@/lib/contracts/library-covers";
 import { searchSteam } from "@/app/steam/_lib/steam-api";
 import { searchManualGames } from "../_lib/manual-library-api";
-import { setGameCover } from "../_lib/library-api";
+import { searchSteamGridDbCovers, setGameCover } from "../_lib/library-api";
 
 const SOURCE_OPTIONS: readonly { readonly value: CoverSource; readonly label: string }[] = [
   { value: "steam", label: "Steam" },
-  { value: "igdb", label: "IGDB" }
+  { value: "igdb", label: "IGDB" },
+  { value: "steamgriddb", label: "SteamGridDB" }
 ];
 
 // Contexto de un resultado de IGDB: año y hasta tres plataformas, para distinguir remakes y ediciones
@@ -47,25 +54,27 @@ export function CoverPicker({
 }: {
   readonly gameId: number;
   readonly title: string;
-  /** Tiendas del grupo: deciden la fuente y se enseñan en la nota de la portada compartida. */
+  /** Tiendas del grupo: proponen la fuente preferida y se enseñan en la nota de la portada compartida. */
   readonly stores: readonly string[];
   /** Copias vinculadas al mismo juego canónico: cuántas filas usan la portada que aquí se elige. */
   readonly linkedRows: number;
   readonly onClose: () => void;
   readonly onPicked: (gameId: number, imageUrl: string) => void;
 }) {
-  // `null` solo en un grupo mixto: todavía no se eligió catálogo. Un grupo homogéneo lo trae fijado y
-  // no se puede cambiar, porque ahí no hay nada que preguntar.
-  const lockedSource = resolveCoverSource(stores);
-  const [source, setSource] = useState<CoverSource | null>(lockedSource);
+  // Fuente preferida por las tiendas del grupo: solo el punto de partida del selector, que siempre ofrece los
+  // tres catálogos. `null` (grupo mixto o sin plataformas) significa que no hay ninguna preseleccionada.
+  const preferredSource = resolveCoverSource(stores);
+  const [source, setSource] = useState<CoverSource | null>(preferredSource);
   const [query, setQuery] = useState(title);
   // `null` es "todavía no hay resultados" en CADA catálogo: se distingue de "buscó y no encontró nada".
   const [steamResults, setSteamResults] = useState<readonly SteamSearchResult[] | null>(null);
   const [igdbHits, setIgdbHits] = useState<readonly ManualSearchHit[] | null>(null);
-  // `source === null` en la respuesta de IGDB es "proveedor no disponible", no "sin resultados".
+  const [sgdbCandidates, setSgdbCandidates] = useState<readonly SteamGridDbCoverCandidate[] | null>(null);
+  // `source === null` en la respuesta de un proveedor es "proveedor no disponible", no "sin resultados".
   const [igdbUnavailable, setIgdbUnavailable] = useState(false);
+  const [sgdbUnavailable, setSgdbUnavailable] = useState(false);
   const [searching, setSearching] = useState(false);
-  // Id guardando, con su catálogo delante: en un grupo mixto Steam 620 e IGDB 620 no son la misma fila.
+  // Id guardando, con su catálogo delante: Steam 620, IGDB 620 y SteamGridDB 620 no son la misma fila.
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -74,7 +83,8 @@ export function CoverPicker({
     const trimmed = term.trim();
     if (trimmed === "") {
       if (which === "steam") setSteamResults([]);
-      else setIgdbHits([]);
+      else if (which === "igdb") setIgdbHits([]);
+      else setSgdbCandidates([]);
       return;
     }
 
@@ -83,32 +93,44 @@ export function CoverPicker({
     try {
       if (which === "steam") {
         setSteamResults(await searchSteam(trimmed));
-      } else {
+      } else if (which === "igdb") {
         const result = await searchManualGames(trimmed);
         // `source === null` significa «proveedor no disponible», no «sin resultados»: el aviso lo
         // distingue para que la lista vacía no se lea como un título que IGDB no conoce.
         setIgdbUnavailable(result.source === null);
         setIgdbHits(result.hits);
+      } else {
+        const result = await searchSteamGridDbCovers(trimmed);
+        // Misma distinción que IGDB: el autocomplete de SteamGridDB tampoco publica arte.
+        setSgdbUnavailable(result.source === null);
+        setSgdbCandidates(result.candidates);
       }
     } catch (cause) {
-      const fallback = which === "steam" ? "No se pudo buscar en Steam" : "No se pudo buscar en IGDB";
+      const fallback =
+        which === "steam"
+          ? "No se pudo buscar en Steam"
+          : which === "igdb"
+            ? "No se pudo buscar en IGDB"
+            : "No se pudo buscar en SteamGridDB";
       // Un fallo deja la lista vacía; el mensaje de "sin resultados" se calla mientras haya error, para
       // no confundir «no pude buscar» con «busqué y no había nada».
       if (which === "steam") setSteamResults([]);
-      else setIgdbHits([]);
+      else if (which === "igdb") setIgdbHits([]);
+      else setSgdbCandidates([]);
       setError(cause instanceof Error ? cause.message : fallback);
     } finally {
       setSearching(false);
     }
   }
 
-  // La búsqueda arranca sola con el título en cuanto hay un catálogo elegido: en un grupo homogéneo eso
-  // es al abrir el selector; en uno mixto, al pulsar Steam o IGDB. Abrirlo y ver la lista vacía sería un
-  // paso de más en el caso normal.
+  // La búsqueda arranca sola con el título en cuanto hay un catálogo elegido: lo habitual es abrir el selector
+  // con la fuente preferida ya preseleccionada y ver la lista sin pulsar nada; al cambiar de catálogo, se busca
+  // en el nuevo. Abrirlo y ver la lista vacía sería un paso de más en el caso normal.
   useEffect(() => {
     if (source === null) return;
     if (source === "steam" && steamResults === null) void runSearch(title, "steam");
     if (source === "igdb" && igdbHits === null) void runSearch(title, "igdb");
+    if (source === "steamgriddb" && sgdbCandidates === null) void runSearch(title, "steamgriddb");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source]);
 
@@ -130,7 +152,9 @@ export function CoverPicker({
     try {
       // Exactamente un id de un catálogo, nunca una URL: el servidor relee la portada y devuelve la que
       // guardó, que es la que la grilla pinta en todas las copias del grupo.
-      const imageUrl = await setGameCover(gameId, which === "steam" ? { steamAppId: id } : { igdbId: id });
+      const pick: CoverPick =
+        which === "steam" ? { steamAppId: id } : which === "igdb" ? { igdbId: id } : { steamGridDbId: id };
+      const imageUrl = await setGameCover(gameId, pick);
       onPicked(gameId, imageUrl);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo guardar la portada");
@@ -145,10 +169,15 @@ export function CoverPicker({
     void runSearch(query, source);
   }
 
-  // El encabezado nombra el catálogo en cuanto lo hay: en un grupo mixto todavía no hay nada que nombrar.
-  const headingSource = lockedSource ?? source;
+  // El encabezado nombra el catálogo elegido, que es el que se está buscando.
   const heading =
-    headingSource === "steam" ? "Buscar portada en Steam" : headingSource === "igdb" ? "Buscar portada en IGDB" : "Buscar portada";
+    source === "steam"
+      ? "Buscar portada en Steam"
+      : source === "igdb"
+        ? "Buscar portada en IGDB"
+        : source === "steamgriddb"
+          ? "Buscar portada en SteamGridDB"
+          : "Buscar portada";
   const storesText = stores.map((store) => storeLabel(store)).join(", ");
   const sharedNoteId = "cover-picker-shared-note";
 
@@ -181,50 +210,55 @@ export function CoverPicker({
         </div>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-          {/* Solo un grupo mixto pregunta: PC y consola conviven en el mismo juego y la portada es una
-              sola, así que la fuente no se elige sola. */}
-          {lockedSource === null ? (
-            <div className="space-y-1.5">
-              <p id="cover-picker-source-label" className="text-sm font-medium text-primary">
-                ¿En qué catálogo buscas la portada?
-              </p>
-              <div
-                className="flex flex-wrap items-center gap-1 border border-strong bg-[var(--color-surface-2)] p-0.5"
-                role="group"
-                aria-labelledby="cover-picker-source-label"
-              >
-                {SOURCE_OPTIONS.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    aria-pressed={source === option.value}
-                    onClick={() => {
-                      setSource(option.value);
-                      setError(null);
-                    }}
-                    className={cn(
-                      "h-9 px-3 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]",
-                      source === option.value
-                        ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
-                        : "text-muted hover:bg-[var(--color-accent-soft)] hover:text-primary"
-                    )}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-              <p className="text-xs text-muted">
-                Este juego está en tiendas de PC y en consola, y la portada es una sola para todas sus
-                copias: elige dónde buscarla.
-              </p>
+          {/* El selector está siempre: las tres fuentes son válidas para cualquier grupo y las tiendas solo
+              deciden cuál viene preseleccionada. Con SteamGridDB —arte de la comunidad, sin plataforma— un
+              grupo solo de PC también necesita una vía que no sea Steam. */}
+          <div className="space-y-1.5">
+            <p id="cover-picker-source-label" className="text-sm font-medium text-primary">
+              ¿En qué catálogo buscas la portada?
+            </p>
+            <div
+              className="flex flex-wrap items-center gap-1 border border-strong bg-[var(--color-surface-2)] p-0.5"
+              role="group"
+              aria-labelledby="cover-picker-source-label"
+            >
+              {SOURCE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={source === option.value}
+                  onClick={() => {
+                    setSource(option.value);
+                    setError(null);
+                  }}
+                  className={cn(
+                    "h-9 px-3 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]",
+                    source === option.value
+                      ? "bg-[var(--color-accent)] text-[var(--color-accent-contrast)]"
+                      : "text-muted hover:bg-[var(--color-accent-soft)] hover:text-primary"
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
             </div>
-          ) : null}
+            <p className="text-xs text-muted">
+              La portada es una sola para todas las copias del grupo, así que elige dónde buscarla: Steam,
+              IGDB o SteamGridDB. Las tiendas del juego solo marcan cuál se propone primero.
+            </p>
+          </div>
 
           {error ? <Alert variant="danger">{error}</Alert> : null}
           {source === "igdb" && igdbUnavailable ? (
             <Alert variant="info">
               La búsqueda no está disponible (IGDB sin configurar o con error). Prueba más tarde o con otro
-              título: el catálogo de Steam sigue pudiendo dar con la portada.
+              título: los catálogos de Steam y SteamGridDB siguen pudiendo dar con la portada.
+            </Alert>
+          ) : null}
+          {source === "steamgriddb" && sgdbUnavailable ? (
+            <Alert variant="info">
+              La búsqueda no está disponible (SteamGridDB sin configurar o con error). Prueba más tarde o con
+              otro título: los catálogos de Steam e IGDB siguen pudiendo dar con la portada.
             </Alert>
           ) : null}
 
@@ -233,7 +267,13 @@ export function CoverPicker({
               <div className="flex-1">
                 <Input
                   id="cover-picker-query"
-                  label={source === "steam" ? "Título en Steam" : "Título a buscar"}
+                  label={
+                    source === "steam"
+                      ? "Título en Steam"
+                      : source === "igdb"
+                        ? "Título en IGDB"
+                        : "Título en SteamGridDB"
+                  }
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   autoComplete="off"
@@ -348,15 +388,58 @@ export function CoverPicker({
                 })}
               </ul>
             )
+          ) : source === "steamgriddb" ? (
+            sgdbUnavailable ? null : sgdbCandidates === null ? (
+              <p className="text-sm text-muted">Buscando en SteamGridDB...</p>
+            ) : sgdbCandidates.length === 0 ? (
+              error === null ? (
+                <p className="text-sm text-muted">SteamGridDB no devolvió resultados para esa búsqueda.</p>
+              ) : null
+            ) : (
+              <div className="space-y-2">
+                {/* El autocomplete no publica arte: no hay miniatura que pintar antes de elegir, así que la
+                    fila se identifica por id y nombre y la imagen se resuelve al confirmarla. */}
+                <p className="text-xs text-muted">
+                  El autocomplete de SteamGridDB no publica miniatura: la portada se resuelve al elegir una
+                  fila.
+                </p>
+                <ul className="space-y-2">
+                  {sgdbCandidates.map((candidate) => (
+                    <li
+                      key={candidate.id}
+                      className="flex items-center gap-3 rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-3"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-primary">{candidate.name}</p>
+                        <p className="truncate text-xs text-muted">
+                          SteamGridDB {candidate.id}
+                          {candidate.verified ? " · Verificada" : ""}
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="primary"
+                        className="h-9 whitespace-nowrap px-3 text-xs"
+                        loading={savingKey === `steamgriddb:${candidate.id}`}
+                        onClick={() => void pick("steamgriddb", candidate.id)}
+                      >
+                        Usar esta
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )
           ) : (
-            <p className="text-sm text-muted">Elige Steam o IGDB para empezar a buscar.</p>
+            <p className="text-sm text-muted">Elige Steam, IGDB o SteamGridDB para empezar a buscar.</p>
           )}
 
           <p id={sharedNoteId} className="text-xs text-muted">
             La portada es del juego del catálogo y es compartida: al guardarla se aplica a{" "}
             {copiesLabel(linkedRows)}
             {storesText ? ` (${storesText})` : ""} y reemplaza la que hubiera. El navegador solo manda el id
-            elegido — Steam o IGDB —; la URL la resuelve y guarda el servidor, nunca se envía una imagen.
+            elegido — Steam, IGDB o SteamGridDB —; la URL la resuelve y guarda el servidor, nunca se envía una
+            imagen.
           </p>
         </div>
       </div>

@@ -181,18 +181,47 @@ public sealed record ManualSearchResponse(string? Source, IReadOnlyList<ManualSe
 
 /// <summary>
 /// Wire contract of a cover sync pass, mirroring <c>Deals.Web/lib/contracts/library-covers.ts</c>.
+/// <see cref="Updated"/> is split by the source that resolved each game, and <see cref="Unmatched"/> (no
+/// provider had art) stays apart from <see cref="Failed"/> (a source could not be consulted at all).
 /// </summary>
 public sealed record LibraryCoverSyncResponse(
     int Missing,
-    int MissingWithoutSteamId,
     int Updated,
+    int UpdatedBySteam,
+    int UpdatedByIgdb,
+    int UpdatedBySteamGridDb,
+    int Unmatched,
     int Failed,
     int Remaining)
 {
     public static LibraryCoverSyncResponse From(LibraryCoverSyncResult result) => new(
         result.Missing,
-        result.MissingWithoutSteamId,
         result.Updated,
+        result.UpdatedBySteam,
+        result.UpdatedByIgdb,
+        result.UpdatedBySteamGridDb,
+        result.Unmatched,
         result.Failed,
         result.Remaining);
+}
+
+/// <summary>One SteamGridDB autocomplete candidate for the manual cover picker (display only).</summary>
+public sealed record SteamGridDbCoverCandidateResponse(int Id, string Name, bool Verified);
+
+/// <summary>
+/// Result of the manual cover picker's SteamGridDB title search. <see cref="Source"/> is <c>"steamgriddb"</c>
+/// when the provider answered and null when it is unconfigured or failed: the picker must read that as
+/// "unavailable", not as "no hits". The autocomplete payload carries no artwork, so a candidate is only an id
+/// and a name — the URL is resolved by <c>PUT /api/games/{gameId}/cover</c> once a row is picked. Read-only,
+/// never writes.
+/// </summary>
+public sealed record SteamGridDbCoverSearchResponse(
+    string? Source,
+    IReadOnlyList<SteamGridDbCoverCandidateResponse> Candidates)
+{
+    public static SteamGridDbCoverSearchResponse From(SteamGridDbSearchResult result) => new(
+        result.Source,
+        result.Candidates
+            .Select(candidate => new SteamGridDbCoverCandidateResponse(candidate.Id, candidate.Name, candidate.Verified))
+            .ToList());
 }

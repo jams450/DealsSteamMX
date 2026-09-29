@@ -32,7 +32,7 @@ when it was last observed.
 |---|---|---|---|
 | `/` | `app/page.tsx` | Product | Home: search as the central CTA, how-it-works, price source note |
 | `/search` | `app/search/page.tsx`, `app/search/search-client.tsx` | Product | Text search; `?q=` pre-runs the query; local suggestions while typing (≥2 chars) |
-| `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: cover, Steam price block, ownership line (`ownership`), local-low row, Steam source table, multi-store offers grouped by provider (ITAD / gg.deals) |
+| `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: FX reference strip above the card, cover + official Steam price + sources historical minimum + local Steam minimum + the page's single refresh control, per-provider best-price cards with each price's observation date, CTA footer, ownership line (`ownership`), Steam source table, multi-store offers grouped by provider, bundles, reviews |
 | `/wishlist` | `app/wishlist/{page,wishlist-client}.tsx`, `app/wishlist/_lib/*` | Product | Steam wishlist: four explicit states, "Sincronizar ahora" with its report, a price-reference table (base, historical low, MXN official/keyshop minimums) with a per-row refresh, per-band discount % and a hybrid 0-10 deal score driven by a backend viable-minimum threshold; a multi-game selection (by AppID) with a sticky bar showing the package total under two alternative scenarios (official / keys) |
 | `/library` | `app/library/{page,library-client}.tsx`, `app/library/_lib/*` | Admin | Playnite library import (manual JSON upload of ≤10 MiB) plus the owned/subscription list grouped by store, with the Game Pass tag and the explicit "Sin precios vinculados" state |
 | `/login` | `app/login/page.tsx` | Public | Only public page, plus `/api/auth/{login,refresh,session}` |
@@ -59,7 +59,9 @@ when it was last observed.
   Each provider returns offers in its own currency (`original*` fields, the source of truth); the
   MXN columns (`mxn*`) are derived from the day's FX rate (Banxico FIX, Frankfurter fallback),
   nullable, and always presented as approximate. `historyLowAllMinor`/`historyLowCurrency` normalize
-  each provider's historical low but are not rendered in v1. Offers are a per-provider snapshot, not
+  each provider's historical low: they are the per-provider `Mínimo histórico` badge in the offer rows,
+  and the candidates of the sources historical minimum in the summary (§7). Offers are a per-provider
+  snapshot, not
   history. The "local low" (`lowestPriceMinor`/`lowestPriceAt`) is the lowest price observed locally in
   the app's own database, not a Steam-provided value, and it is never a discount.
 - **Wishlist reality:** `/wishlist` is fed by the API's `GET /api/wishlist` (BFF `GET /api/bff/wishlist`)
@@ -190,9 +192,9 @@ rendering it.
 | `classification === "keyshop"` | the entry carries `tabler-badge-muted` "Keyshop" — text plus tone, never tone alone |
 | `classification === "authorized"` | no badge anywhere. This is the **expected** state of the gg.deals `retail` bucket (an aggregate of official *and* authorized stores with no per-store identity), so a bucket without a badge is normal, not a gap; the aggregate list's own note says so in text |
 | a provider group has no rows | that group's heading, note and rows are not rendered; the other provider still renders |
-| both providers empty | muted empty state inside the section; the refresh button stays available |
+| both providers empty | muted empty state inside the section; the refresh control (in the game summary) stays available |
 | `pricingType === "regional"` | `Aprox. MXN` shows the stored MXN snapshot plainly (no `≈`) |
-| `pricingType === "fx_estimate"` | `Aprox. MXN` is prefixed `≈` and carries `Tasa <rate> · <dd/MM/yyyy> · <source>` underneath |
+| `pricingType === "fx_estimate"` | `Aprox. MXN` is prefixed `≈`; the rate is **not** repeated per row — it lives once in the page-level FX reference strip (see below) |
 | `pricingType === "unconverted"` | `tabler-badge-warning` "Sin conversión" in `Aprox. MXN`; no MXN value is invented |
 | `pricingType` missing or unknown | the whole offer is invalid and is dropped (never silently mapped to `unconverted`) |
 | any required offer field missing (`source`, `offerKey`, `shopName`, `classification`, `originalCurrency`) | the offer is dropped |
@@ -211,7 +213,7 @@ rendering it.
 | `offersRefreshedAt` missing or invalid while ITAD rows exist | `tabler-badge-warning` "Sin fecha de actualización de ITAD" |
 | `ggDealsRefreshedAt` present | `tabler-badge-info` "gg.deals actualizado <fecha>" |
 | `ggDealsRefreshedAt` missing or invalid while gg.deals rows exist | `tabler-badge-warning` "Sin fecha de actualización de gg.deals" |
-| "Actualizar ofertas" in flight | button `loading` (own state, page does not re-enter its loading state) |
+| "Actualizar ofertas" in flight (the summary's single control) | button `loading` (own state, page does not re-enter its loading state) |
 | refresh failure | inline `Alert variant="danger"`; the already loaded game and its offers stay on screen |
 | timestamps (`observedAt`, `lowestPriceAt`, `offersRefreshedAt`, `ggDealsRefreshedAt`) that are not valid ISO date-time strings | normalized to `null` and rendered as "—" / "Sin fecha"; the date formatter is guarded so it can never throw |
 | offer comparable in MXN (`mxnCurrentPriceMinor` present **and** `pricingType !== "unconverted"`) | eligible for the cheapest tally of its own provider group; original currencies are never compared across rows, and the tally never crosses groups |
@@ -221,23 +223,47 @@ rendering it.
 | `platformNames` non-empty | same shape in `tabler-badge-muted`, legend "Plataformas:" |
 | `drmNames` / `platformNames` empty | nothing renders — no placeholder, no empty badge |
 
-Best-price strip inside the `app-card-accent` summary (same file). The comparison is **per provider
-group**: each group is measured against the direct Steam price on its own, so the strip never ranks an
-ITAD store against a gg.deals row.
+**FX reference strip** (above the `app-card-accent` summary, same file). The rate is a page-level fact,
+not a per-row footnote: it used to be repeated under every converted price, and the same rate belongs to
+the whole page.
 
 | Condition | Treatment |
 |---|---|
-| candidates | the direct Steam price (only when `game.currency` is `MXN` **and** `currentPriceMinor` is present) plus the comparable offers of **that** group |
+| strip source | every offer in `game.offers` with `pricingType === "fx_estimate"` **and** a non-null `fxRate`; an offer without a rate contributes nothing |
+| deduplication | by the tuple `fxRate \| fxRateDate \| fxSource`, first-seen order. One reference is the normal case; a card refreshed across two days can carry two distinct rates, and collapsing them into one "general" rate would misstate the day each price was converted |
+| rendering | one line per distinct reference: `USD → MXN · Tasa <rate> · <dd/MM/yyyy> · <source>`, each part omitted when missing (`formatIsoDate`, never `new Date()`) |
+| `USD → MXN` is literal | USD→MXN is the only pair this product converts; any other currency arrives as `unconverted` and carries no rate |
+| no reference at all | nothing renders: no empty container, no placeholder |
+| surface | `.app-card` with compact padding; the kicker `Tipo de cambio de referencia` (`text-xs font-semibold uppercase tracking-widest text-muted`) is the section's labelled heading, and the strip wraps rather than scrolling at 360px |
+| always | the strip states in text that prices marked `≈` are USD→MXN conversions with this rate and are **not** the store's regional price |
+
+Best-price cards inside the `app-card-accent` summary (same file). One card per **provider that has
+comparable offers**, showing **that provider's** cheapest MXN price. The comparison is per provider
+group, so an ITAD store is never ranked against a gg.deals row.
+
+**Steam is never a candidate and never a card here.** Steam's direct price is the page headline and the
+referee of the label, not a competing row. That rule exists because painting a store's name over Steam's
+price and link happened twice by two different doors — a group with **no** offers inheriting Steam's
+price, then a group where **Steam won the comparison**. Price and its label must always come from the
+same source.
+
+| Condition | Treatment |
+|---|---|
+| candidates | the comparable offers of **that** provider group (`bestGroupOffer`, which deliberately excludes Steam); a group with no comparable offer renders no card |
 | comparison basis | `mxnCurrentPriceMinor` only, within one provider; FX dates are not normalized across rows, so the strip is a snapshot comparison, not a same-day quote |
-| tie | Steam wins; between stores, lexical order by `shopName` then `offerKey` (stable across refreshes) |
-| winner is Steam | label "Steam · precio directo", link to the existing Steam store URL, price in `.deal-price .text-primary` — never green, since the same number is already the big price above. When Steam wins in both groups the row is rendered once |
-| winner is an offer | a muted kicker "Mejor de ITAD" / "Mejor de gg.deals" names the group, so the basis of the number is always visible |
-| winner offer is strictly cheaper than the direct Steam price, or Steam has no comparable price | price in `.deal-price .text-success` — only for `regional` rows |
-| winner offer is `fx_estimate` | never presented as beating a regional price: price stays `.text-primary`, prefixed `≈`, with the rate note (`Tasa <rate> · <dd/MM/yyyy> · <source>`) repeated underneath |
-| winner offer price is `0` | price reads "Gratis" |
-| winner offer `dealUrl` is not an absolute `https:` URL | the store name renders as plain text, with no link |
-| nothing comparable in either group | muted "Sin precio comparable en MXN por ahora."; no row is highlighted |
-| always | kicker "Mejor precio comparable" plus the muted line "Compara solo precios en MXN, por proveedor y por separado: el precio directo de Steam y las ofertas comparables de ese mismo proveedor. Una estimación por tipo de cambio no se presenta como mejor que un precio regional.", so the summary never claims to cover every store and never mixes providers |
+| tie | lexical order by `shopName` then `offerKey` (stable across refreshes) |
+| number of cards | one per provider with a comparable offer, so the count reflects which stores have data rather than who wins each comparison |
+| green | the **lowest price of all cards**, computed across providers; an `fx_estimate` competes for it. Excluding estimates once put the green on a card more expensive than another card on the same screen, which reads as broken arithmetic — the `≈` prefix and the row's classification badge already say where the figure comes from |
+| label of the green card | `Más barato que Steam` when it beats Steam's direct MXN price; `El más barato de las tiendas` when it does not, or when Steam has no comparable MXN price |
+| a card that is not green | no label at all: the label belongs to the winner |
+| price prefix | `≈` when that provider's best offer is an `fx_estimate`; the rate is not repeated here — see the strip above |
+| price `0` | price reads "Gratis" |
+| deal link | the offer's `dealUrl` only when it is an absolute `https:` URL; otherwise the store name renders as plain text, with no link |
+| observation date | every card carries `Observado <fecha>` from **its own** `offer.observedAt` (`formatObserved`), or `Sin fecha de observación` when it is null. Two cards can be observed on different days and the date is never shared between them |
+| provider naming | the card's kicker is the provider group's heading, so the basis of the number is always visible |
+| bundle mini-card | stays in this same grid, reporting the bundle's own price for the tiers that include this game; that amount is not the game's price and never enters the comparison |
+| nothing comparable in any group | muted "Sin precio comparable en MXN por ahora."; no card is highlighted |
+| always | kicker "Mejor precio comparable" plus the muted line "Cada tarjeta es el mejor precio en MXN de ese proveedor, y en verde queda el más bajo de todos: …", so the summary never claims to cover every store and never mixes providers |
 
 ## 5. Typography
 
@@ -307,8 +333,8 @@ ITAD store against a gg.deals row.
 - `SteamThumb` (local to `app/search/search-client.tsx`) — 120×45 `tiny_image` on `sm` and up,
   90×34 below, with a decorative `Gamepad2` placeholder when the URL is missing or fails to load
   (`onError`). The thumbnail is always decorative (`alt=""`) because the game name is adjacent text.
-- Game detail cover: the API `imageUrl` inside `aspect-[460/215]`, full width on mobile and inside
-  the summary header's `md:col-span-4` grid cell on desktop. Missing or failed image falls back to the
+- Game detail cover: the API `imageUrl` inside `aspect-[460/215]`, full width below `lg` and inside
+  the summary header's `lg:col-span-4` grid cell from `lg` up. Missing or failed image falls back to the
   same aspect-ratio placeholder, so the header never collapses. Both covers keep the plain `<img>` debt
   noted in §11.
 
@@ -329,16 +355,22 @@ ITAD store against a gg.deals row.
 
 - Sits in an `.app-card` **after** the existing Steam summary and Steam table, whose markup and layout
   are unchanged.
-- Header: `uppercase tracking-widest` kicker "Ofertas por proveedor", `text-xl` heading, the note
-  "ITAD y gg.deals. GG.deals publica un agregado por keyshop, nunca el nombre del vendedor.", the
-  attribution line **"Datos de precios: IsThereAnyDeal · GG.deals"** (both providers require an active
-  hyperlink, always visible) and the `Button variant="secondary"` "Actualizar ofertas".
+- Header: `uppercase tracking-widest` kicker "Ofertas por proveedor", `text-xl` heading and the note
+  "Dos proveedores con formas distintas: ITAD publica oferta por tienda; gg.deals, un precio agregado por
+  grupo de tiendas.", plus the attribution line **"Datos de precios: IsThereAnyDeal · GG.deals"** (both
+  providers require an active hyperlink, always visible).
+- The refresh control is **not in this section**. "Actualizar ofertas" lives exactly once in the game
+  summary card, in the row that carries the update date (`Button variant="secondary"`,
+  `type="button"`, `loading`, `loadingText="Actualizando..."`), together with its own `aria-live`
+  status line and the `refreshError` `Alert variant="danger"`. This section keeps its counts, freshness
+  badges and empty state; its empty-state copy still names «Actualizar ofertas» because the control still
+  exists, one region above.
 - **Two groups, two shapes**, rendered in a `space-y-5` stack because the providers publish different
   granularity. There is no "Tiendas oficiales" group any more.
   - `ITAD` (id `offers-itad`) — `OfferGroup`, one `.table-shell` with fixed columns
-    `Tienda | Precio base | Descuento | Precio | Moneda | Aprox. MXN | Observado`, because ITAD returns
-    **one offer per store**. The header block stacks below `sm` and the table scrolls horizontally
-    rather than squashing.
+    `Tienda | Precio base | Descuento | Precio | Moneda | Aprox. MXN | Observado | Mínimo histórico`,
+    because ITAD returns **one offer per store**. The header block stacks below `sm` and the table
+    scrolls horizontally rather than squashing.
   - `gg.deals` (id `offers-ggdeals`) — `AggregateOfferList`, **no table**. gg.deals returns one
     aggregate per bucket (`retail` / `keyshop`) and never a base price or a discount, so a table would
     carry two columns that are empty for every row, forever. It renders an `.app-card`-level group
@@ -349,8 +381,8 @@ ITAD store against a gg.deals row.
     `rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4` block. Each `li`
     is a bucket: bucket name as the external link/plain text plus "Keyshop" and "Más barato" badges;
     price line with the current price in the provider currency (the formatter already includes the
-    currency), the `≈` MXN estimate and its rate note; footer line with the "Mínimo histórico <precio>"
-    info badge and the muted observation date. `shopName` already distinguishes `GG.deals` from
+    currency) and the `≈` MXN estimate; footer line with the "Mínimo histórico <precio>" info badge and
+    the muted observation date. `shopName` already distinguishes `GG.deals` from
     `GG.deals keyshops`, so no per-store column or identifier is added. The list is `ul`-based on purpose:
     a future provider with several rows per store fits the same shape without a new layout.
 - `Observado` uses `Intl.DateTimeFormat("es-MX", { dateStyle: "medium" })`. `fxRateDate` arrives as
@@ -362,23 +394,49 @@ ITAD store against a gg.deals row.
   then one `NameBadges` row for `drmNames` (info tone) and one for `platformNames` (muted tone). Each row
   shows at most two badges plus `+N`; the `+N` pill carries the hidden names and an `sr-only` legend
   ("DRM:" / "Plataformas:") so the pills are never unlabelled words. Nothing renders for empty arrays.
-- The summary card has one outer `app-card-accent` with three vertical zones. Its technical header is
-  a `grid grid-cols-1 gap-5 md:grid-cols-12`: the image is `md:col-span-4` and the technical content
-  (`min-w-0 space-y-3`) is `md:col-span-8`. The image keeps its existing aspect ratio, fallback and
-  object-cover behavior without fixed desktop dimensions. Below that grid, `Mejor precio comparable`
-  and `Referencia histórica` are full-width sibling blocks, so their borders and content span the outer
-  card. The card stacks image then technical content then both zones on mobile.
-- `Mejor precio comparable` is separated with `border-t border-default pt-4`. Each provider result is
-  its own non-clickable `.app-card` mini-card in `grid gap-3 md:grid-cols-2`; one result uses the full
-  available grid width. Each mini-card shows provider heading, comparable MXN price, source link/plain
-  label, and the existing FX note. `best.better` remains the only green/better rule; `fx_estimate`
-  remains visible but never becomes a green claim against a regional price. The existing comparison
-  disclaimer remains below the grid. Empty state stays `Sin precio comparable en MXN por ahora.`.
-- `Referencia histórica` is a separate `border-t border-default pt-4` zone. When present it shows
-  `Menor mínimo disponible: MX$…` or `≈ MX$…`, plus its source/bucket and disclaimer. It is a
-  heterogeneous guide, not a universal historical low, and stays neutral rather than green. When absent
-  the zone keeps its kicker and places `Ver en Steam` at the bottom. The Steam CTA always remains at the
-  bottom of this historical zone.
+- Above the accent card, an FX reference strip (documented in §4) renders only when some offer is an
+  `fx_estimate` with a rate; otherwise it does not exist at all.
+- The summary card is one outer `app-card-accent`. Its technical header is a
+  `grid grid-cols-1 gap-5 lg:grid-cols-12`: the image is `lg:col-span-4` and the technical content
+  (`min-w-0 space-y-3`) is `lg:col-span-8`. The two-column split starts at `lg` (1024px), never at `md`:
+  between 768 and 1023 the content column was only 450-660px wide, which is where the badge rows and the
+  action row piled up, while the `460/215` cover sat short in a wide cell with dead space beside it. The
+  image keeps its existing aspect ratio, fallback and object-cover behavior without fixed desktop
+  dimensions. The card stacks image, technical content, the action row, best-price cards and the
+  disclaimer footer, so mobile order matches desktop.
+- The action row sits directly under the header grid and spans the full card width, outside the content
+  column. Inside it the refresh control and the two store links do not fit in the `lg:col-span-8` column,
+  and keeping the links in the closing footer left them alone at the bottom of the card. One
+  `flex flex-wrap items-center gap-3` row holds, in order: the update-date badge, the page's single
+  `Actualizar ofertas` control, `Ver en Steam`, `Buscar en Ubisoft Store`, and the `aria-live` refresh
+  message. `Ver en Steam` is the canonical store page link; `Buscar en Ubisoft Store` is a title search
+  only (Ubisoft has no price client and no buildable id) and says "buscar" for exactly that reason.
+  The `refreshError` alert renders immediately below this row.
+- The technical header carries, in this order: the "Precio Steam · México" kicker, the game name, the
+  AppID + favourite row, the ownership badges, the **official Steam price** (the `text-3xl` `.deal-price`
+  headline, its `-N%` badge, the "Precio actual" / "Sin precio" state badge and "Datos incompletos"),
+  the **sources historical minimum** as a visible figure, and the **local Steam minimum** badge.
+- The sources historical minimum shows the `Mínimo histórico de las fuentes` kicker, then
+  `.deal-price text-xl text-primary` prefixed `≈` when the candidate is approximate, then its source
+  label (`text-sm font-semibold text-secondary`). It never uses `text-success`: on this page success
+  marks the current available price, the discount and the at-low local minimum, never a heterogeneous
+  historical figure from mixed sources and regions. It is a different fact from the local Steam
+  minimum — one is what our database observed for Steam, the other is the providers' all-time low — so
+  the two always carry their own label and are never merged. Steam's local low is a candidate only when
+  `game.currency` is MXN: this figure is printed as an MXN amount, so a non-MXN card would print `MX$`
+  over a foreign amount, right beside the badge that formats it in its own currency. It is the same
+  condition `steamComparablePrice` already applies to the direct price.
+- `Mejor precio comparable` is separated with `border-t border-default pt-4`. One non-clickable
+  `.app-card` mini-card per provider that has a comparable offer, in `grid gap-3 md:grid-cols-2`; one
+  card uses the full available grid width. Each mini-card shows the provider heading, the comparable MXN
+  price, the winner label when green, the source link/plain label and **its own** observation date
+  (`Observado <fecha>` / `Sin fecha de observación`). Steam is never a card. The comparison disclaimer
+  remains below the grid. Empty state stays `Sin precio comparable en MXN por ahora.`.
+- A `border-t border-default pt-4` footer closes the card: the historical disclaimer (it combines the
+  local Steam minimum and provider minimums, non-MXN amounts are approximated, and sources and regions
+  differ, so it is a guide and not a single historical price). The two CTAs moved out of this footer into
+  the action row under the header. There is no "Referencia histórica" zone any more: the historical
+  figure moved to the top block.
 
 ### Posesión en el detalle (`game-client.tsx`)
 
@@ -562,14 +620,19 @@ ITAD store against a gg.deals row.
 - **Favorito (columna `Favorito`).** El interruptor es del **juego**, no de la reseña: marcar una fila marca
   todas las que comparten `gameId`, y por eso la columna no depende de la plataforma elegida. Una fila sin
   `gameId` no ofrece el botón.
-- **Portadas (`Sincronizar con Steam` y `Portada` por fila).** La portada es del **juego canónico**
+- **Portadas (`Sincronizar portadas` y `Portada` por fila).** La portada es del **juego canónico**
   (`games.image_url`) y se guarda como **URL**, nunca como imagen. El botón del toolbar hace una pasada
-  acotada (25 juegos; el backend acepta 1–100) que rellena solo lo vacío y **nunca reemplaza** una portada
-  existente; el `Portada` de la fila abre el selector de Steam y esa elección sí reemplaza. Una fila sin
+  acotada (25 juegos; el backend acepta 1–100) que recorre una **cadena de fuentes** —Steam, IGDB y
+  SteamGridDB, en el orden que sugieren las tiendas del juego—, rellena solo lo vacío y **nunca reemplaza**
+  una portada existente; el `Portada` de la fila abre el selector y esa elección sí reemplaza. Una fila sin
   `gameId` no ofrece la acción: no hay dónde guardar la portada y el motivo ya lo dice la acción de reseña.
-  El selector busca por título (con el título precargado), lista los resultados de Steam y guarda la portada
-  del appid elegido. Después de elegir, la URL nueva se pinta en todas las filas del mismo juego sin
-  recargar; después de una pasada, la lista se recarga porque quien escribió fue el servidor.
+  El selector ofrece **siempre los tres catálogos** —Steam, IGDB y SteamGridDB— y las tiendas del grupo solo
+  deciden cuál llega preseleccionado: un grupo solo de PC propone Steam, uno solo de consola propone IGDB y
+  uno mixto no propone ninguno. Busca por título (con el título precargado) y arranca sola en el catálogo
+  elegido; la lista de SteamGridDB no trae miniatura —su autocomplete no la publica—, así que cada fila se
+  identifica por id y nombre y la portada se resuelve al elegirla. Después de elegir, la URL nueva se pinta en
+  todas las filas del mismo juego sin recargar; después de una pasada, la lista se recarga porque quien
+  escribió fue el servidor.
 - **Report:** the four counters as badges plus one muted badge per store. «Sin resolver» and «Fuente no
   soportada» only leave the muted tone when greater than zero, and the note states that a reimport neither
   duplicates nor deletes rows.
@@ -722,13 +785,18 @@ de ahorro. Contrato en `lib/contracts/games-merge.ts`, cliente en
 - **Solo se escribe `games.image_url`, y solo como URL.** Ni identidad, ni precios, ni filas de biblioteca:
   una portada equivocada es un error cosmético que la siguiente elección arregla, y por eso ninguna
   operación de portada reclama identidad ni puede crear un juego canónico. La URL la resuelve siempre el
-  servidor contra Steam (`header_image`): el cliente manda el appid, nunca una URL propia.
+  servidor contra el proveedor (Steam `header_image`, IGDB o SteamGridDB): el cliente manda el id, nunca una
+  URL propia. Que la pasada no escriba `game_external_ids` no es cosmético: una fila `steam` haría que el
+  binding empezara a cotizar ese juego desde Steam a partir de una coincidencia de título.
 - **Pasada acotada, no trabajo de fondo.** `POST /api/library/covers/sync` revisa hasta 25 juegos de la
-  biblioteca del que llama y devuelve cuántos quedan; repetir el botón avanza. Un appid retirado o una caída
-  de Steam se cuentan como `Failed` y no abortan la pasada.
-- **La elección manual es la única que reemplaza.** `PUT /api/games/{gameId}/cover` con `{ steamAppId }`.
-  Sirve para los juegos que el catálogo no liga a Steam, que la pasada automática reporta como
-  `Sin appid de Steam`.
+  biblioteca del que llama y devuelve cuántos quedan; repetir el botón avanza. La cadena se para en la primera
+  fuente con URL; `unmatched` (ninguna fuente tenía arte) y `failed` (alguna fuente no se pudo consultar)
+  nunca abortan la pasada.
+- **La elección manual es la única que reemplaza.** `PUT /api/games/{gameId}/cover` con `{ steamAppId }`,
+  `{ igdbId }` o `{ steamGridDbId }`, el mismo selector para los juegos que la pasada automática no pudo
+  resolver (`unmatched`). El selector ofrece las tres fuentes y el grupo solo preselecciona una; su búsqueda
+  de candidatos en SteamGridDB (`GET /api/library/covers/steamgriddb/search`) es de solo lectura y sin
+  miniatura: el autocomplete no publica arte, así que la portada se resuelve al elegir la fila.
 
 ### Favoritos
 
@@ -800,14 +868,15 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   `target="_blank"`, `rel="noopener noreferrer"` and the shared `sr-only` note. They are always
   visible, including when a group has no rows, so the credit can never be missing. Copy never names a
   keyshop seller: the free gg.deals tier returns one aggregate per bucket and no seller identity.
-- **Refresh (offers):** "Actualizar ofertas" calls `refreshSteamGame` (`app/steam/_lib/steam-api.ts`),
+- **Refresh (offers):** "Actualizar ofertas" lives once in the game summary card, in the row that carries
+  the update date. It calls `refreshSteamGame` (`app/steam/_lib/steam-api.ts`),
   a `POST` to `/api/bff/steam/games/<appId>` through `csrfFetch`, and refreshes both providers at once.
   A dedicated `refreshing` flag drives only the button's `loading`/`aria-busy`, so the page never
   returns to the full-page "Cargando..." state and the groups stay readable during the call. An
   `aria-live` `polite` status line shows "Consultando tiendas..." while it runs.
-- **Refresh failure (offers):** inline `Alert variant="danger"` above the groups; the previously loaded
-  game and offers stay on screen. A failed refresh never blanks the detail page, and a failed provider
-  never empties the other provider's group.
+- **Refresh failure (offers):** inline `Alert variant="danger"` in the summary's refresh row; the
+  previously loaded game and offers stay on screen. A failed refresh never blanks the detail page, and a
+  failed provider never empties the other provider's group.
 - **Cheapest highlight (offers):** the highlight is text-only — a `tabler-badge-success` "Más barato"
   plus `.text-success` on the price and the `Aprox. MXN` value (ITAD table cells, gg.deals list entries)
   — and it is scoped **per provider group**;
@@ -815,7 +884,7 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   `<tr>`/`<li>`, so `.table-row:hover` (a `@layer components` rule) and the list separators keep working;
   a utility background would
   outrank it and kill the hover feedback.
-- **Best price strip:** static content, no interaction beyond the winning store's external link. When
+- **Best price cards:** static content, no interaction beyond each card's external store link. When
   nothing is comparable it degrades to a muted line; it never renders a zero, a dash inside a price
   class, or a green claim without a comparable number behind it.
 - **Empty:** muted "Sin resultados" inside an `.app-card` (search results).
@@ -869,9 +938,13 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   `sr-only` tail ("entre las tiendas comparadas en MXN de este proveedor") scopes the claim for screen
   readers. DRM and
   platform badges sit behind `sr-only` legends, and the names hidden by `+N` are read out in full.
-- The `Mejor precio comparable` strip names its comparison basis in visible text, including the
-  provider of each winner ("Mejor de ITAD" / "Mejor de gg.deals"), so the summary is
-  never understood as covering every store, every offer or both providers at once.
+- The `Mejor precio comparable` cards name their comparison basis in visible text — each card's kicker is
+  its provider group's heading — so the summary is never understood as covering every store, every offer
+  or both providers at once. The FX reference strip is a labelled region whose heading states that the
+  rate is a conversion reference, so `≈` is never read as the store's regional price.
+- The summary's refresh control is the only one on the page and carries a visible name
+  ("Actualizar ofertas" / "Actualizando...") plus its live status line, so a keyboard or screen-reader
+  user reaches it once, in the game summary, before the offers section.
 - Form controls in the shell are 2.5rem (40px) tall — above the 24px WCAG 2.2 minimum, below the
   44px touch guideline (see Accepted debt).
 
@@ -950,17 +1023,21 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   across stores, and each MXN value carries the FX snapshot of its own row (dates are not aligned). Both
   the `Más barato` badge and the `Mejor precio comparable` strip therefore describe the stored snapshot,
   not a same-day quote — hence the explicit labels in each place.
-- **Highlight vs. strip can differ.** The badge marks the cheapest row of **one provider group**; the
-  strip also considers the direct Steam price for that same group. When Steam is cheaper, no row is
-  highlighted and the strip says so. Copy must keep the two claims distinguishable.
+- **Highlight vs. cards.** The `Más barato` badge marks the cheapest row of **one provider group**; the
+  best-price cards show one card per provider with a comparable offer and **never** a Steam card, because
+  Steam's direct price is the page headline and the referee of the green label. Copy must keep the two
+  claims distinguishable.
 - **Historical-low semantics differ by source.** Steam's `lowestPriceMinor` / `lowestPriceAt` is only
   a locally observed low in real MXN, never a provider history. ITAD's `historyLow*` is one game-level
   provider low duplicated across shop rows; the table labels it `mínimo histórico ITAD (juego)` so it
   cannot look shop-specific. gg.deals history is per aggregate bucket (`retail` / `keyshop`) and stays
-  in each list entry. The summary's `Menor mínimo disponible` chooses the lowest safely comparable
+  in each list entry. The summary's sources historical minimum (`Mínimo histórico de las fuentes`)
+  chooses the lowest safely comparable
   candidate across these sources; USD is converted only when the offer's historical currency and
   `originalCurrency` are both USD and `fxRate` exists. It is approximate when converted, sources and
-  regions differ, and it is a guide — never call it a universal historical low or an all-time low.
+  regions differ, and it is a guide — never call it a universal historical low or an all-time low. It is
+  rendered as a neutral figure, never in the green that marks "cheapest right now", and it is kept
+  separate from the local Steam minimum so one number never wears the other's label.
 - **DRM and platform names come from ITAD** (`drmNames` / `platformNames`); gg.deals returns neither, so
   its rows render no such badges. They may be empty or unknown
   strings: empty arrays render nothing, unknown names render verbatim, and there is no expand/collapse UI
@@ -1021,8 +1098,10 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   browser QA (owed: home/search/detail at light and dark, mobile drawer keyboard walkthrough, and the
   offers section with: the ITAD table and the gg.deals aggregate list side by side, a keyshop bucket
   (badged) next to a `retail` bucket (no badge, and not readable as an error thanks to the group note),
-  a game where only one provider has rows, tied cheapest offers inside one group, a `fx_estimate` offer,
-  an `unconverted` offer, an offer with and without historical low, DRM/platform
+  a game where only one provider has rows, tied cheapest offers inside one group, a `fx_estimate` offer
+  with its page-level FX strip (and a game with none, where the strip must not exist), an `unconverted`
+  offer, an offer with and without historical low, per-card observation dates on different days, a game
+  with and without a sources historical minimum, DRM/platform
   badges with more than two names, either stale badge, both attribution links, an empty result and a
-  failed refresh). No Lighthouse
+  failed refresh, at 360px). No Lighthouse
   or visual-regression run was executed.
