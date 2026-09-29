@@ -507,12 +507,14 @@ same source.
   desc, price + `-N%` success badge), «En su mínimo histórico» (current price at the local low, price +
   `En su mínimo` success badge), «Recién observados» (by observation desc, price only, never green).
   Green follows the standing semantics: discount and at-low only; recency is not cheapness.
-- Cards reuse the search result chrome (`app-card` + decorative `tiny_image` at 90×34 below `sm`
-  and 120×45 at `sm` and up + «Ver precios» on `sm` and up) in a `grid gap-3 md:grid-cols-2
-  xl:grid-cols-3` (one column on mobile, two on `md`, three on `xl`) and link to `/games/<appId>`.
-  The compact card keeps every fact (name clamped to two lines, AppID/type, price, discount badge,
-  observed date, link) without becoming a banner. Per-section Spanish empty states; no fake data,
-  no new tokens, no hardcoded colors.
+- Cards use an `app-card` shell and a horizontally centered decorative 16:9 `tiny_image` at two-thirds of
+  the card width, preserving its ratio while reducing its visual area. They sit in a `grid gap-3
+  md:grid-cols-2 xl:grid-cols-4` (one column on mobile, two on `md`, four on `xl`) and link to
+  `/games/<appId>`. The compact card keeps
+  every fact (name clamped to two lines, AppID/type, price, source, Steam base, discount badge,
+  observed date, link) without becoming a banner. `Mejor precio` uses success only for a positive
+  comparable saving; `Precio base Steam` remains secondary. Per-section Spanish empty states; no fake
+  data, no new tokens, no hardcoded colors.
 
 ### Shared line with the game detail
 

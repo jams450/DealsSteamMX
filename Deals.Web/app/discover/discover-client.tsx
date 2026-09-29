@@ -27,7 +27,7 @@ function DiscoverThumb({ src }: { readonly src: string | null }) {
   const image = src && !failed ? src : null;
 
   return (
-    <span className="flex aspect-video w-full items-center justify-center overflow-hidden rounded-[var(--radius-sm)] border border-default bg-[var(--color-surface-2)]">
+    <span className="mx-auto flex aspect-video w-2/3 items-center justify-center overflow-hidden rounded-[var(--radius-sm)] border border-default bg-[var(--color-surface-2)]">
       {image ? (
         <img
           src={image}
@@ -69,7 +69,7 @@ function DiscoverCard({ item, tone }: { readonly item: SteamDiscoverItem; readon
       <span className="flex flex-wrap items-start justify-between gap-2 border-y border-default py-2">
         <span>
           <span className="block text-xs text-muted">Mejor precio</span>
-          <span className={cn("deal-price text-lg", hasBestPrice ? "text-primary" : "text-muted")}>{bestPrice}</span>
+          <span className={cn("deal-price text-lg", hasBestPrice && item.bestDiscountPercent !== null && item.bestDiscountPercent > 0 ? "text-success" : "text-primary", !hasBestPrice && "text-muted")}>{bestPrice}</span>
           <span className="block text-xs text-muted">{sourceLabel(item)}</span>
         </span>
         <span className="flex flex-wrap justify-end gap-1">
@@ -136,7 +136,7 @@ export function DiscoverClient() {
             <h2 id={`discover-${section.list}`} className="text-xl font-semibold tracking-tight text-primary">{section.heading}</h2>
             <p className="text-xs text-muted">{section.note}</p>
           </div>
-          {items[section.list].length === 0 ? <div className="app-card p-8 text-center"><p className="text-sm text-muted">{section.empty}</p></div> : <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{items[section.list].map((item) => <DiscoverCard key={item.appId} item={item} tone={section.tone} />)}</div>}
+          {items[section.list].length === 0 ? <div className="app-card p-8 text-center"><p className="text-sm text-muted">{section.empty}</p></div> : <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">{items[section.list].map((item) => <DiscoverCard key={item.appId} item={item} tone={section.tone} />)}</div>}
         </section>
       ))}
     </div>
