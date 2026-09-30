@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Stores;
+using Microsoft.Extensions.Logging;
 
 namespace Deals.BusinessLogic.Services;
 
@@ -25,7 +26,8 @@ public sealed record EpicStoreClientSettings(string Country, string Locale);
 public sealed class EpicStoreClient(
     HttpClient httpClient,
     EpicStoreClientSettings settings,
-    ProviderRequestGovernor governor)
+    ProviderRequestGovernor governor,
+    ILogger<EpicStoreClient> logger)
     : IStorePriceProvider
 {
     public const string StoreSource = "epic";
@@ -56,6 +58,12 @@ public sealed class EpicStoreClient(
     // Fixed, credential-free message: an exception message must never carry the payload or the URL.
     private const string MalformedPayloadMessage = "Epic Games Store returned a malformed response.";
 
+    /// <summary>Element field carrying the store's own base-game vs add-on classification.</summary>
+    private const string OfferTypeProperty = "offerType";
+
+    /// <summary>Classification value the store returns for the game itself (measured: "BASE_GAME").</summary>
+    private const string BaseGameOfferType = "BASE_GAME";
+
     /// <summary>
     /// The operation the public store frontend uses. `count` is inlined as a literal: passing it as a
     /// variable means declaring its GraphQL type, and a wrong declaration fails the whole query.
@@ -63,6 +71,14 @@ public sealed class EpicStoreClient(
     /// Se piden los cuatro campos que pueden llevar el slug: <c>urlSlug</c> y <c>productSlug</c> son los
     /// habituales, y los dos mappings son el respaldo cuando Epic devuelve el hash (ver el comentario de
     /// la clase). Pedir de más no cambia la aceptación, que sigue siendo igualdad exacta.
+    ///
+    /// Plus <c>offerType</c>: the store's own base-game vs add-on classification, used to prefer the base
+    /// game when several elements carry the same slug and to discard add-ons outright. <c>productType</c>,
+    /// <c>preOrder</c> and <c>upcoming</c> are deliberately not requested: they are not scalar element
+    /// fields of this schema (the reference searchStore selection carries effectiveDate, status, categories
+    /// and promotions instead), and purchasability is already derived from the price block — an absent
+    /// block or an all-zero one means there is nothing to compare, so no extra availability field can add
+    /// a decision the price does not already make.
     /// </summary>
     private const string SearchStoreQuery = """
         query SearchStore($keywords: String!, $country: String!, $locale: String!) {
@@ -73,6 +89,7 @@ public sealed class EpicStoreClient(
                 urlSlug
                 productSlug
                 id
+                offerType
                 offerMappings {
                   pageSlug
                 }
@@ -264,19 +281,65 @@ public sealed class EpicStoreClient(
     /// <summary>
     /// Locates the element carrying the exact slug. <paramref name="slug"/> is validated here instead of by
     /// the caller so the comparison can never run against a value that was never a slug.
+    ///
+    /// A slug can be carried by more than one element (the base game next to its DLC or an edition sharing
+    /// the page): the one the store classifies as the base game wins and the rest are discarded, so an
+    /// add-on price can never stand in for the game. With a single carrier there is nothing to prefer and
+    /// it is returned as before.
     /// </summary>
-    private static Func<JsonElement, JsonElement?> FindBySlug(string slug) => root =>
+    private Func<JsonElement, JsonElement?> FindBySlug(string slug) => root =>
     {
+        JsonElement? first = null;
+        JsonElement? preferred = null;
+        var carriers = 0;
+
         foreach (var element in RequireElements(root))
         {
-            if (CarriesSlug(element, slug))
+            if (!CarriesSlug(element, slug))
             {
-                return element;
+                continue;
+            }
+
+            carriers++;
+            first ??= element;
+            if (preferred is null && IsBaseGame(element))
+            {
+                preferred = element;
             }
         }
 
-        return null;
+        var match = preferred ?? first;
+        if (match is { } matchElement && carriers > 1)
+        {
+            // Only counts and the validated slug are logged, never the payload or the request URL.
+            logger.LogInformation(
+                "[epic] {Carriers} elements carry slug {Slug}; kept offer type {OfferType}.",
+                carriers,
+                slug,
+                ReadOfferType(matchElement) ?? "unknown");
+        }
+
+        return match;
     };
+
+    /// <summary>The store's own classification of this element, or null when the payload omits it.</summary>
+    private static string? ReadOfferType(JsonElement element) => TryReadString(element, OfferTypeProperty);
+
+    /// <summary>Whether the store classifies this element as the base game rather than an add-on.</summary>
+    private static bool IsBaseGame(JsonElement element)
+        => string.Equals(ReadOfferType(element), BaseGameOfferType, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether the payload itself marks this element as an add-on (DLC and its spelling variants). Only
+    /// values the schema is known to return are listed: an unrecognized type falls through to the slug
+    /// check instead of silently dropping a game over an unknown label.
+    /// </summary>
+    private static bool IsAddOn(JsonElement element)
+        => ReadOfferType(element) is { } offerType &&
+            (string.Equals(offerType, "DLC", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(offerType, "ADDON", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(offerType, "ADD_ON", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(offerType, "ADD-ON", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// Locates the element whose title is the searched one. El título lo normaliza
@@ -418,6 +481,14 @@ public sealed class EpicStoreClient(
             throw new JsonException(MalformedPayloadMessage);
         }
 
+        // The payload itself marks add-ons as such: their price must never stand in for the game, so a
+        // DLC sharing the requested slug is discarded instead of published. This also guards the title
+        // fallback path, where no slug was ever requested.
+        if (IsAddOn(match))
+        {
+            return null;
+        }
+
         // No price block or a null one means the store page is not purchasable for this country: the
         // game is listed but there is nothing to compare, so there is no offer.
         if (!match.TryGetProperty("price", out var price) || price.ValueKind == JsonValueKind.Null)
@@ -446,6 +517,14 @@ public sealed class EpicStoreClient(
         {
             // A discount above the base price is not a price: trusting it would show a bogus offer.
             throw new JsonException(MalformedPayloadMessage);
+        }
+
+        if (original == 0 && current == 0)
+        {
+            // Listed but not purchasable / upcoming: the store answers zeroes instead of omitting the
+            // block, and persisting 0 would publish it as a comparable price. Never persist 0 as a
+            // comparable price.
+            return null;
         }
 
         var discountPercent = original > 0 && current < original
