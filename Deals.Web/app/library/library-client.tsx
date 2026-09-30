@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
 import type { PaginationState, SortingState, VisibilityState } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, Columns3, FileJson, Gamepad2, GitMerge, HardDriveDownload, Search, Star, Trophy, Upload, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, Columns3, FileJson, Gamepad2, GitMerge, HardDriveDownload, Search, Star, Trophy, Upload, X } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
@@ -463,9 +463,9 @@ function PlayStatusBadge({ game }: { readonly game: LibraryGame }) {
   return <span className={PLAY_STATUS_BADGES[game.playStatus]}>{reviewStatusLabel(game.playStatus)}</span>;
 }
 
-// Secciones de la tarjeta, con los mismos ids y etiquetas que las columnas de la tabla: la preferencia
+// Columnas de la tabla, con los mismos ids y etiquetas de siempre: la preferencia
 // guardada en `library.columns.v1` sigue valiendo porque habla el mismo vocabulario. `actions` no se
-// puede ocultar, igual que en el grid.
+// puede ocultar, igual que en el grid anterior.
 const LIBRARY_COLUMN_OPTIONS: readonly { readonly id: string; readonly label: string }[] = [
   { id: "cover", label: "Portada" },
   { id: "title", label: "Juego" },
@@ -573,8 +573,9 @@ function LibrarySortControl({
   );
 }
 
-// El mismo menú «Columnas» del grid, pero aplicado a las secciones de la tarjeta. Persiste en la misma
-// clave y con la misma forma (`{ id: boolean }`), así que lo guardado por la tabla sigue valiendo.
+// El mismo menú «Columnas» del grid, aplicado a las columnas de la tabla densa. Persiste en la misma
+// clave y con la misma forma (`{ id: boolean }`), así que lo guardado por la tabla anterior y por las
+// tarjetas sigue valiendo.
 function LibraryColumnsMenu({
   visibility,
   onChange
@@ -702,84 +703,236 @@ function LibraryPager({
   );
 }
 
-interface LibraryCardProps {
-  readonly game: LibraryGame;
+interface LibraryGridProps {
+  readonly games: readonly LibraryGame[];
   readonly visibility: VisibilityState;
-  readonly favoritePending: boolean;
+  readonly sorting: SortingState;
+  readonly onSortingChange: (next: SortingState) => void;
+  readonly favoritePendingId: number | null;
   readonly onToggleFavorite: (game: LibraryGame) => void;
   readonly onReview: (game: LibraryGame) => void;
   readonly onPickCover: (game: LibraryGame) => void;
   readonly onEditTitle: (game: LibraryGame) => void;
 }
 
-// Una sola tarjeta por juego en todos los anchos, con la cáscara de /discover (`app-card` + portada +
-// «Ver precios»): reúne las columnas de la tabla en el orden en que aparecían, sin quitar ningún dato
-// ni ninguna acción. «Ver precios» solo existe cuando la fila trae appid de Steam.
-function LibraryCard({
-  game,
+// Tabla densa minimalista: una fila por juego en todos los anchos, con el chrome `table-shell` del
+// DataGrid anterior (encabezado sticky, hover por fila, scroll horizontal en vez de overflow). Reúne las
+// mismas secciones que las tarjetas cápsula en el orden en que aparecían, sin quitar ningún dato ni
+// ninguna acción. El menú «Columnas» alterna columnas con los mismos ids y la misma forma de
+// `library.columns.v1`, así que lo guardado sigue valiendo. «Ver precios» solo existe cuando la fila trae
+// appid de Steam.
+function LibraryGrid({
+  games,
   visibility,
-  favoritePending,
+  sorting,
+  onSortingChange,
+  favoritePendingId,
   onToggleFavorite,
   onReview,
   onPickCover,
   onEditTitle
-}: LibraryCardProps) {
+}: LibraryGridProps) {
+  const current = sorting.length > 0 ? sorting[0] : undefined;
+  const headerCellClass = "px-2 py-2 text-left text-xs font-semibold text-primary";
+  const bodyCellClass = "table-cell px-2 py-2 align-top text-sm";
+
+  function sortColumn(sortId: LibrarySortId) {
+    onSortingChange(current?.id === sortId ? [{ id: sortId, desc: !(current?.desc ?? false) }] : [{ id: sortId, desc: false }]);
+  }
+
+  function sortHeaderLabel(sortId: LibrarySortId): string {
+    if (current?.id !== sortId) return "Sin orden: activar para ordenar de forma ascendente";
+    return current.desc ? "Orden descendente: activar para ordenar de forma ascendente" : "Orden ascendente: activar para ordenar de forma descendente";
+  }
+
   return (
-    <li className="app-card flex items-start gap-3 p-4">
-      {isSectionVisible(visibility, "cover") ? <LibraryThumb src={game.imageUrl} /> : null}
-      <div className="min-w-0 flex-1 space-y-2">
-        {isSectionVisible(visibility, "title") ? (
-          <p className="text-sm font-semibold text-primary">{game.title}</p>
-        ) : null}
-        {isSectionVisible(visibility, "stores") ? (
-          <div className="flex flex-wrap items-center gap-2">
-            {game.stores.map((store) => (
-              <StoreBadge key={store} store={store} />
-            ))}
-          </div>
-        ) : null}
-        {isSectionVisible(visibility, "state") ? <StateCell game={game} /> : null}
-        {isSectionVisible(visibility, "playStatus") ? <PlayStatusBadge game={game} /> : null}
-        {isSectionVisible(visibility, "favorite") ? (
-          <div>
-            <FavoriteToggle game={game} pending={favoritePending} onToggle={onToggleFavorite} />
-          </div>
-        ) : null}
-        {isSectionVisible(visibility, "score") ? (
-          game.lastReview === null ? (
-            <span className="text-xs text-muted">—</span>
-          ) : (
-            <ReviewBadges review={game.lastReview} />
-          )
-        ) : null}
-        {isSectionVisible(visibility, "playedYears") ? (
-          game.playedYears.length === 0 ? (
-            <span className="text-xs text-muted">—</span>
-          ) : (
-            <div className="flex flex-wrap items-center gap-1">
-              {game.playedYears.map((year) => (
-                <span key={year} className="tabler-badge tabler-badge-muted tabular-nums">
-                  {year}
-                </span>
-              ))}
-            </div>
-          )
-        ) : null}
-        <div className="flex flex-wrap items-center gap-2">
-          {game.item.steamAppId !== null ? (
-            <Link
-              href={`/games/${game.item.steamAppId}`}
-              className="text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
-            >
-              Ver precios
-            </Link>
-          ) : null}
-          <ReviewAction game={game} onReview={onReview} />
-          <CoverAction game={game} onPickCover={onPickCover} />
-          <TitleAction game={game} onEditTitle={onEditTitle} />
-        </div>
-      </div>
-    </li>
+    <div className="table-shell max-w-full overflow-x-auto overscroll-x-contain rounded-xl border border-strong bg-[var(--table-surface-bg)] shadow-[var(--shadow-sm)]">
+      <table className="w-full min-w-full">
+        <caption className="sr-only">Juegos en la biblioteca</caption>
+        <thead className="table-head bg-[var(--table-head-bg)]">
+          <tr>
+            {isSectionVisible(visibility, "cover") ? (
+              <th scope="col" className={cn(headerCellClass, "sticky top-0 z-20")}>
+                Portada
+              </th>
+            ) : null}
+            {isSectionVisible(visibility, "title") ? (
+              <th scope="col" aria-sort={current?.id === "title" ? (current.desc ? "descending" : "ascending") : "none"} className={cn(headerCellClass, "sticky top-0 z-20 min-w-48")}>
+                <button
+                  type="button"
+                  onClick={() => sortColumn("title")}
+                  aria-label={`Ordenar por Juego. ${sortHeaderLabel("title")}`}
+                  className="inline-flex cursor-pointer select-none items-center gap-1 rounded-sm hover:text-[var(--color-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+                >
+                  Juego
+                  {current?.id === "title" ? (
+                    current.desc ? (
+                      <ArrowDown className="h-3 w-3 text-[var(--color-accent)]" aria-hidden="true" />
+                    ) : (
+                      <ArrowUp className="h-3 w-3 text-[var(--color-accent)]" aria-hidden="true" />
+                    )
+                  ) : null}
+                </button>
+              </th>
+            ) : null}
+            {isSectionVisible(visibility, "stores") ? (
+              <th scope="col" className={cn(headerCellClass, "sticky top-0 z-20")}>
+                Tiendas
+              </th>
+            ) : null}
+            {isSectionVisible(visibility, "state") ? (
+              <th scope="col" className={cn(headerCellClass, "sticky top-0 z-20")}>
+                Estado
+              </th>
+            ) : null}
+            {isSectionVisible(visibility, "playStatus") ? (
+              <th scope="col" aria-sort={current?.id === "playStatus" ? (current.desc ? "descending" : "ascending") : "none"} className={cn(headerCellClass, "sticky top-0 z-20")}>
+                <button
+                  type="button"
+                  onClick={() => sortColumn("playStatus")}
+                  aria-label={`Ordenar por Estado de juego. ${sortHeaderLabel("playStatus")}`}
+                  className="inline-flex cursor-pointer select-none items-center gap-1 rounded-sm hover:text-[var(--color-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+                >
+                  Estado de juego
+                  {current?.id === "playStatus" ? (
+                    current.desc ? (
+                      <ArrowDown className="h-3 w-3 text-[var(--color-accent)]" aria-hidden="true" />
+                    ) : (
+                      <ArrowUp className="h-3 w-3 text-[var(--color-accent)]" aria-hidden="true" />
+                    )
+                  ) : null}
+                </button>
+              </th>
+            ) : null}
+            {isSectionVisible(visibility, "favorite") ? (
+              <th scope="col" className={cn(headerCellClass, "sticky top-0 z-20")}>
+                Favorito
+              </th>
+            ) : null}
+            {isSectionVisible(visibility, "score") ? (
+              <th scope="col" aria-sort={current?.id === "score" ? (current.desc ? "descending" : "ascending") : "none"} className={cn(headerCellClass, "sticky top-0 z-20")}>
+                <button
+                  type="button"
+                  onClick={() => sortColumn("score")}
+                  aria-label={`Ordenar por Última reseña. ${sortHeaderLabel("score")}`}
+                  className="inline-flex cursor-pointer select-none items-center gap-1 rounded-sm hover:text-[var(--color-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+                >
+                  Última reseña
+                  {current?.id === "score" ? (
+                    current.desc ? (
+                      <ArrowDown className="h-3 w-3 text-[var(--color-accent)]" aria-hidden="true" />
+                    ) : (
+                      <ArrowUp className="h-3 w-3 text-[var(--color-accent)]" aria-hidden="true" />
+                    )
+                  ) : null}
+                </button>
+              </th>
+            ) : null}
+            {isSectionVisible(visibility, "playedYears") ? (
+              <th scope="col" aria-sort={current?.id === "playedYears" ? (current.desc ? "descending" : "ascending") : "none"} className={cn(headerCellClass, "sticky top-0 z-20")}>
+                <button
+                  type="button"
+                  onClick={() => sortColumn("playedYears")}
+                  aria-label={`Ordenar por Años jugados. ${sortHeaderLabel("playedYears")}`}
+                  className="inline-flex cursor-pointer select-none items-center gap-1 rounded-sm hover:text-[var(--color-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+                >
+                  Años jugados
+                  {current?.id === "playedYears" ? (
+                    current.desc ? (
+                      <ArrowDown className="h-3 w-3 text-[var(--color-accent)]" aria-hidden="true" />
+                    ) : (
+                      <ArrowUp className="h-3 w-3 text-[var(--color-accent)]" aria-hidden="true" />
+                    )
+                  ) : null}
+                </button>
+              </th>
+            ) : null}
+            <th scope="col" className={cn(headerCellClass, "sticky top-0 z-20 min-w-40")}>
+              Acciones
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {games.map((game) => (
+            <tr key={game.key} className="table-row transition-colors">
+              {isSectionVisible(visibility, "cover") ? (
+                <td className={bodyCellClass}>
+                  <LibraryThumb src={game.imageUrl} />
+                </td>
+              ) : null}
+              {isSectionVisible(visibility, "title") ? (
+                <td className={bodyCellClass}>
+                  <p className="text-sm font-semibold text-primary">{game.title}</p>
+                  {game.item.steamAppId !== null ? (
+                    <Link
+                      href={`/games/${game.item.steamAppId}`}
+                      className="mt-0.5 inline-block text-xs font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+                    >
+                      Ver precios
+                    </Link>
+                  ) : null}
+                </td>
+              ) : null}
+              {isSectionVisible(visibility, "stores") ? (
+                <td className={bodyCellClass}>
+                  <div className="flex min-w-24 flex-wrap items-center gap-2">
+                    {game.stores.map((store) => (
+                      <StoreBadge key={store} store={store} />
+                    ))}
+                  </div>
+                </td>
+              ) : null}
+              {isSectionVisible(visibility, "state") ? (
+                <td className={bodyCellClass}>
+                  <StateCell game={game} />
+                </td>
+              ) : null}
+              {isSectionVisible(visibility, "playStatus") ? (
+                <td className={bodyCellClass}>
+                  <PlayStatusBadge game={game} />
+                </td>
+              ) : null}
+              {isSectionVisible(visibility, "favorite") ? (
+                <td className={bodyCellClass}>
+                  <FavoriteToggle game={game} pending={favoritePendingId === game.gameId} onToggle={onToggleFavorite} />
+                </td>
+              ) : null}
+              {isSectionVisible(visibility, "score") ? (
+                <td className={bodyCellClass}>
+                  {game.lastReview === null ? (
+                    <span className="text-xs text-muted">—</span>
+                  ) : (
+                    <ReviewBadges review={game.lastReview} />
+                  )}
+                </td>
+              ) : null}
+              {isSectionVisible(visibility, "playedYears") ? (
+                <td className={bodyCellClass}>
+                  {game.playedYears.length === 0 ? (
+                    <span className="text-xs text-muted">—</span>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-1">
+                      {game.playedYears.map((year) => (
+                        <span key={year} className="tabler-badge tabler-badge-muted tabular-nums">
+                          {year}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </td>
+              ) : null}
+              <td className={bodyCellClass}>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <ReviewAction game={game} onReview={onReview} />
+                  <CoverAction game={game} onPickCover={onPickCover} />
+                  <TitleAction game={game} onEditTitle={onEditTitle} />
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -1151,20 +1304,26 @@ export function LibraryClient() {
 
   return (
     <div className="space-y-4">
-      <section className="app-card-accent space-y-4 p-5" aria-labelledby="library-import-heading">
-        <div className="space-y-1">
-          <p className="text-xs font-semibold uppercase tracking-widest text-muted">Importación</p>
-          <h2 id="library-import-heading" className="text-xl font-semibold tracking-tight text-primary">
-            Tu biblioteca de Playnite
-          </h2>
-          <p className="text-xs text-muted">
-            Sube el archivo JSON que exporta Playnite: cada juego se guarda con su tienda, su fecha de alta y si
-            está instalado. La importación es manual, actualiza lo que ya existe y no borra nada; el archivo no
-            se guarda en el servidor.
-          </p>
-        </div>
+      <section className="app-card-accent p-5" aria-labelledby="library-import-heading">
+        <details className="group space-y-4">
+          <summary className="cursor-pointer list-none rounded-[var(--radius-sm)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)] [&::-webkit-details-marker]:hidden">
+            <span className="flex items-start justify-between gap-3">
+              <span className="space-y-1">
+                <span className="block text-xs font-semibold uppercase tracking-widest text-muted">Importación</span>
+                <h2 id="library-import-heading" className="text-xl font-semibold tracking-tight text-primary">
+                  Tu biblioteca de Playnite
+                </h2>
+                <span className="block text-xs text-muted">
+                  Sube el archivo JSON que exporta Playnite: cada juego se guarda con su tienda, su fecha de alta y si
+                  está instalado. La importación es manual, actualiza lo que ya existe y no borra nada; el archivo no
+                  se guarda en el servidor. Expande esta sección solo si necesitas importar.
+                </span>
+              </span>
+              <ChevronDown className="mt-1 h-4 w-4 shrink-0 text-muted transition-transform group-open:rotate-180" aria-hidden="true" />
+            </span>
+          </summary>
 
-        <div className="space-y-3 rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4">
+          <div className="space-y-3 rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4">
           <div className="flex items-center gap-2">
             <FileJson className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
             <label htmlFor="library-import-file" className="text-sm font-semibold text-primary">
@@ -1206,6 +1365,7 @@ export function LibraryClient() {
 
         {importError ? <Alert variant="danger">{importError}</Alert> : null}
         {report ? <ImportReport report={report} /> : null}
+        </details>
       </section>
 
       <section className="app-card space-y-4 p-5" aria-labelledby="library-items-heading">
@@ -1246,7 +1406,7 @@ export function LibraryClient() {
             muestra una sola vez, con todas sus tiendas y sus estados. Cuando la fila mezcla estados (comprado
             y además en Game Pass, por ejemplo) se pintan los dos, con la suscripción primero, para que no se
             lea como compra donde solo hay suscripción. La lista se pagina, se ordena y se busca en tu
-            navegador; el menú «Columnas» permite ocultar las secciones que no uses.
+            navegador; el menú «Columnas» permite ocultar las columnas que no uses.
           </p>
           <p className="text-xs text-muted">
             Las reseñas son por juego y plataforma, y puedes tener varias: cada vez que lo terminas agregas
@@ -1376,20 +1536,17 @@ export function LibraryClient() {
               </p>
             ) : (
               <>
-                <ul className="grid gap-3 md:grid-cols-2" aria-label="Juegos en la biblioteca">
-                  {pagedGames.map((game) => (
-                    <LibraryCard
-                      key={game.key}
-                      game={game}
-                      visibility={columnVisibility}
-                      favoritePending={favoritePendingId === game.gameId}
-                      onToggleFavorite={(target) => void onToggleFavorite(target)}
-                      onReview={onReview}
-                      onPickCover={onPickCover}
-                      onEditTitle={onEditTitle}
-                    />
-                  ))}
-                </ul>
+                <LibraryGrid
+                  games={pagedGames}
+                  visibility={columnVisibility}
+                  sorting={sorting}
+                  onSortingChange={onSortingChange}
+                  favoritePendingId={favoritePendingId}
+                  onToggleFavorite={(target) => void onToggleFavorite(target)}
+                  onReview={onReview}
+                  onPickCover={onPickCover}
+                  onEditTitle={onEditTitle}
+                />
                 <LibraryPager pagination={pagination} pageCount={pageCount} onPaginationChange={onPaginationChange} />
               </>
             )}
