@@ -527,12 +527,13 @@ same source.
 
 ### Wishlist and library cards
 
-- `/wishlist` and `/library` render the same capsule card as `/discover` (`app-card`, cover thumb, name,
-  figures with `deal-price`, state badges, «Ver precios» to `/games/<appId>` where an AppID exists) in a
-  `grid gap-3 md:grid-cols-2` (`/wishlist` adds `xl:grid-cols-3` with its compact card; `/library` stays
-  at two columns): two columns on desktop, one on mobile. No `DataGrid` remains on either page
-  (`/users` is its only consumer now); search, sort and paging live in a plain toolbar above the grid and
-  keep the same `localStorage` keys the tables used for page size and visible sections.
+- `/wishlist` and `/library` use cover thumbs, names, state badges and «Ver precios» to `/games/<appId>`
+  where an AppID exists. `/wishlist` uses its own identity-and-buying hierarchy in `grid gap-3
+  md:grid-cols-2 xl:grid-cols-4`; `/library` renders the same facts as a dense minimalist table, one row per
+  game with the shared `table-shell` chrome (sticky header, horizontal scroll instead of page overflow).
+  No `DataGrid` remains on either page (`/users` is its only consumer now); search, sort and paging live in
+  a plain toolbar above the grid and keep the same `localStorage` keys the tables used for page size and
+  visible sections.
 - Green follows the standing semantics on both pages — wishlist discount badges and ≥7 deal scores, library
   GOTY — never a historical figure.
 
@@ -546,20 +547,20 @@ same source.
 - Summary badges: item count (`tabler-badge-muted`, only in state `ok`) plus "Última sincronización
   <fecha>" (`tabler-badge-info`) or "Sin fecha de sincronización" (`tabler-badge-warning`). Tone is never
   the only signal: every badge carries its words.
-- Items: one compact capsule card per game (`WishlistCard`) in a `grid gap-3 md:grid-cols-2
-  xl:grid-cols-3` — the `/discover` shell (`app-card` + cover thumb + name link + «Ver precios» link to
-  `/games/<appId>`) — at every width. The sparse first surface shows the header row (selection
-  checkbox, 90×34 cover below `sm` / 120×45 above, name, AppID/priority, category badges), one price
-  line (`Mejor precio` + `Mayor descuento` + `Precio base`), the «Ver precios» link, then the category
-  and freshness actions (`Editar categorías`, per-row `Sincronizar`, `Actualizado`). A native
-  collapsed-by-default `<details>` zone («Más detalle») follows with the remaining facts (`Mínimo
-  histórico`, `Mín. oficial`, `Mín. keys`, the four `% dto.`/`Deal` metrics and the
-  `Alta`/`Actualizado`/per-provider sync badges). The row error stays visible outside the collapsed
-  zone. The «Ya adquirido en» line renders under the header when the game is owned elsewhere. The
-  game name is an internal `Link` to `/games/<appId>`; the cover is the local `WishlistThumb`
-  (decorative `alt=""`, `Gamepad2` placeholder when the URL is missing or fails). The ITAD identity
-  lives in the sync badges (the `IT` stamp); the Steam priority is a muted «Prioridad N» note beside
-  the AppID, not a hidden column.
+- Items: one calm vertical card per game (`WishlistCard`) in a `grid gap-3 md:grid-cols-2 xl:grid-cols-4`.
+  Its first row holds the selection checkbox and identity together: a decorative 90×34 cover below `sm` /
+  120×45 above on the left, with the internal game-name `Link`, AppID, Steam priority and category badges
+  on the right. The cover (`WishlistThumb`) uses `alt=""` because that adjacent text names the game and
+  shows a `Gamepad2` fallback when its URL is missing or fails. The buying decision is one inset group:
+  `Mejor precio`, `Descuento`, `Precio base Steam`, then «Ver precios» to `/games/<appId>`. `Mejor precio`
+  and a positive percentage use success; `Precio base` remains secondary, so no base amount reads as a
+  deal. A compact operational row follows: the tokenized secondary `Editar categorías` button, per-row
+  `Sincronizar`, and native collapsed-by-default «Más detalle». The disclosure holds the remaining facts
+  (`Mínimo histórico`, `Mín. oficial`, `Mín. keys`, the four `% dto.`/`Deal` metrics and the
+  `Alta`/`Actualizado`/per-provider sync badges); `Actualizado` and a row error remain visible outside it.
+  The «Ya adquirido en» line renders below identity when the game is owned elsewhere. The ITAD identity
+  lives in the sync badges (the `IT` stamp); priority is a muted «Prioridad N» note beside the AppID, not
+  a hidden column.
 - **Money is shown in the currency it arrives in, never converted.** `Precio base` and
   `Mínimo histórico` use `Intl.NumberFormat("es-MX", { style: "currency", currency })` (via
   `lib/format/currency.ts`, the same helper the game detail uses), so a non-MXN code prints with its own
@@ -661,8 +662,10 @@ same source.
 
 - Rendered inside `ProductShell` (`wide`, `title="Biblioteca de juegos"`). The server page calls
   `requireAdminSession()`, so the route is admin-only like `/users`; the global matcher already protects it.
-- Two zones: an `app-card-accent` import card (kicker "Importación", the file input plus "Importar", and the
-  report) and one `app-card` items card (counts, store filter, list). Both BFF routes are `AdminWithId`.
+- Two zones: an `app-card-accent` import card (kicker "Importación", collapsed by default behind a
+  native `<details>/<summary>` with no JS state — the user expands it only to import — holding the file
+  input plus "Importar", and the report) and one `app-card` items card (counts, store filter, list).
+  Both BFF routes are `AdminWithId`.
 - **Import:** `<input type="file" accept=".json,application/json">` capped at 10 MiB
   (`LIBRARY_IMPORT_MAX_BYTES`) and checked in the browser first (valid JSON, non-empty array at the root)
   before the `POST`. The BFF re-checks the declared length and the real byte length, re-validates the root
@@ -673,13 +676,16 @@ same source.
   Terminado | Completado 100% | Dropeado` where **every option carries its count** (the group is the report:
   "cuántos por estado"). Below the filters, a search input (`Buscar por juego o tienda`, accent-insensitive
   over title and store), an `Ordenar por` select (`Juego | Estado de juego | Última reseña | Años jugados`)
-  with an `Asc`/`Desc` direction button, and the `Columnas` menu toggling each card section. The list is one
-  capsule card per game in a `grid gap-3 md:grid-cols-2` (the `/discover` shell: `app-card` + cover + name +
-  «Ver precios» to `/games/<steamAppId>` when the row carries a Steam appid). Each card shows the title, the
-  store badges, the state tags (`En tu biblioteca` / `Wishlist` / Game Pass, plus `Instalado`), the
-  play-status badge, the favorite toggle, the last-review badges (or "—"), the played-year badges (or "—")
-  and the `Reseñas`/`Reseñar`, `Portada`/`Cambiar portada` and `Editar título` actions. A pager closes the
-  list (`Filas` 10/25/50/100, `Anterior`/`Siguiente`, `Página X de Y`); the page size and the visible sections
+  with an `Asc`/`Desc` direction button, and the `Columnas` menu toggling each table column. The list is a
+  dense minimalist table, one row per game (`table-shell` chrome with sticky header and horizontal scroll
+  instead of page overflow, the same shell the old `DataGrid` used): cover thumb, title plus «Ver precios»
+  to `/games/<steamAppId>` when the row carries a Steam appid, store badges, state tags (`En tu biblioteca` /
+  `Wishlist` / Game Pass, plus `Instalado`), the play-status badge, the favorite toggle, the last-review badges
+  (or "—"), the played-year badges (or "—") and the `Reseñas`/`Reseñar`, `Portada`/`Cambiar portada` and
+  `Editar título` actions. The four sortable columns (`Juego | Estado de juego | Última reseña | Años jugados`)
+  sort from their own header buttons (with `aria-sort`) as well as from the `Ordenar por` select, through the
+  same sorting state. A pager closes the
+  list (`Filas` 10/25/50/100, `Anterior`/`Siguiente`, `Página X de Y`); the page size and the visible columns
   persist in `localStorage` (`library.pageSize.v1`, `library.columns.v1`, the same keys and shape the table
   used). Searching or sorting returns to the first page; the store/year/status filters do not move it.
 - **Los conteos cuentan lo que se ve.** Tienda, estado y año se calculan sobre el conjunto ya filtrado por

@@ -120,8 +120,8 @@ function withoutRowError(current: Readonly<Record<number, string>>, appId: numbe
   return next;
 }
 
-// El tamaño nativo de `tiny_image` hace que la carátula sea el ancla visual de la tarjeta sin
-// convertir la grilla de tres columnas en una lista. La portada es decorativa (`alt=""`).
+// El tamaño nativo de `tiny_image` mantiene la carátula como ancla de identidad en la grilla de
+// cuatro columnas. La portada es decorativa (`alt=""`) porque el nombre contiguo identifica el juego.
 function WishlistThumb({ src, className }: { readonly src: string | null; readonly className?: string }) {
   const [failed, setFailed] = useState(false);
   const image = src && !failed ? src : null;
@@ -220,7 +220,7 @@ function DiscountValue({ value }: { readonly value: number | null }) {
   return value === null ? (
     <span className="text-muted">—</span>
   ) : (
-    <span className="text-primary">{formatDiscountPercent(value)}</span>
+    <span className={value > 0 ? "text-success" : "text-primary"}>{formatDiscountPercent(value)}</span>
   );
 }
 
@@ -926,69 +926,72 @@ function WishlistCard({
   onEditCategories
 }: WishlistCardProps) {
   const refreshed = formatDateTime(item.refreshedAt);
+  const bestDiscount = bestDiscountValue(item);
 
   return (
     <li className={cn("app-card space-y-3 p-3", selected && "border-[color:var(--color-accent)]")}>
-      <div className="flex gap-3">
-        <div className="flex w-5 shrink-0 justify-center">
-          <input
-            type="checkbox"
-            aria-label={`Seleccionar ${item.name}`}
-            checked={selected}
-            onChange={(event) => onToggleSelect(item.appId, event.target.checked)}
-            className="mt-1 h-4 w-4 accent-[var(--color-accent)]"
-          />
-        </div>
+      <div className="flex items-start gap-3">
+        <input
+          type="checkbox"
+          aria-label={`Seleccionar ${item.name}`}
+          checked={selected}
+          onChange={(event) => onToggleSelect(item.appId, event.target.checked)}
+          className="mt-1 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+        />
         <div className="min-w-0 flex-1 space-y-3">
-          <WishlistThumb src={item.imageUrl} className="h-auto w-full sm:h-auto sm:w-full" />
-          <div className="min-w-0">
-            <Link
-              href={`/games/${item.appId}`}
-              className="block text-base font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
-            >
-              {item.name}
-            </Link>
-            <p className="mt-0.5 text-xs text-muted">
-              AppID {item.appId}
-              {item.priority !== null ? ` · Prioridad ${item.priority}` : ""}
-            </p>
-            <CategoryBadges categories={item.categories} />
-          </div>
-          {item.ownedStores.length > 0 ? <p className="text-xs font-medium text-success">Ya adquirido en: {item.ownedStores.join(", ")}</p> : null}
-          <div className="flex flex-wrap items-end justify-between gap-3 border-y border-default py-2">
-            <PriceFact label="Mejor precio" amountMinor={bestPriceMinor(item)} currency={MXN} />
-            <div className="flex flex-wrap items-end gap-3 text-xs">
-              <MetricFact label="Descuento"><DiscountValue value={bestDiscountValue(item)} /></MetricFact>
-              <PriceFact label="Precio base Steam" amountMinor={item.basePriceMinor} currency={item.baseCurrency} />
+          <div className="flex min-w-0 items-center gap-3">
+            <WishlistThumb src={item.imageUrl} />
+            <div className="min-w-0 flex-1">
+              <Link
+                href={`/games/${item.appId}`}
+                className="block text-base font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+              >
+                {item.name}
+              </Link>
+              <p className="mt-0.5 text-xs text-muted">
+                AppID {item.appId}
+                {item.priority !== null ? ` · Prioridad ${item.priority}` : ""}
+              </p>
+              <CategoryBadges categories={item.categories} />
             </div>
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-2">
+          {item.ownedStores.length > 0 ? <p className="text-xs font-medium text-success">Ya adquirido en: {item.ownedStores.join(", ")}</p> : null}
+          <div className="rounded-[var(--radius-sm)] border border-default bg-[var(--color-surface-2)] p-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <PriceFact label="Mejor precio" amountMinor={bestPriceMinor(item)} currency={MXN} className={bestDiscount !== null && bestDiscount > 0 ? "text-success" : "text-primary"} />
+              <div className="flex flex-wrap items-end gap-x-4 gap-y-2 text-xs">
+                <MetricFact label="Descuento"><DiscountValue value={bestDiscount} /></MetricFact>
+                <PriceFact label="Precio base Steam" amountMinor={item.basePriceMinor} currency={item.baseCurrency} className="text-secondary" />
+              </div>
+            </div>
             <Link
               href={`/games/${item.appId}`}
-              className="text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+              className="mt-3 inline-flex text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
             >
               Ver precios
             </Link>
-            <span className="text-xs text-muted">Actualizado {refreshed ?? "—"}</span>
           </div>
           <div className="flex flex-wrap items-center gap-2 border-t border-default pt-2">
-            <Button type="button" variant="ghost" className="h-7 px-2 text-xs" onClick={(event) => onEditCategories(item, event.currentTarget)}>
+            <Button type="button" variant="secondary" className="h-8 px-3 text-xs" onClick={(event) => onEditCategories(item, event.currentTarget)}>
               Editar categorías
             </Button>
             <RowRefreshButton item={item} refreshing={refreshingAppId === item.appId} blocked={refreshingAppId !== null && refreshingAppId !== item.appId} onRefresh={onRefresh} />
+            <details className="ml-auto">
+              <summary className="cursor-pointer text-xs font-semibold text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">
+                Más detalle
+              </summary>
+              <div className="mt-2 rounded-[var(--radius-sm)] border border-default bg-[var(--color-surface-2)] px-2 py-1">
+                <div className="grid grid-cols-2 gap-x-3 gap-y-2 pb-1 pt-2">
+                  <PriceFact label="Mínimo histórico" amountMinor={item.historyLowMinor} currency={item.historyLowCurrency} />
+                  <PriceFact label="Mín. oficial" amountMinor={item.bestOfficialMinor} currency={MXN} />
+                  <PriceFact label="Mín. keys" amountMinor={item.bestKeyshopMinor} currency={MXN} />
+                  <MobileMetrics item={item} minViableDiscountPercent={minViableDiscountPercent} />
+                </div>
+                <div className="pb-1"><WishlistRowMeta item={item} /></div>
+              </div>
+            </details>
           </div>
-          <details className="rounded-[var(--radius-sm)] border border-default bg-[var(--color-surface-2)] px-2 py-1">
-            <summary className="cursor-pointer text-xs font-semibold text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">
-              Más detalle
-            </summary>
-            <div className="grid grid-cols-2 gap-x-3 gap-y-2 pb-1 pt-2">
-              <PriceFact label="Mínimo histórico" amountMinor={item.historyLowMinor} currency={item.historyLowCurrency} />
-              <PriceFact label="Mín. oficial" amountMinor={item.bestOfficialMinor} currency={MXN} />
-              <PriceFact label="Mín. keys" amountMinor={item.bestKeyshopMinor} currency={MXN} />
-              <MobileMetrics item={item} minViableDiscountPercent={minViableDiscountPercent} />
-            </div>
-            <div className="pb-1"><WishlistRowMeta item={item} /></div>
-          </details>
+          <span className="block text-xs text-muted">Actualizado {refreshed ?? "—"}</span>
           {rowErrors[item.appId] ? <p role="alert" className="text-xs text-danger">{rowErrors[item.appId]}</p> : null}
         </div>
       </div>
@@ -1297,7 +1300,7 @@ function WishlistItems({
         </div>
       ) : (
         <>
-          <ul className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" aria-label="Juegos en la wishlist">
+          <ul className="grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Juegos en la wishlist">
             {filteredItems.map((item) => (
               <WishlistCard
                 key={item.appId}

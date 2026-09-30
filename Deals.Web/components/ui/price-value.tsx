@@ -13,15 +13,16 @@ export function formatMinor(amountMinor: number | null, currency: string | null)
 interface PriceValueProps {
   readonly amountMinor: number | null;
   readonly currency: string | null;
+  readonly className?: string;
 }
 
 // Un precio sin dato no se rellena con 0 ni se marca como gratis: lee "—" en tono muted.
-export function PriceValue({ amountMinor, currency }: PriceValueProps) {
+export function PriceValue({ amountMinor, currency, className }: PriceValueProps) {
   const display = formatMinor(amountMinor, currency);
   return display === null ? (
     <span className="text-muted">—</span>
   ) : (
-    <span className="deal-price text-primary">{display}</span>
+    <span className={`deal-price ${className ?? "text-primary"}`}>{display}</span>
   );
 }
 
@@ -30,11 +31,11 @@ interface PriceFactProps extends PriceValueProps {
 }
 
 // Versión para las tiles móviles: etiqueta arriba, importe abajo, dos por fila a 360px.
-export function PriceFact({ label, amountMinor, currency }: PriceFactProps) {
+export function PriceFact({ label, amountMinor, currency, className }: PriceFactProps) {
   return (
     <div className="min-w-0">
       <p className="text-xs text-muted">{label}</p>
-      <PriceValue amountMinor={amountMinor} currency={currency} />
+      <PriceValue amountMinor={amountMinor} currency={currency} className={className} />
     </div>
   );
 }
