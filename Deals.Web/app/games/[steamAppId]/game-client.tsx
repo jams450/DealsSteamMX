@@ -1141,7 +1141,7 @@ export function GameClient({ appId }: GameClientProps) {
               Buscar en Ubisoft Store
               <ExternalLink className="h-4 w-4" aria-hidden="true" />
               <span className="sr-only">(se abre en una pestaña nueva)</span>
-            </a>
+            </a> : null}
             <span className="text-xs text-muted" aria-live="polite">
               {refreshing ? "Consultando tiendas..." : ""}
             </span>
