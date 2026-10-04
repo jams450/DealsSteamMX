@@ -536,8 +536,10 @@ public class WishlistController : ControllerBase
             })
             .ToDictionaryAsync(group => group.GameId, group => group.Stores, cancellationToken);
 
-        // One aggregate query for the whole list, never one per row: PostgreSQL computes the three minima
-        // and only the grouped result is materialized.
+        // One grouped query for the whole list, never one per row: PostgreSQL computes the history minimum
+        // and the two cheapest rows. Only price and display metadata are materialized.
+        // Equal prices use shop id, source, offer key, then row id as stable tie-breakers.
+        // Keep the existing non-keyshop filter; unknown classification is not relabelled official.
         //  - HistoryLowMinor: lowest game_offers.history_low_all_minor recorded in MXN. The history low is
         //    stored raw with its own currency, so mixing currencies would compare pesos with dollars.
         //  - BestOfficialMinor: cheapest current MXN price among non-keyshop offers. "official" (ITAD
@@ -558,16 +560,26 @@ public class WishlistController : ControllerBase
                 SteamGameId = group.Key,
                 HistoryLowMinor = group.Min(offer =>
                     offer.HistoryLowCurrency == MxnCurrency ? offer.HistoryLowAllMinor : null),
-                BestOfficialMinor = group.Min(offer =>
-                    offer.Classification != KeyshopClassification &&
-                    offer.PricingType != UnconvertedPricing
-                        ? offer.MxnCurrentPriceMinor
-                        : null),
-                BestKeyshopMinor = group.Min(offer =>
-                    offer.Classification == KeyshopClassification &&
-                    offer.PricingType != UnconvertedPricing
-                        ? offer.MxnCurrentPriceMinor
-                        : null)
+                BestOfficial = group
+                    .Where(offer => offer.Classification != KeyshopClassification &&
+                        offer.PricingType != UnconvertedPricing && offer.MxnCurrentPriceMinor != null)
+                    .OrderBy(offer => offer.MxnCurrentPriceMinor)
+                    .ThenBy(offer => offer.ShopId)
+                    .ThenBy(offer => offer.Source)
+                    .ThenBy(offer => offer.OfferKey)
+                    .ThenBy(offer => offer.GameOfferId)
+                    .Select(offer => new { Price = offer.MxnCurrentPriceMinor, offer.Source, Label = offer.ShopName, offer.Classification, offer.PricingType })
+                    .FirstOrDefault(),
+                BestKeyshop = group
+                    .Where(offer => offer.Classification == KeyshopClassification &&
+                        offer.PricingType != UnconvertedPricing && offer.MxnCurrentPriceMinor != null)
+                    .OrderBy(offer => offer.MxnCurrentPriceMinor)
+                    .ThenBy(offer => offer.ShopId)
+                    .ThenBy(offer => offer.Source)
+                    .ThenBy(offer => offer.OfferKey)
+                    .ThenBy(offer => offer.GameOfferId)
+                    .Select(offer => new { Price = offer.MxnCurrentPriceMinor, offer.Source, Label = offer.ShopName, offer.Classification, offer.PricingType })
+                    .FirstOrDefault()
             })
             .ToDictionaryAsync(aggregate => aggregate.SteamGameId!.Value, cancellationToken);
 
@@ -598,11 +610,17 @@ public class WishlistController : ControllerBase
             int? historyLowMinor = null;
             int? bestOfficialMinor = null;
             int? bestKeyshopMinor = null;
+            (string? Source, string? Label, string? Classification, string? PricingType) officialMetadata = default;
+            (string? Source, string? Label, string? Classification, string? PricingType) keyshopMetadata = default;
             if (game is not null && aggregatesByGameId.TryGetValue(game.SteamGameId, out var aggregate))
             {
                 historyLowMinor = aggregate.HistoryLowMinor;
-                bestOfficialMinor = aggregate.BestOfficialMinor;
-                bestKeyshopMinor = aggregate.BestKeyshopMinor;
+                bestOfficialMinor = aggregate.BestOfficial?.Price;
+                bestKeyshopMinor = aggregate.BestKeyshop?.Price;
+                if (aggregate.BestOfficial is { } official)
+                    officialMetadata = (official.Source, official.Label, official.Classification, official.PricingType);
+                if (aggregate.BestKeyshop is { } keyshop)
+                    keyshopMetadata = (keyshop.Source, keyshop.Label, keyshop.Classification, keyshop.PricingType);
             }
 
             // Steam's own price competes for the best official price and does not live in game_offers: it is
@@ -613,6 +631,9 @@ public class WishlistController : ControllerBase
             var steamOfficialMinor = string.Equals(game?.Currency, MxnCurrency, StringComparison.OrdinalIgnoreCase)
                 ? game?.CurrentPriceMinor
                 : null;
+            // Steam wins ties; its metadata and price always travel together.
+            if (steamOfficialMinor.HasValue && (!bestOfficialMinor.HasValue || steamOfficialMinor.Value <= bestOfficialMinor.Value))
+                officialMetadata = (SteamStore, "Steam", "official", "regional");
             bestOfficialMinor = new[] { bestOfficialMinor, steamOfficialMinor }.Min();
 
             // steam_games.name is the Steam detail snapshot; user_library.title is the list snapshot and
@@ -645,7 +666,15 @@ public class WishlistController : ControllerBase
                 game?.GameId is long canonicalGameId && ownedStoresByGameId.TryGetValue(canonicalGameId, out var ownedStores)
                     ? ownedStores.OrderBy(store => store, StringComparer.Ordinal).ToList()
                     : [],
-                 categoriesByLibraryId.TryGetValue(row.UserLibraryId, out var rowCategories) ? rowCategories : []));
+                 categoriesByLibraryId.TryGetValue(row.UserLibraryId, out var rowCategories) ? rowCategories : [],
+                BestOfficialSource: officialMetadata.Source,
+                BestOfficialLabel: officialMetadata.Label,
+                BestOfficialClassification: officialMetadata.Classification,
+                BestOfficialPricingType: officialMetadata.PricingType,
+                BestKeyshopSource: keyshopMetadata.Source,
+                BestKeyshopLabel: keyshopMetadata.Label,
+                BestKeyshopClassification: keyshopMetadata.Classification,
+                BestKeyshopPricingType: keyshopMetadata.PricingType));
         }
 
         return items;

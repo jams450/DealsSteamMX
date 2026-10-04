@@ -1,6 +1,35 @@
 // Métricas puras de la wishlist. Sin imports a propósito: `node --test` puede ejecutar este archivo
 // directamente (Node v26 quita los tipos) y el módulo no arrastra React ni el contrato del BFF.
 
+// Structural input keeps provenance independent of React and the runtime BFF contract.
+export interface WishlistWinnerInput {
+  readonly bestOfficialMinor: number | null;
+  readonly bestKeyshopMinor: number | null;
+  readonly bestOfficialSource?: string | null;
+  readonly bestOfficialLabel?: string | null;
+  readonly bestOfficialClassification?: string | null;
+  readonly bestOfficialPricingType?: string | null;
+  readonly bestKeyshopSource?: string | null;
+  readonly bestKeyshopLabel?: string | null;
+  readonly bestKeyshopClassification?: string | null;
+  readonly bestKeyshopPricingType?: string | null;
+}
+
+export function wishlistWinner(item: WishlistWinnerInput) {
+  if (item.bestOfficialMinor === null && item.bestKeyshopMinor === null) return null;
+  // Same numeric minimum as before; legitimate band wins ties. Zero is a valid price.
+  const official = item.bestKeyshopMinor === null ||
+    (item.bestOfficialMinor !== null && item.bestOfficialMinor <= item.bestKeyshopMinor);
+  const priceMinor = (official ? item.bestOfficialMinor : item.bestKeyshopMinor)!;
+  const source = (official ? item.bestOfficialSource : item.bestKeyshopSource) ?? null;
+  const label = (official ? item.bestOfficialLabel : item.bestKeyshopLabel) ?? null;
+  const classification = (official ? item.bestOfficialClassification : item.bestKeyshopClassification) ?? null;
+  const pricingType = (official ? item.bestOfficialPricingType : item.bestKeyshopPricingType) ?? null;
+  const badge = source === "steam" ? "Steam" : classification === "authorized" ? "Tienda autorizada" :
+    classification === "official" ? "Tienda oficial" : classification === "keyshop" ? "Keyshop" : "Sin clasificar";
+  return { priceMinor, source, label, classification, pricingType, badge };
+}
+
 export const SCORE_MAX = 10;
 export const DISCOUNT_WEIGHT = 7;
 export const LOW_WEIGHT = 3;

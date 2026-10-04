@@ -1,11 +1,40 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DISCOUNT_WEIGHT, SCORE_MAX, dealScore, discountPercent } from "./wishlist-metrics.ts";
+import { DISCOUNT_WEIGHT, SCORE_MAX, dealScore, discountPercent, wishlistWinner } from "./wishlist-metrics.ts";
 
 // Base de 10000 (MX$100) con umbral 50% y techo 90%: cada caso deja el factor de descuento
 // predecible para poder aislar el bonus por mínimo histórico.
 const base = { basePriceMinor: 10_000, baseCurrency: "MXN", minViableDiscountPercent: 50 };
 const noHistory = { historyLowMinor: null, historyLowCurrency: null };
+
+const prices = { bestOfficialMinor: 2000, bestKeyshopMinor: 1000 };
+test("winner: lower keyshop retains its own metadata", () => {
+  assert.deepEqual(wishlistWinner({ ...prices, bestOfficialSource: "steam", bestKeyshopSource: "ggdeals", bestKeyshopLabel: "GG", bestKeyshopClassification: "keyshop", bestKeyshopPricingType: "regional" }),
+    { priceMinor: 1000, source: "ggdeals", label: "GG", classification: "keyshop", pricingType: "regional", badge: "Keyshop" });
+});
+test("winner: official wins ties; Steam requires explicit source", () => {
+  const winner = wishlistWinner({ ...prices, bestOfficialMinor: 1000, bestOfficialSource: "steam", bestOfficialClassification: "official" });
+  assert.equal(winner?.badge, "Steam");
+  assert.equal(winner?.source, "steam");
+  assert.equal(wishlistWinner({ ...prices, bestKeyshopMinor: null })?.badge, "Sin clasificar");
+});
+test("winner: authorized and official labels follow classification, not band", () => {
+  assert.equal(wishlistWinner({ ...prices, bestKeyshopMinor: null, bestOfficialClassification: "authorized" })?.badge, "Tienda autorizada");
+  assert.equal(wishlistWinner({ ...prices, bestKeyshopMinor: null, bestOfficialClassification: "official" })?.badge, "Tienda oficial");
+});
+test("winner: no price has no badge; zero is valid in either band", () => {
+  assert.equal(wishlistWinner({ bestOfficialMinor: null, bestKeyshopMinor: null }), null);
+  assert.equal(wishlistWinner({ ...prices, bestOfficialMinor: 0 })?.priceMinor, 0);
+  assert.equal(wishlistWinner({ bestOfficialMinor: null, bestKeyshopMinor: 0 })?.priceMinor, 0);
+});
+test("winner: unknown old metadata stays unknown; FX metadata survives", () => {
+  const winner = wishlistWinner({ ...prices, bestKeyshopPricingType: "fx_estimate" });
+  assert.equal(winner?.badge, "Sin clasificar");
+  assert.equal(winner?.source, null);
+  assert.equal(winner?.pricingType, "fx_estimate");
+  assert.equal(discountPercent(10000, "MXN", winner!.priceMinor), 90);
+  assert.equal(dealScore({ ...base, ...noHistory, bestMinor: winner!.priceMinor }), 7);
+});
 
 test("discountPercent: null cuando el precio base no es MXN", () => {
   assert.equal(discountPercent(10_000, "USD", 5_000), null);

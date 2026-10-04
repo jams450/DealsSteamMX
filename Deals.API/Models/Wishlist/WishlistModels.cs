@@ -34,7 +34,15 @@ public sealed record WishlistItemResponse(
     int? BestOfficialMinor,
     int? BestKeyshopMinor,
     IReadOnlyList<string> OwnedStores,
-    IReadOnlyList<WishlistCategorySummary>? Categories = null);
+    IReadOnlyList<WishlistCategorySummary>? Categories = null,
+    string? BestOfficialSource = null,
+    string? BestOfficialLabel = null,
+    string? BestOfficialClassification = null,
+    string? BestOfficialPricingType = null,
+    string? BestKeyshopSource = null,
+    string? BestKeyshopLabel = null,
+    string? BestKeyshopClassification = null,
+    string? BestKeyshopPricingType = null);
 
 public sealed record WishlistCategorySummary(long Id, string Name, int ItemCount);
 

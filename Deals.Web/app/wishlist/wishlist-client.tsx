@@ -13,7 +13,7 @@ import { ToastStack } from "@/components/feedback/toast-stack";
 import { useToasts } from "@/components/feedback/use-toasts";
 import { assignWishlistCategory, createWishlistCategory, getWishlist, previewWishlistPackage, removeWishlistCategoryItems, replaceWishlistItemCategories, serializeWishlistQuery, syncWishlist, updateWishlistPreferences, type WishlistQuery } from "./_lib/wishlist-api";
 import type { PaginationState, SortingState } from "@tanstack/react-table";
-import { dealScore, discountPercent } from "./_lib/wishlist-metrics";
+import { dealScore, discountPercent, wishlistWinner } from "./_lib/wishlist-metrics";
 import {
   MAX_PACKAGE_APP_IDS,
   exceedsPackageLimit,
@@ -34,8 +34,7 @@ import type {
 const dateFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
 const shortDateFormatter = new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short" });
 
-// Los mínimos de tiendas ya vienen convertidos por el backend: su moneda es siempre MXN y no se
-// presenta como aproximación porque no lo es.
+// Los mínimos llegan en MXN; la procedencia indica si el ganador es una estimación FX.
 const MXN = "MXN";
 
 // Preferencias puramente visuales: viven en localStorage. El umbral de descuento no está aquí porque
@@ -120,8 +119,7 @@ function withoutRowError(current: Readonly<Record<number, string>>, appId: numbe
   return next;
 }
 
-// El tamaño nativo de `tiny_image` mantiene la carátula como ancla de identidad en la grilla de
-// cuatro columnas. La portada es decorativa (`alt=""`) porque el nombre contiguo identifica el juego.
+// Portada apaisada decorativa: el encabezado contiguo identifica el juego.
 function WishlistThumb({ src, className }: { readonly src: string | null; readonly className?: string }) {
   const [failed, setFailed] = useState(false);
   const image = src && !failed ? src : null;
@@ -129,7 +127,7 @@ function WishlistThumb({ src, className }: { readonly src: string | null; readon
   return (
     <span
       className={cn(
-        "inline-flex h-[34px] w-[90px] shrink-0 items-center justify-center overflow-hidden rounded-[var(--radius-sm)] border border-default bg-[var(--color-surface-2)] sm:h-[45px] sm:w-[120px]",
+        "mx-auto flex aspect-video w-9/10 items-center justify-center overflow-hidden rounded-[var(--radius-sm)] border border-default bg-[var(--color-surface-2)]",
         className
       )}
     >
@@ -885,17 +883,11 @@ function WishlistPager({
 // «Mejor precio» y «Mayor descuento» replican los accessors de las columnas que la tabla mostraba en
 // escritorio y las tiles no: el mínimo en MXN de los dos escenarios y el mayor descuento de ambos.
 function bestPriceMinor(item: WishlistItem): number | null {
-  if (item.bestOfficialMinor === null) return item.bestKeyshopMinor;
-  if (item.bestKeyshopMinor === null) return item.bestOfficialMinor;
-  return Math.min(item.bestOfficialMinor, item.bestKeyshopMinor);
+  return wishlistWinner(item)?.priceMinor ?? null;
 }
 
 function bestDiscountValue(item: WishlistItem): number | null {
-  const official = discountPercent(item.basePriceMinor, item.baseCurrency, item.bestOfficialMinor);
-  const keyshop = discountPercent(item.basePriceMinor, item.baseCurrency, item.bestKeyshopMinor);
-  if (official === null) return keyshop;
-  if (keyshop === null) return official;
-  return Math.max(official, keyshop);
+  return discountPercent(item.basePriceMinor, item.baseCurrency, bestPriceMinor(item));
 }
 
 interface WishlistCardProps {
@@ -909,12 +901,8 @@ interface WishlistCardProps {
   readonly onEditCategories: (item: WishlistItem, trigger: HTMLButtonElement) => void;
 }
 
-// Tarjeta compacta: una por juego en todos los anchos, con la cáscara de /discover (`app-card` +
-// portada + `deal-price` + «Ver precios»). La cabecera (portada + nombre + categorías) y una sola
-// línea de precio (mejor precio + mayor descuento + precio base) quedan siempre visibles; el resto
-// (mínimos, scores, fechas por proveedor) vive en un `<details>` nativo colapsado por defecto, sin
-// estado JS. Sin quitar ningún dato ni ninguna acción: todo lo que la tarjeta ancha mostraba sigue
-// aquí, reordenado.
+// Resumen siempre visible: la portada arriba y, debajo, el precio a la izquierda con sus propiedades a la
+// derecha cuando la tarjeta tiene ancho. Métricas por banda e identificación en expansión nativa.
 function WishlistCard({
   item,
   selected,
@@ -926,74 +914,89 @@ function WishlistCard({
   onEditCategories
 }: WishlistCardProps) {
   const refreshed = formatDateTime(item.refreshedAt);
+  const winner = wishlistWinner(item);
   const bestDiscount = bestDiscountValue(item);
+  const score = itemScore(item, winner?.priceMinor ?? null, minViableDiscountPercent);
+  const estimated = winner?.pricingType === "fx_estimate";
+  const sourceBadgeClass = winner?.badge === "Steam" ? "tabler-badge-info"
+    : winner?.badge === "Tienda oficial" || winner?.badge === "Tienda autorizada" ? "tabler-badge-success"
+    : winner?.badge === "Keyshop" ? "tabler-badge-warning" : "tabler-badge-neutral";
 
   return (
-    <li className={cn("app-card space-y-3 p-3", selected && "border-[color:var(--color-accent)]")}>
-      <div className="flex items-start gap-3">
-        <input
-          type="checkbox"
-          aria-label={`Seleccionar ${item.name}`}
-          checked={selected}
-          onChange={(event) => onToggleSelect(item.appId, event.target.checked)}
-          className="mt-1 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
-        />
-        <div className="min-w-0 flex-1 space-y-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <WishlistThumb src={item.imageUrl} />
-            <div className="min-w-0 flex-1">
-              <Link
-                href={`/games/${item.appId}`}
-                className="block text-base font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
-              >
+    <li className={cn("app-card min-w-0 space-y-4 p-4", selected && "border-[color:var(--color-accent)]")}>
+      <WishlistThumb src={item.imageUrl} />
+      <div className="min-w-0 space-y-4">
+        <div className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            aria-label={`Seleccionar ${item.name}`}
+            checked={selected}
+            onChange={(event) => onToggleSelect(item.appId, event.target.checked)}
+            className="mt-1 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+          />
+          <div className="min-w-0 flex-1 space-y-3">
+            <h2 className="text-xl font-semibold leading-tight">
+              <Link href={`/games/${item.appId}`} className="block text-primary hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">
                 {item.name}
               </Link>
-              <p className="mt-0.5 text-xs text-muted">
-                AppID {item.appId}
-                {item.priority !== null ? ` · Prioridad ${item.priority}` : ""}
-              </p>
-              <CategoryBadges categories={item.categories} />
-            </div>
+            </h2>
+            <CategoryBadges categories={item.categories} />
+            {item.ownedStores.length > 0 ? <p className="text-xs font-medium text-success">Ya adquirido en: {item.ownedStores.join(", ")}</p> : null}
           </div>
-          {item.ownedStores.length > 0 ? <p className="text-xs font-medium text-success">Ya adquirido en: {item.ownedStores.join(", ")}</p> : null}
-          <div className="rounded-[var(--radius-sm)] border border-default bg-[var(--color-surface-2)] p-3">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <PriceFact label="Mejor precio" amountMinor={bestPriceMinor(item)} currency={MXN} className={bestDiscount !== null && bestDiscount > 0 ? "text-success" : "text-primary"} />
-              <div className="flex flex-wrap items-end gap-x-4 gap-y-2 text-xs">
-                <MetricFact label="Descuento"><DiscountValue value={bestDiscount} /></MetricFact>
-                <PriceFact label="Precio base Steam" amountMinor={item.basePriceMinor} currency={item.baseCurrency} className="text-secondary" />
-              </div>
-            </div>
-            <Link
-              href={`/games/${item.appId}`}
-              className="mt-3 inline-flex text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
-            >
-              Ver precios
-            </Link>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 border-t border-default pt-2">
-            <Button type="button" variant="secondary" className="h-8 px-3 text-xs" onClick={(event) => onEditCategories(item, event.currentTarget)}>
-              Editar categorías
-            </Button>
-            <RowRefreshButton item={item} refreshing={refreshingAppId === item.appId} blocked={refreshingAppId !== null && refreshingAppId !== item.appId} onRefresh={onRefresh} />
-            <details className="ml-auto">
-              <summary className="cursor-pointer text-xs font-semibold text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">
-                Más detalle
-              </summary>
-              <div className="mt-2 rounded-[var(--radius-sm)] border border-default bg-[var(--color-surface-2)] px-2 py-1">
-                <div className="grid grid-cols-2 gap-x-3 gap-y-2 pb-1 pt-2">
-                  <PriceFact label="Mínimo histórico" amountMinor={item.historyLowMinor} currency={item.historyLowCurrency} />
-                  <PriceFact label="Mín. oficial" amountMinor={item.bestOfficialMinor} currency={MXN} />
-                  <PriceFact label="Mín. keys" amountMinor={item.bestKeyshopMinor} currency={MXN} />
-                  <MobileMetrics item={item} minViableDiscountPercent={minViableDiscountPercent} />
-                </div>
-                <div className="pb-1"><WishlistRowMeta item={item} /></div>
-              </div>
-            </details>
-          </div>
-          <span className="block text-xs text-muted">Actualizado {refreshed ?? "—"}</span>
-          {rowErrors[item.appId] ? <p role="alert" className="text-xs text-danger">{rowErrors[item.appId]}</p> : null}
         </div>
+        <div className="space-y-1">
+          <div className="grid grid-cols-1 gap-y-2 sm:grid-cols-2 sm:gap-x-3">
+            <div className="min-w-0 space-y-1">
+              <p className="text-sm text-muted">Mejor precio</p>
+              <p className={cn("deal-price text-3xl font-bold", bestDiscount !== null && bestDiscount > 0 ? "text-success" : "text-primary")}>
+                {estimated && winner ? "≈ " : ""}{formatMinor(winner?.priceMinor ?? null, MXN) ?? "—"}
+              </p>
+              {winner && <div className="flex flex-wrap items-center gap-2">
+                <span className={cn("tabler-badge", sourceBadgeClass)}>{winner.badge}</span>
+                {winner.label && <span className="text-sm text-secondary">{winner.label}</span>}
+                {estimated && <span className="text-xs text-muted">Estimación FX</span>}
+              </div>}
+            </div>
+            <div className="grid min-w-0 grid-cols-2 gap-0">
+              <MetricFact label="% dto. vs. base Steam"><DiscountValue value={bestDiscount} /></MetricFact>
+              <MetricFact label="Deal Score / 10">
+                <p className="deal-price text-2xl font-semibold text-primary">{score === null ? "—" : score.toFixed(1)}</p>
+              </MetricFact>
+              <div className="col-span-2">
+                <PriceFact label="Mínimo histórico de proveedores" amountMinor={item.historyLowMinor} currency={item.historyLowCurrency} />
+              </div>
+            </div>
+          </div>
+          <Link
+            href={`/games/${item.appId}`}
+            className="mt-3 inline-flex text-sm font-semibold text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+          >
+            Ver precios
+          </Link>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 border-t border-default pt-2">
+          <Button type="button" variant="secondary" className="h-8 px-3 text-xs" onClick={(event) => onEditCategories(item, event.currentTarget)}>
+            Editar categorías
+          </Button>
+          <RowRefreshButton item={item} refreshing={refreshingAppId === item.appId} blocked={refreshingAppId !== null && refreshingAppId !== item.appId} onRefresh={onRefresh} />
+        </div>
+        <details className="w-full border-t border-default">
+          <summary className="w-full cursor-pointer py-3 text-sm font-semibold text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]">
+            Más detalle
+          </summary>
+          <div className="space-y-3 rounded-[var(--radius-sm)] border border-default bg-[var(--color-surface-2)] p-3">
+            <p className="text-sm text-muted">AppID {item.appId}{item.priority !== null ? ` · Prioridad ${item.priority}` : ""}</p>
+            <span className="block text-xs text-muted">Actualizado {refreshed ?? "—"}</span>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+              <PriceFact label="Precio base Steam" amountMinor={item.basePriceMinor} currency={item.baseCurrency} className="text-secondary" />
+              <PriceFact label="Mín. oficial" amountMinor={item.bestOfficialMinor} currency={MXN} />
+              <PriceFact label="Mín. keys" amountMinor={item.bestKeyshopMinor} currency={MXN} />
+              <MobileMetrics item={item} minViableDiscountPercent={minViableDiscountPercent} />
+            </div>
+            <div className="pb-1"><WishlistRowMeta item={item} /></div>
+          </div>
+        </details>
+        {rowErrors[item.appId] ? <p role="alert" className="text-xs text-danger">{rowErrors[item.appId]}</p> : null}
       </div>
     </li>
   );
@@ -1300,7 +1303,7 @@ function WishlistItems({
         </div>
       ) : (
         <>
-          <ul className="grid gap-3 md:grid-cols-2 xl:grid-cols-4" aria-label="Juegos en la wishlist">
+          <ul className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5" aria-label="Juegos en la wishlist">
             {filteredItems.map((item) => (
               <WishlistCard
                 key={item.appId}

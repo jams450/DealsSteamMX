@@ -28,6 +28,15 @@ export type WishlistItem = {
   readonly historyLowCurrency: string | null;
   readonly bestOfficialMinor: number | null;
   readonly bestKeyshopMinor: number | null;
+  // Additive winner metadata: old typed fixtures/payloads remain valid. Never infer classification.
+  readonly bestOfficialSource?: string | null;
+  readonly bestOfficialLabel?: string | null;
+  readonly bestOfficialClassification?: string | null;
+  readonly bestOfficialPricingType?: string | null;
+  readonly bestKeyshopSource?: string | null;
+  readonly bestKeyshopLabel?: string | null;
+  readonly bestKeyshopClassification?: string | null;
+  readonly bestKeyshopPricingType?: string | null;
   readonly ownedStores: readonly string[];
   readonly categories: readonly WishlistCategory[];
 };
@@ -219,6 +228,14 @@ function normalizeWishlistItem(value: unknown): WishlistItem | null {
     // Los mínimos de tiendas llegan ya convertidos a MXN, así que no traen moneda propia.
     bestOfficialMinor: toPriceMinor(read(value, "bestOfficialMinor")),
     bestKeyshopMinor: toPriceMinor(read(value, "bestKeyshopMinor")),
+    bestOfficialSource: toBoundedText(read(value, "bestOfficialSource"), 16),
+    bestOfficialLabel: toBoundedText(read(value, "bestOfficialLabel"), 128),
+    bestOfficialClassification: toBoundedText(read(value, "bestOfficialClassification"), 16),
+    bestOfficialPricingType: toBoundedText(read(value, "bestOfficialPricingType"), 24),
+    bestKeyshopSource: toBoundedText(read(value, "bestKeyshopSource"), 16),
+    bestKeyshopLabel: toBoundedText(read(value, "bestKeyshopLabel"), 128),
+    bestKeyshopClassification: toBoundedText(read(value, "bestKeyshopClassification"), 16),
+    bestKeyshopPricingType: toBoundedText(read(value, "bestKeyshopPricingType"), 24),
     ownedStores: toStoreList(read(value, "ownedStores")),
     categories: toCategoryList(read(value, "categories"))
   };
