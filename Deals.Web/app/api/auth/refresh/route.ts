@@ -1,18 +1,10 @@
-import { decodeJwt } from "jose";
+import { refreshSession } from "@/lib/auth/refresh-session";
+import { RefreshCapacityError } from "@/lib/auth/refresh-coordinator";
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { getApiBaseUrl } from "@/lib/api/config";
 import { decryptSession, encryptSession, SESSION_COOKIE_NAME, SESSION_COOKIE_SECURE } from "@/lib/auth/session";
 import { sessionExpired, unauthorized } from "@/lib/bff/http";
 import { issueCsrfToken } from "@/lib/security/csrf";
-
-type ApiRefreshResponse = {
-  token: string;
-  expiration: string;
-  username: string;
-  refreshToken?: string;
-  refreshTokenExpiration?: string;
-};
 
 export async function POST() {
   const traceId = crypto.randomUUID();
@@ -29,39 +21,16 @@ export async function POST() {
 
   console.info("[bff.auth.manual_refresh_attempt]", { traceId });
 
-  const apiResponse = await fetch(`${getApiBaseUrl()}/api/auth/refresh`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refreshToken: session.refreshToken }),
-    cache: "no-store"
-  });
-
-  if (!apiResponse.ok) {
-    return sessionExpired(traceId, "Unable to refresh session");
+  let updatedSession;
+  try {
+    updatedSession = await refreshSession(session);
+  } catch (error) {
+    if (!(error instanceof RefreshCapacityError)) throw error;
+    return NextResponse.json({ code: "UPSTREAM_ERROR", message: "Refresh temporarily unavailable", traceId }, { status: 503 });
   }
-
-  const refreshData = (await apiResponse.json()) as ApiRefreshResponse;
-  const claims = decodeJwt(refreshData.token);
-  const idRaw = claims.sub ?? claims["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier"];
-  const userId = Number(idRaw);
-  if (!idRaw || Number.isNaN(userId)) {
-    return unauthorized(traceId, "Token does not include a valid user id claim");
-  }
-
-  const role = String(claims["http://schemas.microsoft.com/ws/2008/06/identity/claims/role"]);
-  const sessionToken = await encryptSession({
-    accessToken: refreshData.token,
-    expiresAt: refreshData.expiration,
-    refreshToken: refreshData.refreshToken,
-    refreshExpiresAt: refreshData.refreshTokenExpiration,
-    user: {
-      id: userId,
-      username: refreshData.username,
-      role
-    }
-  });
-
-  const response = NextResponse.json({ user: { id: userId, username: refreshData.username, role }, traceId });
+  if (!updatedSession) return sessionExpired(traceId, "Unable to refresh session");
+  const sessionToken = await encryptSession(updatedSession);
+  const response = NextResponse.json({ user: updatedSession.user, traceId });
   response.cookies.set({
     name: SESSION_COOKIE_NAME,
     value: sessionToken,
@@ -69,10 +38,10 @@ export async function POST() {
     secure: SESSION_COOKIE_SECURE,
     sameSite: "lax",
     path: "/",
-    expires: new Date(refreshData.refreshTokenExpiration ?? refreshData.expiration)
+    expires: new Date(updatedSession.refreshExpiresAt ?? updatedSession.expiresAt)
   });
-  issueCsrfToken(response, refreshData.refreshTokenExpiration ?? refreshData.expiration);
-  console.info("[bff.auth.manual_refresh_succeeded]", { traceId, userId });
+  issueCsrfToken(response, updatedSession.refreshExpiresAt ?? updatedSession.expiresAt);
+  console.info("[bff.auth.manual_refresh_succeeded]", { traceId, userId: updatedSession.user.id });
 
   return response;
 }

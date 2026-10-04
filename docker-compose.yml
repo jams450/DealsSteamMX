@@ -34,6 +34,8 @@ services:
       - Jwt__Key=${Jwt__Key}
       - Jwt__Issuer=${Jwt__Issuer}
       - Jwt__Audience=${Jwt__Audience}
+      - Jwt__ExpirationHours=${Jwt__ExpirationHours:-2}
+      - Auth__RefreshDays=${Auth__RefreshDays:-90}
       - Cors__AllowedOrigins=${Cors__AllowedOrigins}
       - ITAD__ApiKey=${ITAD__ApiKey}
       - ITAD__BaseUrl=${ITAD__BaseUrl}

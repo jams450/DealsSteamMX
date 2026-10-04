@@ -43,7 +43,14 @@ export async function proxyJsonWithSession(options: ProxyJsonOptions): Promise<{
     return { response: out, session: updatedSession };
   }
 
-  const payload = await upstream.json();
+  let payload: unknown;
+  try {
+    payload = await upstream.json();
+  } catch {
+    const out = upstreamError(request, 502, upstreamErrorMessage);
+    await attachSessionCookie(out, updatedSession, session);
+    return { response: out, session: updatedSession };
+  }
   const out = NextResponse.json(payload, { status: upstream.status });
   await attachSessionCookie(out, updatedSession, session);
 

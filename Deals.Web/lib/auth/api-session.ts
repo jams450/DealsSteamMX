@@ -1,15 +1,7 @@
-import { decodeJwt } from "jose";
+import { refreshSession } from "@/lib/auth/refresh-session";
+import { RefreshCapacityError } from "@/lib/auth/refresh-coordinator";
 import { NextResponse } from "next/server";
-import { getApiBaseUrl } from "@/lib/api/config";
 import { type AuthSession, encryptSession, SESSION_COOKIE_NAME, SESSION_COOKIE_SECURE } from "@/lib/auth/session";
-
-type ApiRefreshResponse = {
-  token: string;
-  expiration: string;
-  username: string;
-  refreshToken?: string;
-  refreshTokenExpiration?: string;
-};
 
 export async function fetchApiWithAutoRefresh(
   session: AuthSession,
@@ -40,35 +32,17 @@ export async function fetchApiWithAutoRefresh(
 
   console.info("[bff.auth.refresh_attempt]", { path: input });
 
-  const refreshRes = await fetch(`${getApiBaseUrl()}/api/auth/refresh`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refreshToken: session.refreshToken }),
-    cache: "no-store",
-    signal: requestSignal()
-  });
-
-  if (!refreshRes.ok) {
-    console.warn("[bff.auth.refresh_failed]", { path: input, status: refreshRes.status });
+  let updatedSession;
+  try {
+    updatedSession = await refreshSession(session);
+  } catch (error) {
+    if (!(error instanceof RefreshCapacityError)) throw error;
+    return { response: new Response(null, { status: 503 }), session };
+  }
+  if (!updatedSession) {
+    console.warn("[bff.auth.refresh_failed]", { path: input });
     return { response: first, session };
   }
-
-  const refreshed = (await refreshRes.json()) as ApiRefreshResponse;
-  const claims = decodeJwt(refreshed.token);
-  const roleClaim = claims["http://schemas.microsoft.com/ws/2008/06/identity/claims/role"];
-  const role = typeof roleClaim === "string" ? roleClaim : session.user.role;
-
-  const updatedSession: AuthSession = {
-    accessToken: refreshed.token,
-    expiresAt: refreshed.expiration,
-    refreshToken: refreshed.refreshToken,
-    refreshExpiresAt: refreshed.refreshTokenExpiration,
-    user: {
-      ...session.user,
-      username: refreshed.username,
-      role
-    }
-  };
 
   const retry = await execute(updatedSession.accessToken);
   console.info("[bff.auth.refresh_succeeded]", { path: input, retryStatus: retry.status });
