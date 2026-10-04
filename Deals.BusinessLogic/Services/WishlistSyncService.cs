@@ -106,20 +106,14 @@ public sealed class WishlistSyncService(
 
     public async Task<WishlistRefreshReport> RefreshWishedGamesAsync(CancellationToken cancellationToken)
     {
-        // Filter against steam_games first: a fresh provider snapshot does not need to walk the 600 wished
-        // rows every night. Missing rows remain eligible so the pass can seed them through GetByAppIdAsync.
-        // Every provider window is listed, not just ITAD and gg.deals: the direct stores have their own
-        // stamps and a degraded one does not advance, so a game whose Epic or Microsoft phase failed must
-        // stay a candidate. Without them here, a failed store call would not be retried until the *ITAD*
-        // window expired, which is a different provider's clock.
-        var now = DateTime.UtcNow;
-        var refreshCutoff = now.AddDays(-settings.RefreshAfterDays);
+        // Both passes visit all wished rows, but snapshot reads stay bounded to distinct wished appids.
+        var eligibleRows = await repository.GetTrack<UserLibrary>()
+            .Where(entry => entry.Store == SteamStore && entry.State == WishedState)
+            .ToListAsync(cancellationToken);
+        var wishedAppIds = eligibleRows.Select(entry => ParseAppId(entry.StoreGameId))
+            .Where(appId => appId > 0).ToHashSet();
         var candidateGames = await repository.Get<SteamGame>()
-            .Where(game => game.Region == Region &&
-                (game.OffersRefreshedAt == null || game.OffersRefreshedAt < refreshCutoff ||
-                 game.GgDealsRefreshedAt == null || game.GgDealsRefreshedAt < refreshCutoff ||
-                 game.EpicRefreshedAt == null || game.EpicRefreshedAt < refreshCutoff ||
-                 game.MicrosoftRefreshedAt == null || game.MicrosoftRefreshedAt < refreshCutoff))
+            .Where(game => game.Region == Region && wishedAppIds.Contains(game.AppId))
             .Select(game => new
             {
                 game.AppId,
@@ -130,27 +124,7 @@ public sealed class WishlistSyncService(
                 game.MicrosoftRefreshedAt
             })
             .ToListAsync(cancellationToken);
-        var candidateAppIds = candidateGames.Select(game => game.AppId).ToHashSet();
-
-        // Missing steam_games rows are candidates too: there is no provider snapshot to make them fresh.
-        var existingWishedAppIds = await repository.Get<UserLibrary>()
-            .Where(entry => entry.Store == SteamStore && entry.State == WishedState)
-            .Select(entry => entry.StoreGameId)
-            .ToListAsync(cancellationToken);
-        var missingAppIds = existingWishedAppIds
-            .Select(ParseAppId)
-            .Where(appId => appId > 0 && !candidateAppIds.Contains(appId))
-            .ToHashSet();
-        var eligibleStoreGameIds = candidateAppIds
-            .Concat(missingAppIds)
-            .Select(appId => appId.ToString(CultureInfo.InvariantCulture))
-            .ToHashSet(StringComparer.Ordinal);
-
-        // Only eligible wished rows are materialized; fresh games never enter this pass. The string id set
-        // keeps this predicate SQL-translatable instead of parsing StoreGameId in the database query.
-        var eligibleRows = await repository.GetTrack<UserLibrary>()
-            .Where(entry => entry.Store == SteamStore && entry.State == WishedState && eligibleStoreGameIds.Contains(entry.StoreGameId))
-            .ToListAsync(cancellationToken);
+        var snapshotsByAppId = candidateGames.ToDictionary(game => game.AppId);
 
         // Never-refreshed entries first, then the oldest offers snapshot. Missing steam_games entries sort first.
         var gameRefreshTimes = candidateGames.ToDictionary(
@@ -178,63 +152,80 @@ public sealed class WishlistSyncService(
 
         // One refresh per app id: the detail snapshot is shared, so the same game on several users' lists
         // must not pay for the same provider calls twice.
-        foreach (var group in eligibleRows.GroupBy(entry => entry.StoreGameId))
+        foreach (var providerPhase in new[] { false, true })
         {
-            if (!int.TryParse(group.Key, NumberStyles.None, CultureInfo.InvariantCulture, out var appId) || appId <= 0)
+            logger.LogInformation("Wishlist phase started: {Phase}", providerPhase ? "providers" : "steam");
+            foreach (var group in eligibleRows.GroupBy(entry => ParseAppId(entry.StoreGameId)))
             {
-                failed++;
-                continue;
-            }
-
-            try
-            {
-                // forceRefresh: false keeps the shared TTL, so interactive traffic already refreshed today
-                // is not paid for again.
-                var before = candidateGames.FirstOrDefault(game => game.AppId == appId);
-                var details = await steamGameService.GetByAppIdAsync(appId, forceRefresh: false, cancellationToken);
-                if (details is null)
+                var appId = group.Key;
+                if (appId <= 0)
                 {
                     failed++;
-                    foreach (var stats in providerStats.Values) stats.Failed++;
+                    continue;
                 }
-                else
+
+                try
                 {
-                    ClassifyProvider(providerStats["steam"], before?.ObservedAt, details.ObservedAt, stale: false);
-                    ClassifyProvider(providerStats["itad"], before?.OffersRefreshedAt, details.OffersRefreshedAt, details.OffersStale);
-                    ClassifyProvider(providerStats["ggdeals"], before?.GgDealsRefreshedAt, details.GgDealsRefreshedAt, details.GgDealsStale);
-                    ClassifyProvider(providerStats["epic"], before?.EpicRefreshedAt, details.EpicRefreshedAt, false);
-                    ClassifyProvider(providerStats["microsoft"], before?.MicrosoftRefreshedAt, details.MicrosoftRefreshedAt, false);
-
-                    foreach (var entry in group)
+                    // Steam TTL and independent provider TTLs are owned by their service operations.
+                    var before = snapshotsByAppId.GetValueOrDefault(appId);
+                    var details = providerPhase
+                        ? await steamGameService.RefreshProvidersAsync(appId, cancellationToken)
+                        : await steamGameService.GetByAppIdAsync(appId, forceRefresh: false, cancellationToken);
+                    if (details is null)
                     {
-                        entry.Title = details.Name;
+                        failed++;
+                        if (!providerPhase) providerStats["steam"].Failed++;
                     }
+                    else
+                    {
+                        if (!providerPhase)
+                            ClassifyProvider(providerStats["steam"], before?.ObservedAt, details.ObservedAt, stale: false);
+                        else
+                        {
+                            logger.LogInformation("Wishlist provider stamps appId={AppId} itad={Itad} gg={Gg} epic={Epic} microsoft={Microsoft}",
+                                appId, details.OffersRefreshedAt, details.GgDealsRefreshedAt, details.EpicRefreshedAt, details.MicrosoftRefreshedAt);
+                            ClassifyProvider(providerStats["itad"], before?.OffersRefreshedAt, details.OffersRefreshedAt, details.OffersStale);
+                            ClassifyProvider(providerStats["ggdeals"], before?.GgDealsRefreshedAt, details.GgDealsRefreshedAt, details.GgDealsStale);
+                            var cutoff = DateTime.UtcNow.AddDays(-Math.Clamp(settings.RefreshAfterDays, 1, 90));
+                            ClassifyProvider(providerStats["epic"], before?.EpicRefreshedAt, details.EpicRefreshedAt,
+                                details.EpicRefreshedAt is null || details.EpicRefreshedAt < cutoff);
+                            ClassifyProvider(providerStats["microsoft"], before?.MicrosoftRefreshedAt, details.MicrosoftRefreshedAt,
+                                details.MicrosoftRefreshedAt is null || details.MicrosoftRefreshedAt < cutoff);
+                        }
 
-                    refreshed++;
+                        foreach (var entry in group)
+                        {
+                            entry.Title = details.Name;
+                        }
+
+                        if (!providerPhase) refreshed++;
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    // One game must never abort the cycle: the rest of the wishlist still gets refreshed.
+                    failed++;
+                    logger.LogWarning(exception, "[wishlist.refresh] app {AppId} failed", appId);
+                }
+
+                await Task.Delay(pacing, cancellationToken);
+
+                if (++sinceSave >= SaveBatchSize)
+                {
+                    // Checkpoint: an interrupted pass resumes from what is already persisted.
+                    await repository.SaveChangesAsync();
+                    sinceSave = 0;
                 }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                // One game must never abort the cycle: the rest of the wishlist still gets refreshed.
-                failed++;
-                logger.LogWarning(exception, "[wishlist.refresh] app {AppId} failed", appId);
-            }
 
-            await Task.Delay(pacing, cancellationToken);
-
-            if (++sinceSave >= SaveBatchSize)
-            {
-                // Checkpoint: an interrupted pass resumes from what is already persisted.
-                await repository.SaveChangesAsync();
-                sinceSave = 0;
-            }
+            // Persist Steam phase before first external operation, even when no batch checkpoint fired.
+            await repository.SaveChangesAsync();
+            logger.LogInformation("Wishlist phase completed: {Phase}", providerPhase ? "providers" : "steam");
         }
-
-        await repository.SaveChangesAsync();
 
         return new WishlistRefreshReport(
             refreshed,

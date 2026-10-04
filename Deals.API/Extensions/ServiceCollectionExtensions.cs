@@ -116,9 +116,17 @@ public static class ServiceCollectionExtensions
             return new GgDealsRequestGovernor(budget.RecordsPerMinute, budget.RecordsPerHour, budget.MaxBurstRecords, budget.MinDelayMilliseconds);
         });
 
-        // Direct store clients share a lightweight concurrency governor. Register it explicitly because typed
-        // HttpClient activation resolves EpicStoreClient/MicrosoftStoreClient through DI at request time.
-        services.AddSingleton<ProviderRequestGovernor>();
+        // Separate process-wide policies shared by foreground and background HTTP attempts.
+        services.AddSingleton(serviceProvider =>
+        {
+            var budget = serviceProvider.GetRequiredService<IOptions<JobBudgetOptions>>().Value.Epic;
+            return new EpicRequestGovernor(budget.RequestsPerMinute, budget.RequestsPerHour, budget.MinDelayMilliseconds);
+        });
+        services.AddSingleton(serviceProvider =>
+        {
+            var budget = serviceProvider.GetRequiredService<IOptions<JobBudgetOptions>>().Value.Microsoft;
+            return new MicrosoftRequestGovernor(budget.RequestsPerMinute, budget.RequestsPerHour, budget.MinDelayMilliseconds);
+        });
 
         services.AddHttpClient<IItadClient, ItadClient>((serviceProvider, client) =>
         {
@@ -338,6 +346,8 @@ public static class ServiceCollectionExtensions
             .Validate(options => options.RetentionDays > 0 && options.PurgeBatchSize > 0, "JobBudgets retention and purge batch must be positive.")
             .Validate(options => options.Itad.RequestsPerFiveMinutes > 0 && options.Itad.MaxBurst > 0 && options.Itad.MinDelayMilliseconds >= 0, "JobBudgets:Itad values are invalid.")
             .Validate(options => options.GgDeals.RecordsPerMinute > 0 && options.GgDeals.RecordsPerHour > 0 && options.GgDeals.MaxBurstRecords > 0 && options.GgDeals.MaxBurstRecords <= 100 && options.GgDeals.MaxBurstRecords <= options.GgDeals.RecordsPerMinute && options.GgDeals.MaxBurstRecords <= options.GgDeals.RecordsPerHour && options.GgDeals.MinDelayMilliseconds >= 0, "JobBudgets:GgDeals values are invalid.")
+            .Validate(options => options.Epic is { IsValid: true }, "JobBudgets:Epic requires positive request limits and nonnegative delay.")
+            .Validate(options => options.Microsoft is { IsValid: true }, "JobBudgets:Microsoft requires positive request limits and nonnegative delay.")
             .ValidateOnStart();
         services.AddHostedService<WishlistSyncJob>();
         services.AddHostedService<JobRunPurgeJob>();

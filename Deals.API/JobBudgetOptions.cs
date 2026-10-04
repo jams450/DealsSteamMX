@@ -1,14 +1,25 @@
 namespace Deals.API;
 
-/// <summary>Local safety budgets for outbound provider work. Values stay below verified provider quotas.</summary>
+/// <summary>Local safety budgets for outbound work. Direct-store defaults are not verified external quotas.</summary>
 public sealed class JobBudgetOptions
 {
     public const string SectionName = "JobBudgets";
 
     public ItadBudgetOptions Itad { get; set; } = new();
     public GgDealsBudgetOptions GgDeals { get; set; } = new();
+    public DirectStoreBudgetOptions Epic { get; set; } = new();
+    public DirectStoreBudgetOptions Microsoft { get; set; } = new();
     public int RetentionDays { get; set; } = 1;
     public int PurgeBatchSize { get; set; } = 500;
+}
+
+/// <summary>Cautious local policy only; neither store's external quota has been verified.</summary>
+public sealed class DirectStoreBudgetOptions
+{
+    public int RequestsPerMinute { get; set; } = 30;
+    public int RequestsPerHour { get; set; } = 600;
+    public int MinDelayMilliseconds { get; set; } = 1000;
+    public bool IsValid => RequestsPerMinute > 0 && RequestsPerHour > 0 && MinDelayMilliseconds >= 0;
 }
 
 /// <summary>ITAD quota is 1000 requests per 300 seconds; this local budget leaves 10% margin.</summary>

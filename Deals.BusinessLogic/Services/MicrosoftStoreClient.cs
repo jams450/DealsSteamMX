@@ -24,7 +24,7 @@ public sealed record MicrosoftStoreClientSettings(string Market, string Language
 public sealed class MicrosoftStoreClient(
     HttpClient httpClient,
     MicrosoftStoreClientSettings settings,
-    ProviderRequestGovernor governor) : IStorePriceProvider
+    MicrosoftRequestGovernor governor) : IStorePriceProvider
 {
     public const string StoreSource = "microsoft";
     public const string StoreShopName = "Microsoft Store";
@@ -541,6 +541,8 @@ public sealed class MicrosoftStoreClient(
     {
         using var lease = await governor.AcquireAsync(cancellationToken);
 
-        return await httpClient.GetAsync(path, cancellationToken);
+        var response = await httpClient.GetAsync(path, cancellationToken);
+        governor.ObserveResponse(response);
+        return response;
     }
 }

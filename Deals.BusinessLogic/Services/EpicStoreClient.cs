@@ -26,7 +26,7 @@ public sealed record EpicStoreClientSettings(string Country, string Locale);
 public sealed class EpicStoreClient(
     HttpClient httpClient,
     EpicStoreClientSettings settings,
-    ProviderRequestGovernor governor,
+    EpicRequestGovernor governor,
     ILogger<EpicStoreClient> logger)
     : IStorePriceProvider
 {
@@ -617,6 +617,8 @@ public sealed class EpicStoreClient(
 
         // Absolute path on the configured base address; POST because the operation is a query sent as a
         // body, never a query string (keywords would end up in every access log).
-        return await httpClient.PostAsync(SearchPath, content, cancellationToken);
+        var response = await httpClient.PostAsync(SearchPath, content, cancellationToken);
+        governor.ObserveResponse(response);
+        return response;
     }
 }

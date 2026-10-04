@@ -18,6 +18,9 @@ public interface ISteamGameService
     /// </summary>
     Task<SteamGameDetails?> GetAppDetailsOnlyAsync(int appId, CancellationToken cancellationToken);
 
+    /// <summary>Due external providers only, using persisted Steam details; never requests Steam.</summary>
+    Task<SteamGameDetails?> RefreshProvidersAsync(int appId, CancellationToken cancellationToken);
+
     Task<IReadOnlyList<SteamSearchResult>> GetSuggestionsAsync(string? query, CancellationToken cancellationToken);
 
     /// <summary>

@@ -8,8 +8,8 @@ namespace Deals.BusinessLogic.Interfaces;
 /// <c>pricing_type = 'regional'</c> and never an FX estimate.
 ///
 /// A provider failure degrades to "no offer from this store": it must never fail the game page or cancel
-/// another provider, because every implementation shares one request budget
-/// (<see cref="Services.ProviderRequestGovernor"/>).
+/// another provider. Direct stores have independent process-wide request budgets
+/// (<see cref="Services.EpicRequestGovernor"/> / <see cref="Services.MicrosoftRequestGovernor"/>).
 /// </summary>
 public interface IStorePriceProvider
 {
