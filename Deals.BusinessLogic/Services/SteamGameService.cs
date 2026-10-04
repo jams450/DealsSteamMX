@@ -396,8 +396,10 @@ public sealed class SteamGameService(
                 .ThenBy(offer => offer.ShopName)
                 .ThenBy(offer => offer.OfferKey)
                 .FirstOrDefault()
-            let bestPrice = bestOffer == null ? game.CurrentPriceMinor : bestOffer.MxnCurrentPriceMinor
+            // Steam wins MXN ties; price and source metadata must follow the same winner.
             let usesSteamFallback = bestOffer == null
+                || (game.Currency == "MXN" && game.CurrentPriceMinor <= bestOffer.MxnCurrentPriceMinor)
+            let bestPrice = usesSteamFallback ? game.CurrentPriceMinor : bestOffer.MxnCurrentPriceMinor
             let bestDiscount = game.Currency == "MXN" &&
                 game.InitialPriceMinor != null && game.InitialPriceMinor > 0 &&
                 bestPrice != null && bestPrice <= game.InitialPriceMinor
@@ -446,11 +448,11 @@ public sealed class SteamGameService(
                 card.Game.LowestPriceMinor,
                 card.Game.ObservedAt,
                 card.BestPrice,
-                card.BestOffer == null ? card.Game.Currency : "MXN",
-                card.BestOffer == null ? "steam" : card.BestOffer.Source,
-                card.BestOffer == null ? "Steam" : card.BestOffer.ShopName,
-                card.BestOffer == null ? null : card.BestOffer.Classification,
-                card.BestOffer == null ? "regional" : card.BestOffer.PricingType,
+                card.UsesSteamFallback ? card.Game.Currency : "MXN",
+                card.UsesSteamFallback ? "steam" : card.BestOffer!.Source,
+                card.UsesSteamFallback ? "Steam" : card.BestOffer!.ShopName,
+                card.UsesSteamFallback ? null : card.BestOffer!.Classification,
+                card.UsesSteamFallback ? "regional" : card.BestOffer!.PricingType,
                 card.BestDiscount,
                 card.UsesSteamFallback))
             .ToListAsync(cancellationToken);

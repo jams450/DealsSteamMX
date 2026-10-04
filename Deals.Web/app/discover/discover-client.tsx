@@ -58,6 +58,15 @@ function DiscoverCard({ item, tone }: { readonly item: SteamDiscoverItem; readon
   const hasSteamBase = item.initialPriceMinor !== null && item.currency !== null;
   const basePrice = hasSteamBase ? formatMinor(item.initialPriceMinor, item.currency) : "—";
   const observed = formatObserved(item.observedAt);
+  const sourceBadge = item.usesSteamFallback || item.bestPriceSource === "steam"
+    ? { label: "Steam", className: "tabler-badge-info" }
+    : item.bestPriceClassification === "official"
+      ? { label: "Tienda oficial", className: "tabler-badge-success" }
+      : item.bestPriceClassification === "authorized"
+        ? { label: "Tienda autorizada", className: "tabler-badge-success" }
+        : item.bestPriceClassification === "keyshop"
+          ? { label: "Keyshop", className: "tabler-badge-warning" }
+          : { label: "Sin clasificar", className: "" };
 
   return (
     <Link href={`/games/${item.appId}`} className="app-card flex h-full flex-col gap-3 p-3 transition-colors hover:border-accent">
@@ -71,6 +80,9 @@ function DiscoverCard({ item, tone }: { readonly item: SteamDiscoverItem; readon
           <span className="block text-xs text-muted">Mejor precio</span>
           <span className={cn("deal-price text-lg", hasBestPrice && item.bestDiscountPercent !== null && item.bestDiscountPercent > 0 ? "text-success" : "text-primary", !hasBestPrice && "text-muted")}>{bestPrice}</span>
           <span className="block text-xs text-muted">{sourceLabel(item)}</span>
+          {hasBestPrice ? (
+            <span className={cn("tabler-badge mt-1", sourceBadge.className)}>{sourceBadge.label}</span>
+          ) : null}
         </span>
         <span className="flex flex-wrap justify-end gap-1">
           {item.bestDiscountPercent !== null && item.bestDiscountPercent > 0 ? <span className="tabler-badge tabler-badge-success">-{item.bestDiscountPercent}%</span> : null}
