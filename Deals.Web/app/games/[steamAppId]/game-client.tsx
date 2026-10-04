@@ -7,6 +7,7 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/ui/cn";
 import type { SteamBundleTier, SteamGame, SteamGameBundle, SteamGameOffer } from "@/lib/contracts/steam";
+import { isUbisoftPublisher } from "./_lib/ubisoft-search";
 import { getSteamGame, refreshSteamGame } from "@/app/steam/_lib/steam-api";
 import { setFavorite } from "@/lib/api/favorites";
 import { storeLabel } from "@/lib/contracts/stores";
@@ -1103,9 +1104,9 @@ export function GameClient({ appId }: GameClientProps) {
           </div>
 
           {/* Fecha de actualización, el único «Actualizar ofertas» de la página y los accesos a las fichas de
-              tienda. Los cuatro viven en la misma fila flexible a todo lo ancho de la columna de contenido:
-              «Ver en Steam» es el enlace canónico a la ficha; «Buscar en Ubisoft Store» es solo una búsqueda
-              por título (Ubisoft no tiene cliente de precio ni id construible) y se llama «buscar» por eso. */}
+              tienda, en la misma fila flexible a todo lo ancho de la columna de contenido:
+              «Ver en Steam» es el enlace canónico a la ficha; «Buscar en Ubisoft Store» solo aparece cuando
+              Steam lista Ubisoft como publisher. Es una búsqueda por título, no una ficha ni un precio. */}
           <div className="flex flex-wrap items-center gap-3">
             {observedDisplay ? (
               <span className="tabler-badge tabler-badge-info">Actualizado {observedDisplay}</span>
@@ -1131,7 +1132,7 @@ export function GameClient({ appId }: GameClientProps) {
               <ExternalLink className="h-4 w-4" aria-hidden="true" />
               <span className="sr-only">(se abre en una pestaña nueva)</span>
             </a>
-            <a
+            {isUbisoftPublisher(game.publishers) ? <a
               href={ubisoftSearchUrl(game.name)}
               target="_blank"
               rel="noopener noreferrer"

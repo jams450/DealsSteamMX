@@ -78,7 +78,25 @@ public sealed class SteamStoreClient(HttpClient httpClient) : ISteamStoreClient
                 GetInt32(data, "price_overview", "discount_percent"),
                 Region,
                 DateTime.UtcNow,
-                GetString(data, "header_image"));
+                GetString(data, "header_image"),
+                Publishers: GetPublishers(data));
+    }
+
+    // Steam appdetails publishers only: developers are deliberately never consulted.
+    // Empty marks a fetched snapshot even for free/unpriced games or missing/malformed metadata.
+    private static string[] GetPublishers(JsonElement data)
+    {
+        if (!data.TryGetProperty("publishers", out var publishers) || publishers.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        return publishers.EnumerateArray()
+            .Where(value => value.ValueKind == JsonValueKind.String)
+            .Select(value => value.GetString()!.Trim())
+            .Where(value => value.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static SteamSearchResult? ToSearchResult(JsonElement item)

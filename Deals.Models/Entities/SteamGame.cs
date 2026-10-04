@@ -27,6 +27,10 @@ public class SteamGame : BaseModel
     [StringLength(512)]
     public string? ImageUrl { get; set; }
 
+    /// <summary>Steam appdetails publishers. Null means legacy/unknown; empty means fetched without names.</summary>
+    [Column("publishers", TypeName = "text[]")]
+    public string[]? Publishers { get; set; }
+
     [Column("is_free")]
     public bool IsFree { get; set; }
 

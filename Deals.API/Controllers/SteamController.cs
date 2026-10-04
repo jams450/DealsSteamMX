@@ -126,7 +126,8 @@ public sealed class SteamController(
                 ownership.HasGamePass,
                 ownership.PossibleMatchStores.ToArray()),
             reviews.Select(ReviewResponse.From).ToList(),
-            isFavorite);
+            isFavorite,
+            game.Publishers ?? []);
 
     private static SteamGameBundleResponse ToResponse(SteamGameBundle bundle) =>
         new(bundle.Source, bundle.BundleKey, bundle.Title, bundle.ShopId, bundle.ShopName,

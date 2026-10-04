@@ -96,6 +96,7 @@ export type SteamOwnership = {
 };
 
 export type SteamGame = SteamSearchResult & {
+  readonly publishers: readonly string[];
   readonly isFree: boolean;
   readonly currency: string | null;
   readonly initialPriceMinor: number | null;
@@ -535,6 +536,7 @@ export function normalizeSteamGame(input: unknown): SteamGame | null {
 
   return {
     ...game,
+    publishers: toNameList(read(value, "publishers")),
     isFree: value.isFree === true || value.IsFree === true,
     currency: toText(value.currency ?? value.Currency),
     initialPriceMinor: toPriceMinor(value.initialPriceMinor ?? value.InitialPriceMinor),

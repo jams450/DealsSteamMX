@@ -117,4 +117,5 @@ public sealed record SteamGameResponse(
     bool BundlesStale,
     SteamGameOwnershipResponse Ownership,
     IReadOnlyList<ReviewResponse> Reviews,
-    bool IsFavorite);
+    bool IsFavorite,
+    IReadOnlyList<string> Publishers);

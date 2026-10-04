@@ -104,4 +104,5 @@ public sealed record SteamGameDetails(
     DateTime? MicrosoftRefreshedAt = null,
     IReadOnlyList<SteamGameBundle>? Bundles = null,
     DateTime? BundlesRefreshedAt = null,
-    bool BundlesStale = false);
+    bool BundlesStale = false,
+    IReadOnlyList<string>? Publishers = null);

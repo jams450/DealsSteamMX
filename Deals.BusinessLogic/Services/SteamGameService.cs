@@ -880,6 +880,7 @@ public sealed class SteamGameService(
 
         game.Name = details.Name;
         game.Type = details.Type;
+        game.Publishers = (details.Publishers ?? []).ToArray();
         game.IsFree = details.IsFree;
         game.Currency = details.Currency;
         game.InitialPriceMinor = details.InitialPriceMinor;
@@ -2150,7 +2151,8 @@ public sealed class SteamGameService(
             game.CurrentPriceMinor,
             game.DiscountPercent,
             game.Region,
-            game.ObservedAt);
+            game.ObservedAt,
+            Publishers: game.Publishers ?? []);
 
     private static SteamGameDetails ToDetails(
         SteamGame game,

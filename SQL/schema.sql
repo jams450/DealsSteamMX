@@ -104,6 +104,8 @@ CREATE TABLE steam_games (
     name VARCHAR(512) NOT NULL,
     type VARCHAR(32),
     image_url VARCHAR(512),
+    -- NULL: legacy/unknown; empty array: Steam snapshot fetched without publisher names.
+    publishers TEXT[],
     is_free BOOLEAN NOT NULL DEFAULT FALSE,
     currency VARCHAR(3),
     initial_price_minor INT,

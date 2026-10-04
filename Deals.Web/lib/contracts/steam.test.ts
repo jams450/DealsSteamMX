@@ -25,6 +25,18 @@ const baseGame = {
   bundlesStale: false
 };
 
+test("publishers: Steam names trimmed, deduplicated and malformed entries discarded", () => {
+  assert.deepEqual(normalizeSteamGame({ ...baseGame, publishers: [" Ubisoft ", "uBiSoFt", "Valve", "", 7, null, { name: "Ubisoft" }] })?.publishers, ["Ubisoft", "Valve"]);
+  assert.deepEqual(normalizeSteamGame({ ...baseGame, Publishers: ["Ubisoft"] })?.publishers, ["Ubisoft"]);
+});
+
+test("publishers: old, unknown, malformed and developer-only responses stay empty", () => {
+  assert.deepEqual(normalizeSteamGame(baseGame)?.publishers, []);
+  for (const publishers of [null, undefined, "Ubisoft", 7, {}, [], [null, 7, {}]]) {
+    assert.deepEqual(normalizeSteamGame({ ...baseGame, publishers, developers: ["Ubisoft"] })?.publishers, []);
+  }
+});
+
 function ownership(input: unknown) {
   const game = normalizeSteamGame({ ...baseGame, ownership: input }) as SteamGame;
   return game?.ownership;
