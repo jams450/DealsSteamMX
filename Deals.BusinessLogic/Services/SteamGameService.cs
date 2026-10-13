@@ -1965,7 +1965,14 @@ public sealed class SteamGameService(
         var host = uri.Host;
         var allowed = source switch
         {
-            ItadSource => IsAllowedHost(host, "isthereanydeal.com"),
+            // ITAD hands out its own affiliate redirector (`itad.link`) for the offers it does not have a
+            // store URL for. Keeping only isthereanydeal.com drops that link while the price still renders,
+            // so the row shows a price the user cannot follow. Only the exact redirector host accepted by
+            // ItadClient.TryReadRedirectorUrl is added here (no subdomains, no look-alikes): the
+            // isthereanydeal.com page URLs keep working and HTTPS is still enforced above, so the policy
+            // stays in sync with the one that decides what ITAD links may be followed.
+            ItadSource => IsAllowedHost(host, "isthereanydeal.com") ||
+                string.Equals(host, "itad.link", StringComparison.OrdinalIgnoreCase),
             GgDealsSource => IsAllowedHost(host, "gg.deals"),
             EpicSource => IsAllowedHost(host, "epicgames.com"),
             MicrosoftSource => IsAllowedHost(host, "microsoft.com") || IsAllowedHost(host, "xbox.com"),

@@ -1,5 +1,6 @@
 using Deals.BusinessLogic.Services;
 
+ExternalUrlChecks.Run();
 await GovernorChecks.RunAsync();
 
 var now = new DateTime(2026, 10, 4, 12, 0, 0, DateTimeKind.Utc);
