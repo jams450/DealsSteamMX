@@ -32,6 +32,7 @@ public class AppDbContext : DbContext
     public DbSet<GameMerge> GameMerges => Set<GameMerge>();
     public DbSet<UserGameFavorite> UserGameFavorites => Set<UserGameFavorite>();
     public DbSet<JobRun> JobRuns => Set<JobRun>();
+    public DbSet<DealAlertEvent> DealAlertEvents => Set<DealAlertEvent>();
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {

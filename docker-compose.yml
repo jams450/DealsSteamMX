@@ -67,6 +67,10 @@ services:
       - IGDB_CLIENT_SECRET=${IGDB_CLIENT_SECRET}
       - IGDB_TOKEN=${IGDB_TOKEN}
       - STEAMGRIDDB_API_KEY=${STEAMGRIDDB_API_KEY}
+      - Ntfy__Enabled=${Ntfy__Enabled:-false}
+      - Ntfy__BaseUrl=${Ntfy__BaseUrl:-https://ntfy.amitzi.xyz/}
+      - Ntfy__Topic=${Ntfy__Topic:-Deals}
+      - Ntfy__AuthToken=${Ntfy__AuthToken:-}
     networks:
       - dealext-network
       - server-data

@@ -18,6 +18,7 @@ builder.Services.Configure<GgDealsOptions>(builder.Configuration.GetSection(GgDe
 builder.Services.Configure<FxOptions>(builder.Configuration.GetSection(FxOptions.SectionName));
 builder.Services.Configure<WishlistOptions>(builder.Configuration.GetSection(WishlistOptions.SectionName));
 builder.Services.Configure<JobBudgetOptions>(builder.Configuration.GetSection(JobBudgetOptions.SectionName));
+builder.Services.Configure<NtfyOptions>(builder.Configuration.GetSection(NtfyOptions.SectionName));
 
 builder.Services
     .AddApiMvc()
@@ -28,7 +29,8 @@ builder.Services
     .AddApiAuthentication()
     .AddApiAuthorization()
     .AddApiRateLimiting()
-    .AddApiApplicationServices();
+    .AddApiApplicationServices()
+    .AddApiNtfyNotifications();
 
 var app = builder.Build();
 

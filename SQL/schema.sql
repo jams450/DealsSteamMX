@@ -389,3 +389,37 @@ CREATE TABLE IF NOT EXISTS public.job_runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_runs_job_started ON public.job_runs(job, started_at DESC);
+
+
+-- Global opt-in ntfy alert outbox.
+CREATE TABLE IF NOT EXISTS public.deal_alert_events (
+    deal_alert_event_id BIGSERIAL PRIMARY KEY,
+    dedup_key           VARCHAR(320) NOT NULL,
+    steam_game_id       INT NULL,
+    game_id             BIGINT NULL,
+    source              VARCHAR(16) NOT NULL,
+    offer_key           VARCHAR(128) NOT NULL,
+    price_minor         INT NOT NULL,
+    trigger_version     INT NOT NULL,
+    reasons             VARCHAR(64) NOT NULL,
+    score               NUMERIC(4,1) NULL,
+    title               VARCHAR(512) NOT NULL,
+    message             VARCHAR(1024) NOT NULL,
+    click_url           VARCHAR(1024) NULL,
+    status              VARCHAR(16) NOT NULL DEFAULT 'pending',
+    attempts            INT NOT NULL DEFAULT 0,
+    next_attempt_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_error          VARCHAR(256) NULL,
+    sent_at             TIMESTAMPTZ NULL,
+    created_at          TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_by          VARCHAR(100),
+    updated_by          VARCHAR(100),
+    CONSTRAINT uq_deal_alert_events_dedup UNIQUE (dedup_key)
+);
+
+-- Dispatcher scan: only pending rows whose retry deadline has passed, oldest first.
+CREATE INDEX IF NOT EXISTS idx_deal_alert_events_due
+    ON public.deal_alert_events(status, next_attempt_at);
+
+ANALYZE public.deal_alert_events;
