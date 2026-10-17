@@ -51,6 +51,9 @@ export type SteamBundleTierItem = {
   readonly type: string | null;
   readonly priceMinor: number | null;
   readonly priceCurrency: string | null;
+  // UUID del ítem en ITAD. Es la llave exacta para probar si el juego está en el tier; un snapshot
+  // viejo sin este campo queda en null y obliga a abstenerse, nunca a adivinar por título.
+  readonly itadGameId: string | null;
 };
 
 export type SteamBundleTier = {
@@ -97,6 +100,9 @@ export type SteamOwnership = {
 
 export type SteamGame = SteamSearchResult & {
   readonly publishers: readonly string[];
+  // Id canónico del juego en ITAD, la llave contra la que se compara la membresía de un tier. Null en
+  // un payload viejo o sin identidad: la comparación por juego se abstiene.
+  readonly itadGameId: string | null;
   readonly isFree: boolean;
   readonly currency: string | null;
   readonly initialPriceMinor: number | null;
@@ -431,6 +437,7 @@ const MAX_BUNDLE_TITLE_LENGTH = 200;
 const MAX_BUNDLE_SHOP_NAME_LENGTH = 120;
 const MAX_BUNDLE_DETAILS_LENGTH = 600;
 const MAX_BUNDLE_STATUS_LENGTH = 40;
+const MAX_ITAD_ID_LENGTH = 64;
 const STEAM_BUNDLE_STATUS_LENGTH = MAX_BUNDLE_STATUS_LENGTH;
 
 function normalizeBundleTierItem(value: unknown): SteamBundleTierItem | null {
@@ -442,7 +449,8 @@ function normalizeBundleTierItem(value: unknown): SteamBundleTierItem | null {
     title,
     type: toBoundedText(record === null ? null : read(record, "type"), MAX_BUNDLE_TITLE_LENGTH),
     priceMinor: toPriceMinor(record === null ? null : read(record, "priceMinor")),
-    priceCurrency: toCurrencyCode(record === null ? null : read(record, "priceCurrency"))
+    priceCurrency: toCurrencyCode(record === null ? null : read(record, "priceCurrency")),
+    itadGameId: toBoundedText(record === null ? null : read(record, "itadGameId"), MAX_ITAD_ID_LENGTH)
   };
 }
 
@@ -537,6 +545,7 @@ export function normalizeSteamGame(input: unknown): SteamGame | null {
   return {
     ...game,
     publishers: toNameList(read(value, "publishers")),
+    itadGameId: toBoundedText(value.itadGameId ?? value.ItadGameId, MAX_ITAD_ID_LENGTH),
     isFree: value.isFree === true || value.IsFree === true,
     currency: toText(value.currency ?? value.Currency),
     initialPriceMinor: toPriceMinor(value.initialPriceMinor ?? value.InitialPriceMinor),

@@ -20,6 +20,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ICurrentUserService, CurrentUserService>();
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<ISteamGameService, SteamGameService>();
+        services.AddScoped<BundleCatalogService>();
         services.AddScoped<IGameIdentityResolver, GameIdentityResolver>();
         services.AddScoped<IGameMergeService, GameMergeService>();
         services.AddScoped<ICrossStateReconciliationService, CrossStateReconciliationService>();

@@ -14,6 +14,7 @@ import { storeLabel } from "@/lib/contracts/stores";
 import { formatReviewMonth, reviewStatusLabel } from "@/lib/contracts/reviews";
 import { formatCurrency } from "@/lib/format/currency";
 import { pickPricedBundleTier } from "./_lib/bundle-card";
+import { gameTierComparison, tierMembership, tierShare } from "./_lib/bundle-share";
 
 interface GameClientProps {
   readonly appId: number;
@@ -613,6 +614,13 @@ function OfferGroup({ id, heading, gameName, offers, cheapest }: OfferGroupProps
 interface BundleCardProps {
   readonly bundle: SteamGameBundle;
   readonly gameName: string;
+  // Precio suelto del juego en Steam, para la comparación honesta contra el reparto del tier. Sin
+  // moneda (o con moneda distinta) la comparación se abstiene en vez de convertir.
+  readonly standaloneMinor: number | null;
+  readonly standaloneCurrency: string | null;
+  // Id ITAD del juego: la única llave con la que se prueba si un tier lo incluye. Se compara por
+  // identidad exacta (nunca por título) y un id ausente abstiene.
+  readonly gameItadId: string | null;
 }
 
 /**
@@ -620,8 +628,13 @@ interface BundleCardProps {
  * muestra precio del bundle, total individual y ahorro **solo** cuando la comparación es válida
  * (`status === "ok"`); si no, muestra el motivo en texto y ninguna cifra. El verde se limita a
  * `savingsMinor > 0`.
+ *
+ * El reparto equitativo (`tierShare`) es una lectura distinta del mismo tier: divide el precio del
+ * tier entre sus juegos elegibles y exige comprar el tier completo. La comparación por juego solo se
+ * afirma en el tier que lista este juego por su id ITAD exacto (`tierMembership`): un tier con otros
+ * juegos no hace el reclamo, y un snapshot viejo sin ids se abstiene.
  */
-function BundleCard({ bundle, gameName }: BundleCardProps) {
+function BundleCard({ bundle, gameName, standaloneMinor, standaloneCurrency, gameItadId }: BundleCardProps) {
   const expiresDisplay = formatObserved(bundle.expiresAt);
   const publishedDisplay = formatObserved(bundle.publishedAt);
   const observedDisplay = formatObserved(bundle.observedAt);
@@ -631,6 +644,9 @@ function BundleCard({ bundle, gameName }: BundleCardProps) {
   return (
     <article className="space-y-3 rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4">
       <p className="sr-only">Bundle de {gameName}</p>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="tabler-badge tabler-badge-info">Este juego pertenece a este bundle</span>
+      </div>
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-1.5">
           {href ? (
@@ -663,6 +679,9 @@ function BundleCard({ bundle, gameName }: BundleCardProps) {
           {bundle.tiers.map((tier, tierIndex) => {
             const price = tierPrice(tier);
             const comparison = tier.status === "ok" ? tierComparisonView(tier) : null;
+            const share = tierShare(tier);
+            const membership = tierMembership(tier, gameItadId);
+            const standaloneComparison = gameTierComparison(tier, standaloneMinor, standaloneCurrency, gameItadId);
             return (
               <li key={tierIndex} className="border-t border-default pt-3 first:border-t-0 first:pt-0">
                 {comparison ? (
@@ -704,6 +723,40 @@ function BundleCard({ bundle, gameName }: BundleCardProps) {
                     <p className="text-xs text-muted">Sin comparación: {bundleReasonLabel(tier.reason)}</p>
                   </div>
                 )}
+                {share.status === "ok" && share.allocatedPerGameMinor !== null && share.currency ? (
+                  <div className="mt-2 space-y-1">
+                    <p className="text-xs text-secondary">
+                      Reparto equitativo estimado:{" "}
+                      <span className="font-semibold text-primary">
+                        {formatMinor(share.allocatedPerGameMinor, share.currency)}
+                      </span>{" "}
+                      por juego ·{" "}
+                      {share.eligibleGameCount === 1
+                        ? "1 juego elegible"
+                        : `${share.eligibleGameCount} juegos elegibles`}{" "}
+                      · requiere comprar el tier completo; no es el precio de este juego.
+                    </p>
+                    {standaloneComparison ? (
+                      <p className={cn("text-xs font-semibold", standaloneComparison.cheaper ? "text-success" : "text-muted")}>
+                        {standaloneComparison.cheaper
+                          ? `Más barato que el juego suelto: el reparto por juego es ${formatMinor(standaloneComparison.allocatedPerGameMinor, standaloneComparison.currency)}.`
+                          : "El reparto no es más barato que el precio suelto del juego."}
+                      </p>
+                    ) : membership === false ? (
+                      <p className="text-xs text-muted">Este juego no está en este tier, así que su reparto no aplica.</p>
+                    ) : membership === true ? (
+                      <p className="text-xs text-muted">
+                        Sin comparación contra el precio suelto: no hay un precio suelto del juego en la
+                        misma moneda que el tier.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted">
+                        Sin comparación: este snapshot del tier no trae la identidad de sus ítems, así que
+                        no se afirma que este juego sea más barato en el bundle.
+                      </p>
+                    )}
+                  </div>
+                ) : null}
                 {tier.games.length > 0 ? (
                   <ul className="mt-2 flex flex-wrap gap-1">
                     {tier.games.map((item, itemIndex) => {
@@ -1437,7 +1490,12 @@ export function GameClient({ appId }: GameClientProps) {
                 Paquetes que incluyen este juego, según ITAD. Se muestran aparte de las ofertas: un bundle
                 tiene tiers y varios ítems, y caduca. Cuando ITAD publica el precio individual de todos los
                 ítems, el tier compara el bundle contra comprarlos por separado; si falta algún dato, se
-                muestra el motivo y ninguna cifra de ahorro.
+                muestra el motivo y ninguna cifra de ahorro. Además, cuando el tier tiene un precio único,
+                una lista completa y al menos un juego, se muestra su reparto equitativo estimado por
+                juego, que exige comprar el tier completo y no es el precio de este juego. El reclamo de
+                «más barato que el juego suelto» solo se hace en el tier que lista este juego por su id
+                ITAD exacto; un tier con otros juegos no lo afirma, y un snapshot viejo sin ids se
+                abstiene en vez de adivinar por título.
               </p>
               <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm font-semibold text-secondary">
                 <span>Datos de bundles:</span>
@@ -1465,6 +1523,9 @@ export function GameClient({ appId }: GameClientProps) {
                   key={bundle.bundleKey ?? `${bundle.title}-${bundleIndex}`}
                   bundle={bundle}
                   gameName={game.name}
+                  standaloneMinor={game.currentPriceMinor}
+                  standaloneCurrency={game.currency}
+                  gameItadId={game.itadGameId}
                 />
               ))}
             </div>

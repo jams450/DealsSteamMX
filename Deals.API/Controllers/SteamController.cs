@@ -127,7 +127,8 @@ public sealed class SteamController(
                 ownership.PossibleMatchStores.ToArray()),
             reviews.Select(ReviewResponse.From).ToList(),
             isFavorite,
-            game.Publishers ?? []);
+            game.Publishers ?? [],
+            game.ItadGameId);
 
     private static SteamGameBundleResponse ToResponse(SteamGameBundle bundle) =>
         new(bundle.Source, bundle.BundleKey, bundle.Title, bundle.ShopId, bundle.ShopName,
@@ -146,7 +147,7 @@ public sealed class SteamController(
             tier.MxnIndividualTotalMinor, tier.MxnSavingsMinor);
 
     private static SteamGameBundleTierGameResponse ToResponse(SteamGameBundleTierGame game) =>
-        new(game.Title, game.Type, game.PriceMinor, game.PriceCurrency);
+        new(game.Title, game.Type, game.PriceMinor, game.PriceCurrency, game.ItadGameId);
 
     private static SteamGameOfferResponse ToResponse(SteamGameOffer offer) =>
         new(offer.Source, offer.OfferKey, offer.ShopId, offer.ShopName, offer.Classification,

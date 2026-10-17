@@ -30,15 +30,17 @@ public sealed record SteamGameOffer(
     string? HistoryLowCurrency = null);
 
 /// <summary>
-/// One item listed in a bundle tier, as the display contract expects it: title, optional type and the
-/// current ITAD price of the item itself. The provider game id is deliberately not persisted nor exposed,
-/// but the item price is what makes the tier comparison honest.
+/// One item listed in a bundle tier, as the display contract expects it: title, optional type, the
+/// current ITAD price of the item itself and its ITAD UUID. The UUID is kept so a read can prove by
+/// exact identity, never by title, which tier lists the queried game; it is required to match
+/// <see cref="SteamGameDetails.ItadGameId"/> and carries no price on its own.
 /// </summary>
 public sealed record SteamGameBundleTierGame(
     string Title,
     string? Type,
     int? PriceMinor,
-    string? PriceCurrency);
+    string? PriceCurrency,
+    string? ItadGameId = null);
 
 /// <summary>
 /// One tier of a bundle: its own price, the items it lists and the honest, same-provider comparison
@@ -105,4 +107,9 @@ public sealed record SteamGameDetails(
     IReadOnlyList<SteamGameBundle>? Bundles = null,
     DateTime? BundlesRefreshedAt = null,
     bool BundlesStale = false,
-    IReadOnlyList<string>? Publishers = null);
+    IReadOnlyList<string>? Publishers = null,
+    /// <summary>
+    /// ITAD canonical id of this game. It is the exact key a bundle tier is matched against; when it is
+    /// absent the per-game comparison abstains instead of guessing by title.
+    /// </summary>
+    string? ItadGameId = null);

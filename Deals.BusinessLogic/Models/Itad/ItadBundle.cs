@@ -1,9 +1,8 @@
 namespace Deals.BusinessLogic.Models.Itad;
 
 /// <summary>
-/// One item listed inside a bundle tier. <see cref="Id"/> is the ITAD game id and exists only to
-/// attribute the bundle to the queried game and to resolve its current price; it is never persisted nor
-/// exposed. <see cref="CurrentPriceMinor"/> is the lowest current ITAD deal price for the item, with its
+/// One item listed inside a bundle tier. <see cref="Id"/> is the ITAD game id, preserved in the
+/// sanitized tier snapshot and exposed to prove exact tier membership without matching titles. <see cref="CurrentPriceMinor"/> is the lowest current ITAD deal price for the item, with its
 /// normalized currency; null when ITAD reports no comparable deal.
 /// </summary>
 public sealed record ItadBundleItem(

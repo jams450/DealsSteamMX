@@ -108,3 +108,36 @@ test("reviews: normaliza las reseñas del juego y descarta las inválidas", () =
   assert.equal(game?.reviews[0]?.score, 90);
   assert.equal(game?.reviews[0]?.isGoty, true);
 });
+
+// El id ITAD es la llave con la que se prueba, sin adivinar por título, si un tier contiene el juego.
+// Se expone en el juego y en cada ítem del tier; un payload viejo (sin el campo) queda en null, que
+// obliga a abstenerse en vez de afirmar una ausencia falsa.
+test("itadGameId: se conserva el del juego y el de los ítems; un payload viejo queda en null", () => {
+  const game = normalizeSteamGame({ ...baseGame, itadGameId: "itad-game-1" }) as SteamGame;
+  assert.equal(game?.itadGameId, "itad-game-1");
+  assert.equal((normalizeSteamGame(baseGame) as SteamGame)?.itadGameId, null);
+
+  const withItem = normalizeSteamGame({
+    ...baseGame,
+    bundles: [
+      {
+        bundleKey: "b1",
+        title: "Bundle",
+        tiers: [
+          {
+            priceMinor: 1000,
+            currency: "USD",
+            addon: false,
+            itemsComplete: true,
+            games: [
+              { title: "A", type: "game", priceMinor: 500, priceCurrency: "USD", itadGameId: "itad-a" },
+              { title: "B", type: "game", priceMinor: 500, priceCurrency: "USD" }
+            ]
+          }
+        ]
+      }
+    ]
+  }) as SteamGame;
+  assert.equal(withItem?.bundles[0]?.tiers[0]?.games[0]?.itadGameId, "itad-a");
+  assert.equal(withItem?.bundles[0]?.tiers[0]?.games[1]?.itadGameId, null);
+});

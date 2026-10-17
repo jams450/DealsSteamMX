@@ -35,6 +35,7 @@ when it was last observed.
 | `/discover` | `app/discover/{page,discover-client}.tsx`, `app/discover/_lib/discover-api.ts` | Product | Discovery: three read-only lists over persisted `steam_games` rows (discount / historic / recent), capsule cards linking to `/games/[steamAppId]` |
 | `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: FX reference strip above the card, cover + official Steam price + sources historical minimum + local Steam minimum + the page's single refresh control, per-provider best-price cards with each price's observation date, CTA footer, ownership line (`ownership`), Steam source table, multi-store offers grouped by provider, bundles, reviews |
 | `/wishlist` | `app/wishlist/{page,wishlist-client}.tsx`, `app/wishlist/_lib/*` | Product | Steam wishlist: four explicit states, "Sincronizar ahora" with its report, capsule cards (base, historical low, MXN official/keyshop minimums, per-band discount % and a hybrid 0-10 deal score driven by a backend viable-minimum threshold) with a per-row refresh; a multi-game selection (by AppID) with a sticky bar showing the package total under two alternative scenarios (official / keys) |
+| `/bundles` | `app/bundles/{page,bundles-client}.tsx`, `app/bundles/_lib/bundles-api.ts` | Product | Bundle catalog: authenticated, bounded, read-only list of the persisted active ITAD bundles with their linked games and the equal-share estimate per tier; never a live provider call, never an offer |
 | `/library` | `app/library/{page,library-client}.tsx`, `app/library/_lib/*` | Admin | Playnite library import (manual JSON upload of ≤10 MiB) plus the owned/subscription list grouped by store, with the Game Pass tag and the explicit "Sin precios vinculados" state |
 | `/login` | `app/login/page.tsx` | Public | Only public page, plus `/api/auth/{login,refresh,session}` |
 | `/users` | `app/users/*` | Admin | Reference admin slice (`AdminShell` + `DataGrid`), admin role only; consumes the same tokens, cards, badges and `Button` variants as the product surface |
@@ -43,7 +44,7 @@ when it was last observed.
 - **Gate:** `middleware.ts` + `isPublicRoute` (`lib/security/route-policy.ts`) redirect any app route
   without a usable session to `/login?reason=session_expired`. There is currently no public product
   surface; "product" means the consumer-facing area (`/`, `/search`, `/discover`, `/games/*`), not anonymous access.
-- **Scope of this contract:** `/`, `/search`, `/discover`, `/games/[steamAppId]`, `/wishlist`, `/library` and `ProductShell`. `/users`
+- **Scope of this contract:** `/`, `/search`, `/discover`, `/games/[steamAppId]`, `/wishlist`, `/bundles`, `/library` and `ProductShell`. `/users`
   also consumes it (tokens, `.app-card`, `.app-topbar`, `.table-*`, semantic badges and `Button` variants)
   while keeping `AdminShell` and its admin-only gating. `/steam` still renders inside `AdminShell` with its
   previous layout: it inherits the shared tokens but was not migrated.
@@ -101,6 +102,18 @@ when it was last observed.
   (BFF `POST /api/bff/wishlist/package-preview`) is read-only and stateless: the client sends only AppIDs,
   never amounts, and the server re-reads the same snapshot the rows read and stamps `pricedAt`. Nothing is
   persisted, no bundle is applied, and no figure from here enters `game_offers` or any savings math.
+- **Bundle catalog reality:** `/bundles` is fed by the API's `GET /api/bundles` (BFF `GET /api/bff/bundles`),
+  both `UserWithId` on the API and read-only. It answers from the `external_bundles` /
+  `external_bundle_games` rows the game refresh already persisted (ITAD only; expired rows excluded) and
+  never calls a provider, so opening the page cannot fan out to an external source. One read is capped at
+  `MaxBundles` (100) and at 20 linked games per bundle. Each bundle lists the games confirmed by the
+  persisted relation (the provider matched them by item identity, never by title) and one row per tier with
+  its published price and the **equal-share estimate**: tier price divided by its eligible plain-game count,
+  labelled as an estimate that requires buying the whole tier and explicitly not the price of any one game.
+  A tier with no published price (including a build-your-own selection), an addon, an incomplete item list,
+  a price without currency or no eligible game emits the machine reason and **no figure**: unknown is never
+  rendered as 0. Nothing here is an offer, nothing is written to `game_offers`, and the existing aggregate
+  tier savings on the game detail is a separate reading that this page does not replace or alter.
 - **Library reality:** `/library` is fed by the API's `GET /api/library` (BFF `GET /api/bff/library`) and
   `POST /api/library/import` (BFF `POST /api/bff/library/import`), both `AdminWithId` on the API. The list is
   the `user_library` snapshot imported by hand from a Playnite JSON export: the read answers `{ items: [...] }`
@@ -417,7 +430,20 @@ same source.
     ITAD: one row per game with the regional price, first among the store tabs because it is the store's
     real price, not an estimate.
   - `Bundles` — the bundle cards moved unchanged from their old section (header, note, attribution,
-    counts, freshness badges and cards), display-only: never offer rows, never savings math.
+    counts, freshness badges and cards), display-only: never offer rows, never savings math. Each card now
+    also states «Este juego pertenece a este bundle» (the card only exists for a bundle the persisted ITAD
+    relation linked to this game, i.e. membership from item identity, never from a title match) and, per
+    tier with a published price, a complete item list and at least one eligible game, its **equal-share
+    estimate** (`Reparto equitativo estimado`), labelled as requiring the whole tier and not being this
+    game's price. The per-game cheaper claim is rendered **only for the tier that lists this game**, proved
+    by exact ITAD item UUID (`SteamGameBundleTierGame.ItadGameId` == `SteamGame.ItadGameId`, never by
+    title). The item UUID is preserved through `BundleTierMapper` into `external_bundles.tiers_json` and
+    exposed additively by the API/TS contract; a legacy snapshot whose items carry no UUID yields
+    `"unknown"` membership and the card abstains, and a tier with other games reports no claim for this
+    game. The comparison uses the exact division (`tierPrice < standalone * eligibleGameCount`), never the
+    rounded display figure. The existing aggregate tier savings is untouched and remains a separate figure
+    (`_lib/bundle-share.ts` owns the share and membership rules and `_lib/bundle-card.ts` the best-tier
+    choice).
 - `Observado` uses `Intl.DateTimeFormat("es-MX", { dateStyle: "medium" })`. `fxRateDate` arrives as
   `YYYY-MM-DD` and is reordered to `dd/MM/yyyy` by string split — never through `new Date()` — so the
   day cannot shift by timezone.
@@ -1146,11 +1172,14 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   does not validate, so a provider-specific value added in only one of the two places drops every row of
   that kind with no build error and no visible failure. That is how `keyshop` could have disappeared.
 - **Almost no unit tests.** `bestGroupOffer` / `cheapestTies` are pure functions on purpose so they can be
-  covered the day a test runner exists. `node --test` now covers two of these pure modules —
-  `app/games/[steamAppId]/_lib/bundle-card.test.ts` (`pickPricedBundleTier`) and the wishlist `_lib` pair —
+  covered the day a test runner exists. `node --test` now covers these pure modules —
+  `app/games/[steamAppId]/_lib/bundle-card.test.ts` (`pickPricedBundleTier`),
+  `app/games/[steamAppId]/_lib/bundle-share.test.ts` (`tierShare` / `tierMembership` / `compareShareToStandalone` / `gameTierComparison`),
+  `lib/contracts/bundles.test.ts` (`normalizeBundleCatalog`),
+  `lib/contracts/steam.test.ts` (bundle/tier/item normalization incl. `itadGameId`) and the wishlist `_lib` pair —
   and the rest is still uncovered. Run them from inside the `_lib` directory: `node --test bundle-card.test.ts`;
   from the repo root the bracketed path is read as a glob and matches nothing, which reports
-  `tests 0` and **succeeds**.
+  `tests 0` and **succeeds**. The contracts test runs from `lib/contracts`.
 - **Wishlist pages on the server.** The API returns one page of the snapshot and the page renders it
   as capsule cards; the normalizer (`app/wishlist/_lib/wishlist-contract.ts`) caps a payload at 5000 items and
   drops unknown/extra fields. Widen the page sizes only against a real oversized account, not speculatively.

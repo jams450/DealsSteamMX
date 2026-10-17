@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using Deals.BusinessLogic.Interfaces;
+using Deals.BusinessLogic.Models.Bundles;
 using Deals.BusinessLogic.Models.Catalog;
 using Deals.BusinessLogic.Models.GgDeals;
 using Deals.BusinessLogic.Models.Itad;
@@ -787,6 +788,9 @@ public sealed class SteamGameService(
                 GgDealsStale = ggDealsStale,
                 EpicRefreshedAt = game.EpicRefreshedAt,
                 MicrosoftRefreshedAt = game.MicrosoftRefreshedAt,
+                // Freshest identity of the tracked row: a background pass may have set it after baseDetails
+                // was captured, and the per-game tier comparison needs the current value to be honest.
+                ItadGameId = game.ItadGameId,
                  Bundles = game.BundleLinks
                      .Where(link => !removedLinks.Contains(link) &&
                          link.Bundle is not null &&
@@ -1322,37 +1326,11 @@ public sealed class SteamGameService(
     }
 
     /// <summary>
-    /// Maps provider tiers to the sanitized persisted shape: item ids are dropped and both lists are capped
-    /// to the display contract. The item's current ITAD price is kept because it is what allows the honest
-    /// comparison at read time, but no saving is stored as truth.
+    /// Maps provider tiers to the sanitized persisted shape through <see cref="BundleTierMapper"/>: the
+    /// item ITAD UUID and price are kept, both lists are capped, and no saving is stored as truth.
     /// </summary>
-    private static IReadOnlyList<SteamGameBundleTier> MapTiers(IReadOnlyList<ItadBundleTier> tiers)
-    {
-        var mapped = new List<SteamGameBundleTier>(Math.Min(tiers.Count, MaxBundleTiers));
-        foreach (var tier in tiers.Take(MaxBundleTiers))
-        {
-            var games = new List<SteamGameBundleTierGame>(Math.Min(tier.Games.Count, MaxBundleTierGames));
-            foreach (var game in tier.Games.Take(MaxBundleTierGames))
-            {
-                games.Add(new SteamGameBundleTierGame(
-                    game.Title,
-                    game.Type,
-                    game.CurrentPriceMinor,
-                    game.PriceCurrency));
-            }
-
-            mapped.Add(new SteamGameBundleTier(
-                tier.PriceMinor,
-                tier.Currency,
-                tier.Addon,
-                // The persistence cap is a truncation too: a tier summed over fewer items than its own
-                // list is a partial total, so it must be persisted as incomplete.
-                tier.ItemsComplete && tier.Games.Count <= MaxBundleTierGames,
-                games));
-        }
-
-        return mapped;
-    }
+    private static IReadOnlyList<SteamGameBundleTier> MapTiers(IReadOnlyList<ItadBundleTier> tiers) =>
+        BundleTierMapper.Map(tiers, MaxBundleTiers, MaxBundleTierGames);
 
     private static string? SerializeTiers(IReadOnlyList<SteamGameBundleTier> tiers) =>
         tiers.Count == 0 ? null : JsonSerializer.Serialize(tiers, BundleTierJsonOptions);
@@ -2181,7 +2159,8 @@ public sealed class SteamGameService(
             game.DiscountPercent,
             game.Region,
             game.ObservedAt,
-            Publishers: game.Publishers ?? []);
+            Publishers: game.Publishers ?? [],
+            ItadGameId: game.ItadGameId);
 
     private static SteamGameDetails ToDetails(
         SteamGame game,

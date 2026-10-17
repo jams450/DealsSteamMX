@@ -1,4 +1,4 @@
-import { Bookmark, Compass, GitMerge, Home, Library, Search, Users, Activity } from "lucide-react";
+import { Activity, Bookmark, Compass, GitMerge, Home, Library, Package, Search, Users } from "lucide-react";
 
 export type NavLink = {
   href: string;
@@ -23,6 +23,7 @@ export const productNavItems: NavItem[] = [
   { href: "/search", label: "Comparar", icon: Search },
   { href: "/discover", label: "Descubrir", icon: Compass },
   { href: "/wishlist", label: "Wishlist", icon: Bookmark },
+  { href: "/bundles", label: "Bundles", icon: Package },
   { href: "/library", label: "Biblioteca", icon: Library },
   {
     label: "Merge",

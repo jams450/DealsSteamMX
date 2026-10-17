@@ -32,12 +32,15 @@ public sealed record SteamGameOfferResponse(
 /// <summary>
 /// Item listed in a bundle tier. Mirrors the frontend contract exactly. <see cref="PriceMinor"/> and
 /// <see cref="PriceCurrency"/> are the item's current ITAD price, reported by the same provider as the tier.
+/// <see cref="ItadGameId"/> is the provider item UUID and is the exact key a per-game membership check
+/// uses; a null id is a legacy snapshot and never a match.
 /// </summary>
 public sealed record SteamGameBundleTierGameResponse(
     string Title,
     string? Type,
     int? PriceMinor,
-    string? PriceCurrency);
+    string? PriceCurrency,
+    string? ItadGameId);
 
 /// <summary>
 /// One tier of a bundle with the honest, same-provider comparison derived at read time. The savings are
@@ -118,4 +121,9 @@ public sealed record SteamGameResponse(
     SteamGameOwnershipResponse Ownership,
     IReadOnlyList<ReviewResponse> Reviews,
     bool IsFavorite,
-    IReadOnlyList<string> Publishers);
+    IReadOnlyList<string> Publishers,
+    /// <summary>
+    /// ITAD canonical id of the game. The game detail matches bundle tier items against this exact value;
+    /// when it is absent the per-game comparison abstains rather than matching by title.
+    /// </summary>
+    string? ItadGameId);
