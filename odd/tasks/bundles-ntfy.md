@@ -16,7 +16,7 @@ T1 | S1-S5 | inline tracking | done | specification recorded; delivery log commi
 T2 | S1,S5 | delegated bundle backend + frontend | done | 9216371; independent S1 MET, unavailable checks explicitly accepted by user for delivery.
 T3 | S2-S5 | delegated notification backend | done | c4db4fb; independent S2-S5 MET; unavailable runtime checks accepted; disabled, no real sends.
 T4 | S1-S5 | inline seam + independent verification | done with limitations | backend build/checks and 52 frontend module tests PASS; user accepted unavailable frontend build/lint/browser and PostgreSQL proof with "commit y merge".
-T5 | S1-S5 | inline delivery | in_progress | 9216371 bundles; c4db4fb ntfy; local main merge authorized with limitations accepted; no push.
+T5 | S1-S5 | inline delivery | done | 9216371 bundles; c4db4fb ntfy; 9fae727 docs. Local main fast-forward verified; no push.
 
 ## Log
 L1. Original request: "Implementa lo de bundles nueva seccion que se vea, que en el juego salga si pertenece a un bundle y si es mas barato -> considerar tiers si tiene y precios por juego division equitativa. 
@@ -31,3 +31,5 @@ L5. Bundle first handoff: backend 25 checks, frontend share14/catalog12/summary6
 L4. Parallel writer trigger: two independent substantive deliverables (bundle read/UI; ntfy producer/dispatcher) with disjoint edit surfaces, launched together. Forecast 800–1200 authored lines including checks; review in cohesive work-unit slices (bundle, notifications); preserve tests/docs rather than compressing code. No sources written before this log and mirror.
 
 L8. User disposition verbatim: "commit y merge" after missing proof was disclosed. Git identity provided explicitly; configured locally only. Commits 9216371 (bundles) and c4db4fb (ntfy) created. These are cohesive functional units with short messages, but large diffs (1750/2448 additions respectively), not small review slices. Native review unavailable: CLI absent and facade assessment unassessable on untracked scope; independent verification stands, no native approval claimed. No migration or actual notifications.
+
+L9. Local main fast-forward to 9fae727 succeeded after explicit identity configuration. Only .worktrees/ remains untracked; isolated notification worktree retained, not committed or deleted. Final delivery bookkeeping follows as a documentation commit.
