@@ -25,6 +25,10 @@ static SteamGameBundleTier Tier(
     new(priceMinor, currency, addon, itemsComplete,
         items.Select(item => new SteamGameBundleTierGame(item.Title, item.Type, item.PriceMinor, "USD")).ToList());
 
+static SteamGameBundleTier MatchTier(params (string ItadId, string Title)[] items) =>
+    new(1000, "USD", false, true,
+        items.Select(item => new SteamGameBundleTierGame(item.Title, "game", 100, "USD", item.ItadId)).ToList());
+
 // --- Allocate -------------------------------------------------------------
 
 var ok = BundleShare.Allocate(Tier(1000, "USD", false, true, ("A", "game", 500), ("B", "game", 700)));
@@ -109,6 +113,144 @@ Check(restored[0].Games[0].ItadGameId == "itad-a" && restored[0].Games[1].ItadGa
 var truncated = BundleTierMapper.Map(new[] { itadTier }, 20, 1);
 Check(truncated[0].Games.Count == 1 && !truncated[0].ItemsComplete,
     "a persistence-truncated tier is marked incomplete");
+
+// --- Catalog dedup / pagination / wishlist matching -------------------------------------------
+// The catalog reads two sources (itad and itad_global) and must collapse a bundle seen in both,
+// paginate honestly and highlight the current user's wishlist without hiding non-wishlist bundles.
+// Every rule below is a pure function so it is exercised without a database.
+
+static BundleCatalogSnapshot Snap(string source, string key, DateTime observedAt, DateTime? expiresAt = null, string? title = null) =>
+    new(source, key, title ?? key, expiresAt, observedAt);
+
+var t0 = new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc);
+
+var fresher = BundleCatalogOrder.Deduplicate(new[]
+{
+    Snap("itad", "b1", t0),
+    Snap("itad_global", "b1", t0.AddHours(1))
+});
+Check(fresher.Count == 1 && fresher[0].Source == "itad_global",
+    "a bundle seen in both sources keeps the fresher snapshot");
+
+var tied = BundleCatalogOrder.Deduplicate(new[]
+{
+    Snap("itad_global", "b1", t0),
+    Snap("itad", "b1", t0)
+});
+Check(tied.Count == 1 && tied[0].Source == "itad", "an equal timestamp prefers itad");
+
+var ordered = BundleCatalogOrder.Deduplicate(new[]
+{
+    Snap("itad", "b2", t0, null, "Sin fecha"),
+    Snap("itad", "b1", t0, t0.AddDays(1), "Con fecha"),
+    Snap("itad_global", "b3", t0, t0.AddDays(2), "Otro")
+});
+Check(ordered.Count == 3, "distinct bundle keys are all retained");
+Check(ordered[0].BundleKey == "b1" && ordered[2].BundleKey == "b2", "soonest expiry first and no-date last");
+
+var many = Enumerable.Range(0, 7)
+    .Select(i => Snap("itad", $"k{i}", t0, t0.AddDays(1), $"T{i:00}"))
+    .ToList();
+var page1 = BundleCatalogPager.Paginate(many, 1, 3);
+Check(page1.Total == 7 && page1.Items.Count == 3 && page1.HasMore,
+    "page 1 of 7 with size 3 has three items and more");
+Check(page1.Items.Count == 3 && page1.Total == 7 && many.Count == 7,
+    "pagination never filters items by wishlist");
+var page3 = BundleCatalogPager.Paginate(many, 3, 3);
+Check(page3.Items.Count == 1 && !page3.HasMore, "the last page reports the remainder and no more");
+var pagePast = BundleCatalogPager.Paginate(many, 9, 3);
+Check(pagePast.Items.Count == 0 && !pagePast.HasMore && pagePast.Total == 7,
+    "a page past the end is empty but keeps the honest total");
+Check(page1.Total == 7 && page1.Total != BundleCatalogPager.MaxPageSize,
+    "the honest total is never the fixed page-size bound");
+Check(BundleCatalogPager.NormalizePageSize(1000) == BundleCatalogPager.MaxPageSize,
+    "a huge page size is clamped to the contract bound");
+Check(BundleCatalogPager.NormalizePage(null) == 1 && BundleCatalogPager.NormalizePage(0) == 1,
+    "a missing or invalid page defaults to 1");
+Check(BundleCatalogPager.NormalizePageSize(null) == BundleCatalogPager.DefaultPageSize,
+    "a missing page size defaults to the contract default");
+
+var library = new[]
+{
+    new BundleWishlistLibraryRow(1, "steam", "wished", "100"),
+    new BundleWishlistLibraryRow(1, "steam", "owned", "200"),
+    new BundleWishlistLibraryRow(2, "steam", "wished", "300"),
+    new BundleWishlistLibraryRow(1, "epic", "wished", "999")
+};
+var gameRows = new[]
+{
+    new BundleWishlistGameRow(100, "Wished A", "itad-a", "mx"),
+    new BundleWishlistGameRow(200, "Owned B", "itad-b", "mx"),
+    new BundleWishlistGameRow(300, "Other C", "itad-c", "mx")
+};
+var resolved = BundleWishlist.Resolve(1, library, gameRows);
+Check(resolved.Count == 1 && resolved[0].AppId == 100,
+    "only the current user's wished steam rows resolve, never another user's or another store's");
+
+var nonMx = BundleWishlist.Resolve(1, library, new[] { new BundleWishlistGameRow(100, "Wished A", "itad-a", "us") });
+Check(nonMx.Count == 0, "a wished appid whose catalog row is not MX is not a match identity");
+
+var wish = new[] { new BundleWishlistEntry(100, "Wished A", "itad-a") };
+var exactTiers = new[] { MatchTier(("itad-a", "Titulo distinto al de la wishlist")) };
+Check(BundleWishlist.Match(wish, exactTiers, []).Count == 1,
+    "a tier item UUID matches even when the title differs");
+var sameTitleWrongId = new[] { MatchTier(("itad-zzz", "Wished A")) };
+Check(BundleWishlist.Match(wish, sameTitleWrongId, []).Count == 0,
+    "an equal title with a different UUID is never a match");
+Check(BundleWishlist.Match(wish, [], [new BundleCatalogMember(100, "Wished A", null)]).Count == 1,
+    "a proven linked appid is a valid fallback match");
+Check(BundleWishlist.Match([new BundleWishlistEntry(100, "Wished A", null)], [], new[]
+    {
+        new BundleCatalogMember(100, "Wished A", null),
+        new BundleCatalogMember(101, "Otra", null)
+    }).Single().AppId == 100,
+    "a wishlist entry without an ITAD id still matches through its proven appid");
+Check(BundleWishlist.Match(wish, exactTiers, []).Single().Name == "Wished A",
+    "the match reports the wishlist game name, not the provider title");
+
+// --- gg.deals selection ratio + source isolation (T6) ------------------------------------------
+// gg.deals publishes a "choose N of M" count instead of listing only the included games. The count is
+// the honest denominator when it is satisfiable; a count outside the listed set is incomplete. ITAD
+// tiers carry no count and keep their existing eligible-game denominator (defaults preserved).
+
+var byoTier = new SteamGameBundleTier(
+    1000, "USD", false, true,
+    Enumerable.Range(0, 10)
+        .Select(index => new SteamGameBundleTierGame($"G{index}", "game", null, null, null, $"https://gg.deals/game/{index}/"))
+        .ToList(),
+    SelectionCount: 2);
+var byo = BundleShare.Allocate(byoTier);
+Check(byo.SelectionCount == 2, "the choose-N rule survives allocation");
+Check(byo.AllocatedPerGameMinor == 500, "the price divides by the selection count, not the listed game count");
+Check(byo.EligibleGameCount == 10, "the eligible count still reports every listed game");
+Check(byo.AllocationStatus == BundleShare.OkStatus, "a satisfiable choose-N tier is allocatable");
+
+var itadDefault = BundleShare.Allocate(Tier(1000, "USD", false, true, ("A", "game", 1), ("B", "game", 1)));
+Check(itadDefault.SelectionCount is null, "an ITAD tier keeps a null selection count");
+Check(itadDefault.AllocatedPerGameMinor == 500, "an ITAD tier still divides by its eligible games");
+
+var unsatisfiable = BundleShare.Allocate(new SteamGameBundleTier(
+    1000, "USD", false, true,
+    new[] { new SteamGameBundleTierGame("A", "game", null, null, null, null) },
+    SelectionCount: 5));
+Check(unsatisfiable.AllocationStatus == BundleShare.ItemsIncompleteStatus,
+    "a choose-N larger than the listed games is incomplete and earns no share");
+Check(unsatisfiable.AllocatedPerGameMinor is null, "an unsatisfiable tier never publishes a figure");
+
+var flatTier = new SteamGameBundleTier(500, "USD", false, true,
+    new[] { new SteamGameBundleTierGame("A", "game", null, null, null, "https://gg.deals/game/a/") },
+    SelectionCount: null);
+Check(flatTier.Games[0].Url == "https://gg.deals/game/a/", "the gg.deals item URL survives on the tier item");
+Check(flatTier.SelectionCount is null, "a tier with no choose-N rule defaults to null");
+
+var noCrossSource = BundleCatalogOrder.Deduplicate(new[]
+{
+    Snap("itad", "gg:abc", t0),
+    Snap("ggdeals", "gg:abc", t0.AddHours(1))
+});
+Check(noCrossSource.Count == 2, "a gg.deals key never deduplicates against an ITAD bundle even when the key text matches");
+Check(noCrossSource.Any(snapshot => snapshot.Source == BundleCatalogOrder.GgDealsSource),
+    "the gg.deals snapshot survives the cross-source dedup");
 
 if (failures.Count > 0)
 {

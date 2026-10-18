@@ -1,16 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { ExternalLink } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, ExternalLink, Heart, ListPlus } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { formatCurrency } from "@/lib/format/currency";
-import type {
-  BundleAllocationStatus,
-  BundleCatalog,
-  BundleCatalogItem,
-  BundleCatalogTier
+import {
+  BUNDLE_PAGE_SIZE_DEFAULT,
+  GGDEALS_SOURCE,
+  type BundleAllocationStatus,
+  type BundleCatalogItem,
+  type BundleCatalogTier
 } from "@/lib/contracts/bundles";
 import { getBundleCatalog } from "./_lib/bundles-api";
 
@@ -48,14 +49,15 @@ function AllocationLine({
 }) {
   return (
     <p className="text-xs text-secondary">
-      Reparto equitativo estimado: <span className="font-semibold text-primary">{formatMinor(amountMinor, currency)}</span> por
-      juego · {eligibleGameCount === 1 ? "1 juego elegible" : `${eligibleGameCount} juegos elegibles`} · requiere
+      Reparto equitativo estimado:{" "}
+      <span className="font-semibold text-primary">{formatMinor(amountMinor, currency)}</span> por juego ·{" "}
+      {eligibleGameCount === 1 ? "1 juego elegible" : `${eligibleGameCount} juegos elegibles`} · requiere
       comprar el tier completo; no es el precio de un juego suelto.
     </p>
   );
 }
 
-function TierRow({ tier }: { readonly tier: BundleCatalogTier }) {
+function TierRow({ tier, index }: { readonly tier: BundleCatalogTier; readonly index: number }) {
   const priceDisplay =
     tier.priceMinor === null || tier.currency === null
       ? "Sin precio en ITAD"
@@ -66,18 +68,37 @@ function TierRow({ tier }: { readonly tier: BundleCatalogTier }) {
   const reason = tier.allocationStatus === "ok" ? null : ALLOCATION_REASON_LABELS[tier.allocationStatus];
 
   return (
-    <li className="space-y-1">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="text-xs text-muted">Precio del tier</span>
-        <span className={hasPrice ? "deal-price text-primary" : "deal-price text-muted"}>{priceDisplay}</span>
-        {tier.currency ? (
-          <span className="text-xs font-semibold uppercase text-secondary">{tier.currency}</span>
-        ) : null}
-        {tier.addon ? <span className="tabler-badge tabler-badge-warning">Addon</span> : null}
-        {!tier.itemsComplete ? (
-          <span className="tabler-badge tabler-badge-warning">Contenido incompleto</span>
-        ) : null}
+    <li className="space-y-2 rounded-[var(--radius-md)] border border-default p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-sm font-semibold text-primary">Tier {index + 1}</span>
+          {tier.addon ? <span className="tabler-badge tabler-badge-warning">Addon</span> : null}
+          {!tier.itemsComplete ? (
+            <span className="tabler-badge tabler-badge-warning">Contenido incompleto</span>
+          ) : null}
+        </div>
+        <div className="flex items-baseline gap-2">
+          <span className={hasPrice ? "deal-price text-lg text-primary" : "deal-price text-lg text-muted"}>
+            {priceDisplay}
+          </span>
+          {tier.currency ? (
+            <span className="text-xs font-semibold uppercase text-secondary">{tier.currency}</span>
+          ) : null}
+        </div>
       </div>
+
+      <p className="text-xs text-muted">
+        {tier.itemCount === 1 ? "1 ítem listado" : `${tier.itemCount} ítems listados`}
+        {tier.eligibleGameCount > 0
+          ? ` · ${tier.eligibleGameCount === 1 ? "1 juego elegible" : `${tier.eligibleGameCount} juegos elegibles`}`
+          : " · sin juegos elegibles"}
+      </p>
+
+      {tier.selectionCount !== null ? (
+        <p className="text-xs text-secondary">
+          Eliges {tier.selectionCount} de {tier.itemCount} ítems; el precio es del tier completo.
+        </p>
+      ) : null}
 
       {tier.allocationStatus === "ok" && tier.allocatedPerGameMinor !== null && tier.currency !== null ? (
         <AllocationLine
@@ -91,14 +112,50 @@ function TierRow({ tier }: { readonly tier: BundleCatalogTier }) {
   );
 }
 
+// El acento marca coincidencia con la wishlist; una tarjeta normal no lo lleva. El color nunca comunica
+// solo: la tarjeta marcada lleva además la etiqueta textual «En tu wishlist».
+function WishlistHighlight({ item }: { readonly item: BundleCatalogItem }) {
+  if (!item.hasWishlistMatch) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-1.5 rounded-[var(--radius-md)] border border-accent bg-[var(--color-accent-soft)] p-2.5">
+      <p className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+        <Heart className="h-3.5 w-3.5 text-accent" aria-hidden="true" />
+        En tu wishlist
+      </p>
+      {item.wishlistMatches.length > 0 ? (
+        <ul className="flex flex-wrap gap-1">
+          {item.wishlistMatches.map((match) => (
+            <li key={match.appId}>
+              <Link
+                href={`/games/${match.appId}`}
+                className="tabler-badge tabler-badge-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+              >
+                {match.name}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-xs text-secondary">Este bundle incluye un juego de tu wishlist.</p>
+      )}
+    </div>
+  );
+}
+
 function BundleCard({ item }: { readonly item: BundleCatalogItem }) {
   const href = item.dealUrl ?? item.pageUrl;
   const published = formatObserved(item.publishedAt);
   const expires = formatObserved(item.expiresAt);
   const observed = formatObserved(item.observedAt);
+  const isGgDeals = item.source === GGDEALS_SOURCE;
 
   return (
-    <article className="app-card space-y-3 p-4">
+    <article
+      className={item.hasWishlistMatch ? "app-card app-card-accent space-y-3 p-4" : "app-card space-y-3 p-4"}
+    >
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-1.5">
           {href ? (
@@ -115,7 +172,9 @@ function BundleCard({ item }: { readonly item: BundleCatalogItem }) {
           ) : (
             <span className="text-base font-semibold text-primary">{item.title}</span>
           )}
-          <span className="tabler-badge tabler-badge-info">ITAD</span>
+          <span className={isGgDeals ? "tabler-badge tabler-badge-warning" : "tabler-badge tabler-badge-info"}>
+            {isGgDeals ? "GG.deals" : "ITAD"}
+          </span>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
           {item.shopName ? <span className="font-semibold text-secondary">{item.shopName}</span> : null}
@@ -123,7 +182,15 @@ function BundleCard({ item }: { readonly item: BundleCatalogItem }) {
           {expires ? <span>Expira {expires}</span> : null}
           {observed ? <span>Observado {observed}</span> : null}
         </div>
+        {isGgDeals ? (
+          <p className="text-xs text-muted">
+            Precio de referencia de la región configurada en gg.deals; no acredita disponibilidad en México y esto no
+            acredita disponibilidad ni precio final para MX.
+          </p>
+        ) : null}
       </div>
+
+      <WishlistHighlight item={item} />
 
       {item.details ? <p className="text-xs text-secondary">{item.details}</p> : null}
 
@@ -153,11 +220,14 @@ function BundleCard({ item }: { readonly item: BundleCatalogItem }) {
       </div>
 
       {item.tiers.length > 0 ? (
-        <ul className="space-y-3 border-t border-default pt-3">
-          {item.tiers.map((tier, index) => (
-            <TierRow key={index} tier={tier} />
-          ))}
-        </ul>
+        <div className="space-y-2 border-t border-default pt-3">
+          <p className="text-xs font-semibold uppercase tracking-widest text-muted">Tiers y precios</p>
+          <ul className="space-y-2">
+            {item.tiers.map((tier, index) => (
+              <TierRow key={index} tier={tier} index={index} />
+            ))}
+          </ul>
+        </div>
       ) : (
         <p className="tabler-badge tabler-badge-muted">Sin tiers publicados por el proveedor</p>
       )}
@@ -165,40 +235,61 @@ function BundleCard({ item }: { readonly item: BundleCatalogItem }) {
   );
 }
 
+type LoadMode = "replace" | "append";
+
 export function BundlesClient() {
-  const [catalog, setCatalog] = useState<BundleCatalog | null>(null);
+  const [items, setItems] = useState<readonly BundleCatalogItem[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(BUNDLE_PAGE_SIZE_DEFAULT);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestId = useRef(0);
 
-  async function load() {
-    setLoading(true);
-    setError(null);
-    try {
-      setCatalog(await getBundleCatalog());
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "No se pudo cargar el catálogo de bundles.");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const load = useCallback(
+    async (targetPage: number, mode: LoadMode) => {
+      const request = ++requestId.current;
+      setLoading(true);
+      setError(null);
+      try {
+        const result = await getBundleCatalog(targetPage, pageSize);
+        if (request !== requestId.current) return;
+        setPage(result.page);
+        setPageSize(result.pageSize);
+        setTotal(result.total);
+        setHasMore(result.hasMore);
+        setItems((previous) => {
+          if (mode !== "append") return result.items;
+          const seen = new Set(previous.map((item) => `${item.source}:${item.bundleKey}`));
+          const merged = [...previous];
+          for (const item of result.items) {
+            const key = `${item.source}:${item.bundleKey}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            merged.push(item);
+          }
+          return merged;
+        });
+      } catch (cause) {
+        if (request !== requestId.current) return;
+        // Un error no borra lo que ya está en pantalla: la página actual se conserva y se ofrece reintentar.
+        setError(cause instanceof Error ? cause.message : "No se pudo cargar el catálogo de bundles.");
+      } finally {
+        if (request === requestId.current) setLoading(false);
+      }
+    },
+    [pageSize]
+  );
 
   useEffect(() => {
-    void load();
+    void load(1, "replace");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (loading) return <p className="app-card p-5 text-sm text-muted">Cargando...</p>;
-  if (error) {
-    return (
-      <div className="space-y-3">
-        <Alert variant="danger">{error}</Alert>
-        <Button type="button" variant="secondary" onClick={() => void load()}>
-          Reintentar
-        </Button>
-      </div>
-    );
-  }
-  if (catalog === null) return null;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const wishlistCount = items.filter((item) => item.hasWishlistMatch).length;
+  const isInitialLoading = loading && items.length === 0 && error === null;
 
   return (
     <div className="space-y-4">
@@ -209,9 +300,9 @@ export function BundlesClient() {
         </h2>
         <p className="text-xs text-muted">
           Paquetes que ITAD reportó y que ya están guardados; abrir esta página no consulta al proveedor.
-          El reparto por juego es un estimado: divide el precio del tier entre sus juegos elegibles y solo
-          aplica si compras el tier completo. No es el precio de ningún juego suelto y no entra en el
-          comparador de precios.
+          Se muestran todos los bundles, tengan o no juegos de tu wishlist. El reparto por juego es un
+          estimado: divide el precio del tier entre sus juegos elegibles y solo aplica si compras el tier
+          completo. No es el precio de ningún juego suelto y no entra en el comparador de precios.
         </p>
         <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm font-semibold text-secondary">
           <span>Datos de bundles:</span>
@@ -226,25 +317,85 @@ export function BundlesClient() {
         </p>
         <div className="flex flex-wrap items-center gap-2 pt-1">
           <span className="tabler-badge tabler-badge-muted">
-            {catalog.count === 1 ? "1 bundle" : `${catalog.count} bundles`}
+            {total === 1 ? "1 bundle" : `${total} bundles`}
           </span>
-          {catalog.maxItems > 0 && catalog.count >= catalog.maxItems ? (
-            <span className="tabler-badge tabler-badge-warning">
-              Se muestran hasta {catalog.maxItems}; puede haber más
+          {wishlistCount > 0 ? (
+            <span className="tabler-badge tabler-badge-primary">
+              {wishlistCount === 1 ? "1 con juegos de tu wishlist" : `${wishlistCount} con juegos de tu wishlist`}
             </span>
           ) : null}
+          <span className="tabler-badge tabler-badge-muted">
+            Página {page} de {totalPages}
+          </span>
+          {hasMore ? <span className="tabler-badge tabler-badge-info">Hay más páginas</span> : null}
         </div>
       </section>
 
-      {catalog.items.length > 0 ? (
+      {error ? (
+        <div className="space-y-3">
+          <Alert variant="danger">{error}</Alert>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="secondary" onClick={() => void load(page, "replace")} loading={loading}>
+              Reintentar
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => void load(1, "replace")} disabled={loading}>
+              Volver al inicio
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {isInitialLoading ? <p className="app-card p-5 text-sm text-muted">Cargando...</p> : null}
+
+      {!isInitialLoading && items.length === 0 && !error ? (
+        <p className="app-card p-5 text-sm text-muted">No hay bundles activos guardados por ahora.</p>
+      ) : null}
+
+      {items.length > 0 ? (
         <div className="grid gap-3 xl:grid-cols-2">
-          {catalog.items.map((item) => (
+          {items.map((item) => (
             <BundleCard key={`${item.source}:${item.bundleKey}`} item={item} />
           ))}
         </div>
-      ) : (
-        <p className="app-card p-5 text-sm text-muted">No hay bundles activos guardados por ahora.</p>
-      )}
+      ) : null}
+
+      {items.length > 0 ? (
+        <nav className="flex flex-wrap items-center gap-2" aria-label="Paginación de bundles">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => void load(page - 1, "replace")}
+            disabled={loading || page <= 1}
+            aria-label="Página anterior"
+          >
+            <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+            Anterior
+          </Button>
+          <span className="tabler-badge tabler-badge-muted">
+            Página {page} de {totalPages}
+          </span>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => void load(page + 1, "replace")}
+            disabled={loading || !hasMore}
+            aria-label="Página siguiente"
+          >
+            Siguiente
+            <ChevronRight className="h-4 w-4" aria-hidden="true" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => void load(page + 1, "append")}
+            disabled={loading || !hasMore}
+          >
+            <ListPlus className="h-4 w-4" aria-hidden="true" />
+            Cargar más
+            <span className="sr-only"> (añade la siguiente página a la lista)</span>
+          </Button>
+        </nav>
+      ) : null}
     </div>
   );
 }

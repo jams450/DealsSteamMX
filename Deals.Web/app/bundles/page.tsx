@@ -11,8 +11,8 @@ export default async function BundlesPage() {
   return (
     <ProductShell
       title="Bundles"
-      subtitle="Paquetes activos de ITAD con los juegos que incluyen y su reparto estimado por juego."
-      meta={<span className="tabler-badge tabler-badge-info">ITAD</span>}
+      subtitle="Bundles activos de las fuentes sincronizadas, con tiers y reparto estimado por juego. Las coincidencias verificadas con tu wishlist llevan un acento distinto."
+      meta={<span className="tabler-badge tabler-badge-info">ITAD · gg.deals</span>}
     >
       <Suspense fallback={<p className="app-card p-5 text-sm text-muted">Cargando...</p>}>
         <BundlesClient />

@@ -18,6 +18,12 @@ public sealed class GgDealsClient(
 {
     private const string PricesPath = "prices/by-steam-app-id/";
 
+    // Documented active catalog. Only the exact provider host and path may be followed: a `next` link
+    // from any other origin would carry the API key to a foreign server.
+    private const string ActiveBundlesPath = "bundles/active/";
+    private const string BundlesHost = "api.gg.deals";
+    private const string BundlesPath = "/v1/bundles/active/";
+
     // The provider counts every id as one record against its 100/minute budget and does not offer
     // batching beyond that, so an oversized call is refused instead of being split silently: the
     // caller has to know it went over the limit.
@@ -97,6 +103,311 @@ public sealed class GgDealsClient(
         }
 
         return prices;
+    }
+
+    /// <summary>
+    /// Reads one page of the documented <c>active/</c> catalog. The request spends exactly one record
+    /// of the shared governor budget; the optional <paramref name="cursor"/> is a validated absolute
+    /// provider link carried over from the previous page and is never logged or echoed in an error.
+    /// </summary>
+    public async Task<GgDealsBundlePage> GetActiveBundlesAsync(string? cursor, CancellationToken ct)
+    {
+        using var response = await GetActiveWithRetryAsync(cursor, ct);
+        EnsureBundlesSuccess(response);
+
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        return ReadActivePage(document.RootElement, DateTime.UtcNow);
+    }
+
+    private static GgDealsBundlePage ReadActivePage(JsonElement root, DateTime observedAtUtc)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("success", out var success) ||
+            success.ValueKind != JsonValueKind.True)
+        {
+            throw new JsonException(UnsuccessfulPayloadMessage);
+        }
+
+        if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        if (!data.TryGetProperty("totalCount", out var totalCount) ||
+            totalCount.ValueKind != JsonValueKind.Number ||
+            !totalCount.TryGetInt32(out var total) ||
+            total < 0)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        if (!data.TryGetProperty("bundles", out var bundles) || bundles.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        var parsed = new List<GgDealsBundle>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in bundles.EnumerateArray())
+        {
+            var bundle = ReadBundle(entry, observedAtUtc);
+            if (bundle is null || !seen.Add(bundle.BundleKey))
+            {
+                continue;
+            }
+
+            parsed.Add(bundle);
+        }
+
+        return new GgDealsBundlePage(parsed, total, ReadNextCursor(data));
+    }
+
+    /// <summary>
+    /// Reads one bundle entry. A non-object entry, a missing title or start date, an invalid or
+    /// non-HTTPS URL, an unreadable total or a truncated tier structure throws: a partial global page
+    /// must never be certified as a complete catalog and purge the previous snapshot. A genuinely
+    /// expired bundle (<c>dateTo</c> in the past) is the one entry that is dropped, because it is no
+    /// longer active.
+    /// </summary>
+    private static GgDealsBundle? ReadBundle(JsonElement entry, DateTime observedAtUtc)
+    {
+        if (entry.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        var title = ReadRequiredString(entry, "title");
+        var url = ReadNullableHttpsString(entry, "url");
+        var dateFrom = ReadRequiredUtcDate(entry, "dateFrom");
+        var dateTo = ReadOptionalUtcDate(entry, "dateTo");
+        if (dateTo is { } end && end <= observedAtUtc)
+        {
+            return null;
+        }
+
+        if (!entry.TryGetProperty("tiers", out var tiers) || tiers.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        var mappedTiers = new List<GgDealsBundleTier>();
+        foreach (var tier in tiers.EnumerateArray())
+        {
+            mappedTiers.Add(ReadTier(tier));
+        }
+
+        return new GgDealsBundle(
+            GgDealsBundleKey.Compute(title, dateFrom, mappedTiers),
+            title,
+            url,
+            dateFrom,
+            dateTo,
+            mappedTiers);
+    }
+
+    private static GgDealsBundleTier ReadTier(JsonElement tier)
+    {
+        if (tier.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        var price = ReadNullablePriceMinor(tier, "price");
+        var currency = ReadNullableCurrency(tier);
+        // A priced tier without a currency cannot be compared or allocated, and the contract lists the
+        // currency as a string, so its absence is a malformed payload rather than an unknown price.
+        if (price is not null && currency is null)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        int? gamesCount = null;
+        if (tier.TryGetProperty("gamesCount", out var gamesCountElement) &&
+            gamesCountElement.ValueKind != JsonValueKind.Null)
+        {
+            if (gamesCountElement.ValueKind != JsonValueKind.Number ||
+                !gamesCountElement.TryGetInt32(out var count) ||
+                count < 0)
+            {
+                throw new JsonException(MalformedPayloadMessage);
+            }
+
+            gamesCount = count;
+        }
+
+        if (!tier.TryGetProperty("games", out var games) || games.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        var items = new List<GgDealsBundleItem>();
+        foreach (var game in games.EnumerateArray())
+        {
+            if (game.ValueKind != JsonValueKind.Object)
+            {
+                throw new JsonException(MalformedPayloadMessage);
+            }
+
+            items.Add(new GgDealsBundleItem(
+                ReadRequiredString(game, "title"),
+                ReadNullableHttpsString(game, "url")));
+        }
+
+        return new GgDealsBundleTier(price, currency, gamesCount, items);
+    }
+
+    private static string? ReadNextCursor(JsonElement data)
+    {
+        if (!data.TryGetProperty("next", out var next) || next.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (next.ValueKind != JsonValueKind.String)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        var value = next.GetString();
+        if (string.IsNullOrWhiteSpace(value) || value.Length > MaxUrlLength || !IsAllowedCursor(value))
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        return value;
+    }
+
+    /// <summary>
+    /// A followed cursor must be an absolute HTTPS link to the exact provider host and
+    /// <c>/v1/bundles/active/</c> path, with no user info, no fragment and the default port. Anything
+    /// else could redirect the API key to a third party and is rejected without echoing the value.
+    /// </summary>
+    private static bool IsAllowedCursor(string value) =>
+        Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+        string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(uri.Host, BundlesHost, StringComparison.OrdinalIgnoreCase) &&
+        uri.IsDefaultPort &&
+        string.Equals(uri.AbsolutePath, BundlesPath, StringComparison.Ordinal) &&
+        string.IsNullOrEmpty(uri.UserInfo) &&
+        string.IsNullOrEmpty(uri.Fragment);
+
+    private static string? ReadNullableHttpsString(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out var value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        var text = value.GetString()?.Trim();
+        if (string.IsNullOrEmpty(text))
+        {
+            return null;
+        }
+
+        if (text.Length > MaxUrlLength ||
+            !Uri.TryCreate(text, UriKind.Absolute, out var uri) ||
+            !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        return text;
+    }
+
+    private static string? ReadNullableCurrency(JsonElement tier)
+    {
+        if (!tier.TryGetProperty("currency", out var value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        var text = value.GetString()?.Trim().ToUpperInvariant();
+        return text is { Length: 3 } && text.All(char.IsAsciiLetter)
+            ? text
+            : throw new JsonException(MalformedPayloadMessage);
+    }
+
+    private static int? ReadNullablePriceMinor(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out var value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        var text = value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString()?.Trim(),
+            JsonValueKind.Number => value.GetRawText(),
+            _ => throw new JsonException(MalformedPayloadMessage)
+        };
+
+        if (string.IsNullOrEmpty(text) ||
+            !decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out var amount))
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        return ToMinorUnits(amount);
+    }
+
+    private static DateTime ReadRequiredUtcDate(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out var value) ||
+            value.ValueKind != JsonValueKind.String ||
+            !TryParseUtc(value.GetString(), out var parsed))
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        return parsed;
+    }
+
+    private static DateTime? ReadOptionalUtcDate(JsonElement element, string property)
+    {
+        if (!element.TryGetProperty(property, out var value) || value.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (value.ValueKind != JsonValueKind.String || !TryParseUtc(value.GetString(), out var parsed))
+        {
+            throw new JsonException(MalformedPayloadMessage);
+        }
+
+        return parsed;
+    }
+
+    /// <summary>
+    /// Parses a provider date as UTC. The documented example has no suffix, so a missing offset is
+    /// assumed universal and every result is normalized to <see cref="DateTimeKind.Utc"/> instead of
+    /// the host's local time.
+    /// </summary>
+    private static bool TryParseUtc(string? text, out DateTime utc)
+    {
+        utc = default;
+        if (string.IsNullOrWhiteSpace(text) ||
+            !DateTimeOffset.TryParse(
+                text,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var parsed))
+        {
+            return false;
+        }
+
+        utc = parsed.UtcDateTime;
+        return true;
     }
 
     private static GgDealsGamePrice ToGamePrice(int appId, JsonElement game)
@@ -196,12 +507,20 @@ public sealed class GgDealsClient(
 
         // System.Decimal cannot hold NaN or infinity, so a successfully parsed value is always finite
         // and only the sign and the int range below need guarding.
+        return ToMinorUnits(amount);
+    }
+
+    /// <summary>
+    /// Shared minor-unit conversion. Result stays decimal until the range check, so an outsized payload
+    /// cannot overflow int.
+    /// </summary>
+    private static int ToMinorUnits(decimal amount)
+    {
         if (amount < 0m)
         {
             throw new JsonException(MalformedPayloadMessage);
         }
 
-        // Result stays decimal until the range check, so an outsized payload cannot overflow int.
         var minor = decimal.Round(amount * 100m, 0, MidpointRounding.AwayFromZero);
         if (minor > int.MaxValue)
         {
@@ -267,6 +586,60 @@ public sealed class GgDealsClient(
         {
             throw new HttpRequestException(
                 "GG.deals prices are unavailable.",
+                null,
+                response.StatusCode);
+        }
+    }
+
+    private async Task<HttpResponseMessage> GetActiveWithRetryAsync(string? cursor, CancellationToken ct)
+    {
+        var response = await GetActiveAsync(cursor, ct);
+        if (response.StatusCode != HttpStatusCode.TooManyRequests)
+        {
+            return response;
+        }
+
+        var retryDelay = GetRetryDelay(response);
+        response.Dispose();
+
+        await Task.Delay(retryDelay, ct);
+        return await GetActiveAsync(cursor, ct);
+    }
+
+    private async Task<HttpResponseMessage> GetActiveAsync(string? cursor, CancellationToken ct)
+    {
+        // One active page consumes exactly one record of the shared budget, whatever its bundle count.
+        // A non-null cursor is a validated absolute provider URL produced by ReadNextCursor.
+        using var lease = await governor.AcquireAsync(1, ct);
+        using var request = new HttpRequestMessage(HttpMethod.Get, cursor ?? BuildActivePath());
+        var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
+        logger.LogInformation(
+            "[provider.rate-limit] provider={Provider} requestedRecords={RequestedRecords} limit={Limit} remaining={Remaining} reset={Reset}",
+            "ggdeals-bundles",
+            1,
+            ReadHeader(response, "x-ratelimit-limit"),
+            ReadHeader(response, "x-ratelimit-remaining"),
+            ReadHeader(response, "x-ratelimit-reset"));
+        return response;
+    }
+
+    /// <summary>
+    /// Builds the first active page. The API key travels in the query string because the provider
+    /// documents no other location; the key is never logged and never echoed in an exception.
+    /// </summary>
+    private string BuildActivePath()
+    {
+        var key = Uri.EscapeDataString(settings.ApiKey);
+        var region = Uri.EscapeDataString(settings.Region);
+        return $"{ActiveBundlesPath}?key={key}&region={region}";
+    }
+
+    private static void EnsureBundlesSuccess(HttpResponseMessage response)
+    {
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                "GG.deals active bundles are unavailable.",
                 null,
                 response.StatusCode);
         }

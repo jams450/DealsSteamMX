@@ -32,6 +32,20 @@ public interface IItadClient
         ItadRequestPriority priority = ItadRequestPriority.Background);
 
     /// <summary>
+    /// One page of the global ITAD bundle catalog (<c>GET bundles/v1</c>). Unlike
+    /// <see cref="GetBundlesAsync"/>, the response is a root array with no queried-id set: every item id
+    /// found inside the tiers is reported as observed, so the caller can match wishlist UUIDs locally.
+    /// The page size is capped at 50 by the provider. A malformed envelope or a structurally invalid
+    /// bundle (for example a missing <c>url</c>) throws instead of yielding a short list, because a partial
+    /// page must never be certified as a complete snapshot and purge the previous one.
+    /// </summary>
+    Task<IReadOnlyList<ItadBundle>> GetGlobalBundlesPageAsync(
+        int offset,
+        int limit,
+        CancellationToken cancellationToken,
+        ItadRequestPriority priority = ItadRequestPriority.Background);
+
+    /// <summary>
     /// Follows one ITAD deal link to the store page it redirects to and returns the final URL, or null for
     /// a blank input. This is how a store id is obtained without a title search: the redirect target is the
     /// store's own page, whose path carries the store's id verbatim.

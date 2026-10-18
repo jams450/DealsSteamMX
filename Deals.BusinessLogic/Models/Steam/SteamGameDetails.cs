@@ -40,7 +40,12 @@ public sealed record SteamGameBundleTierGame(
     string? Type,
     int? PriceMinor,
     string? PriceCurrency,
-    string? ItadGameId = null);
+    string? ItadGameId = null,
+    /// <summary>
+    /// Provider URL of this listed item when one exists (gg.deals publishes one). Null for every ITAD
+    /// item, which carries only the UUID. HTTPS-validated before it is persisted.
+    /// </summary>
+    string? Url = null);
 
 /// <summary>
 /// One tier of a bundle: its own price, the items it lists and the honest, same-provider comparison
@@ -63,7 +68,13 @@ public sealed record SteamGameBundleTier(
     [property: JsonIgnore] string? FxSource = null,
     [property: JsonIgnore] string? PricingType = null,
     [property: JsonIgnore] int? MxnIndividualTotalMinor = null,
-    [property: JsonIgnore] int? MxnSavingsMinor = null);
+    [property: JsonIgnore] int? MxnSavingsMinor = null,
+    /// <summary>
+    /// The provider's own "choose N of M" rule (gg.deals <c>gamesCount</c>): the buyer picks this many
+    /// of <see cref="Games"/>. Null means every listed game is included (the ITAD default). Persisted so
+    /// the catalog read can show the selection rule; it is never a price or an identity.
+    /// </summary>
+    int? SelectionCount = null);
 
 /// <summary>
 /// One external bundle the game appears in. Purely informational: it is not comparable to an offer and

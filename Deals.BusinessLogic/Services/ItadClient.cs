@@ -16,7 +16,11 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
     private const string LookupPath = "lookup/id/shop/61/v1";
     private const string PricesPath = "games/prices/v3";
     private const string BundlesPath = "games/overview/v2";
+    private const string GlobalBundlesPath = "bundles/v1";
     private const int MaxIdsPerRequest = 200;
+
+    /// <summary>Provider cap for <c>bundles/v1</c>: a larger limit is clamped, never sent.</summary>
+    private const int MaxGlobalBundlePageSize = 50;
 
     // Name lists (DRM/platforms) are bounded to match the frontend contract: at most 20 entries of
     // at most 80 characters each, so a hostile payload cannot inflate the response or the render.
@@ -51,6 +55,8 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
     private const string MalformedLookupMessage = "IsThereAnyDeal lookup returned a malformed response.";
     private const string MalformedPricesMessage = "IsThereAnyDeal prices returned a malformed response.";
     private const string MalformedBundlesMessage = "IsThereAnyDeal bundles returned a malformed response.";
+    private const string MalformedGlobalBundlesMessage =
+        "IsThereAnyDeal global bundles returned a malformed response.";
 
     public async Task<string?> LookupSteamAppIdAsync(
         int appId,
@@ -172,6 +178,35 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
     }
 
     /// <summary>
+    /// One page of the global paginated catalog. The response root is a flat array of bundle objects with
+    /// the same shape as <c>overview/v2</c>'s <c>bundles[]</c>, but there is no queried-id set: the parsed
+    /// bundles report every item id they observe, and the caller matches wishlist UUIDs locally. Parsing is
+    /// strict on purpose: an unknown envelope or a structurally invalid bundle throws so a partial page can
+    /// never be read as an authoritative empty catalog and purge the persisted snapshot.
+    /// </summary>
+    public async Task<IReadOnlyList<ItadBundle>> GetGlobalBundlesPageAsync(
+        int offset,
+        int limit,
+        CancellationToken cancellationToken,
+        ItadRequestPriority priority = ItadRequestPriority.Background)
+    {
+        if (offset < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(offset));
+        }
+
+        var boundedLimit = Math.Clamp(limit, 1, MaxGlobalBundlePageSize);
+        var path = $"{GlobalBundlesPath}?country={Uri.EscapeDataString(settings.Country)}" +
+            $"&mature=true&expired=false&offset={offset}&limit={boundedLimit}";
+        using var response = await GetWithRetryAsync(path, withApiKey: true, priority, cancellationToken);
+        EnsureSuccess(response, "global bundles");
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        return ReadGlobalBundles(document.RootElement, DateTime.UtcNow);
+    }
+
+    /// <summary>
     /// Collects the ids of every comparable item of every bundle and resolves them with the existing prices
     /// call: same shared governor, same retries, one response per batch. Mixed anonymised currencies or a
     /// missing price resolve to unpriced, never to a fabricated number.
@@ -290,7 +325,7 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var item in bundles.EnumerateArray())
         {
-            var bundle = ToBundle(item, observedAt, queriedIds);
+            var bundle = ToBundle(item, observedAt, queriedIds, strict: false);
             if (bundle is null || !seen.Add(bundle.BundleKey))
             {
                 continue;
@@ -303,41 +338,87 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
     }
 
     /// <summary>
+    /// Reads the global catalog root array. Every entry is parsed strictly: a non-object entry, a missing
+    /// id/title, a missing url, an unreadable expiry or a truncated tier scan throws, so the caller can
+    /// never mistake a partial catalog for a complete empty one. Only a genuinely expired bundle is dropped,
+    /// because it is no longer active and must not stay in the active snapshot.
+    /// </summary>
+    private static IReadOnlyList<ItadBundle> ReadGlobalBundles(JsonElement root, DateTime observedAt)
+    {
+        if (root.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException(MalformedGlobalBundlesMessage);
+        }
+
+        var parsed = new List<ItadBundle>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in root.EnumerateArray())
+        {
+            // queriedIds null means "report every observed item id": a global sweep has no queried set.
+            var bundle = ToBundle(item, observedAt, queriedIds: null, strict: true);
+            if (bundle is null || !seen.Add(bundle.BundleKey))
+            {
+                continue;
+            }
+
+            if (!bundle.AttributionComplete)
+            {
+                // A tier/item scan that could not complete makes the observed id set partial: the page
+                // must fail instead of certifying a catalog with silently missing items.
+                throw new JsonException(MalformedGlobalBundlesMessage);
+            }
+
+            parsed.Add(bundle);
+        }
+
+        return parsed;
+    }
+
+    /// <summary>
     /// Maps one entry of `bundles[]`, returning <see langword="null"/> for anything that cannot be shown
     /// honestly: a missing/oversized id or title, an unreadable or already-past expiry, or a missing or
     /// non-HTTPS `url`. Nothing extends or rewrites `url`: the affiliate tag must survive verbatim.
+    ///
+    /// With <paramref name="strict"/> the structurally broken fields (non-object entry, missing id/title,
+    /// missing url, unreadable expiry) throw instead of dropping: the global sweep needs a hard failure so a
+    /// partial catalog is never certified. Passing <see langword="null"/> for
+    /// <paramref name="queriedIds"/> reports every observed item id, not only a queried set.
     /// </summary>
-    private static ItadBundle? ToBundle(JsonElement item, DateTime observedAt, IReadOnlyList<string> queriedIds)
+    private static ItadBundle? ToBundle(
+        JsonElement item,
+        DateTime observedAt,
+        IReadOnlyList<string>? queriedIds,
+        bool strict)
     {
         if (item.ValueKind != JsonValueKind.Object)
         {
-            return null;
+            return Reject(strict);
         }
 
         var bundleKey = GetIdString(item, "id");
         if (string.IsNullOrEmpty(bundleKey) || bundleKey.Length > MaxBundleKeyLength)
         {
-            return null;
+            return Reject(strict);
         }
 
         var title = SanitizeText(TryReadString(item, "title"), MaxBundleTitleLength);
         if (string.IsNullOrEmpty(title))
         {
-            return null;
+            return Reject(strict);
         }
 
         // `url` is mandatory: the bundle is only useful with its (affiliate) link.
         var url = ReadHttpsUrl(item, "url", MaxUrlLength);
         if (url is null)
         {
-            return null;
+            return Reject(strict);
         }
 
         var (expiryReadable, expiresAt) = ReadTimestamp(item, "expiry");
         if (!expiryReadable)
         {
             // A present but unreadable date cannot prove the bundle is still active.
-            return null;
+            return Reject(strict);
         }
 
         if (expiresAt is { } expiry && expiry <= observedAt)
@@ -391,19 +472,28 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
     }
 
     /// <summary>
+    /// Rejects a structural violation in strict (global sweep) mode; in per-game mode it keeps the
+    /// historic drop-a-malformed-bundle behavior by returning <see langword="null"/>.
+    /// </summary>
+    private static ItadBundle? Reject(bool strict) =>
+        strict ? throw new JsonException(MalformedGlobalBundlesMessage) : null;
+
+    /// <summary>
     /// Scans every provider tier/item for attribution before applying render caps. The returned tiers are
     /// capped for persistence/UI, while MatchedItadIds and AttributionComplete reflect the full payload.
     /// All provider tiers and games are enumerated; caps apply only to the sanitized display projection.
+    /// A <see langword="null"/> <paramref name="queriedIds"/> means "no queried set": every observed item
+    /// id is reported, which is what the global catalog needs.
     /// </summary>
     private static (IReadOnlyList<ItadBundleTier> Tiers, IReadOnlySet<string> MatchedItadIds, bool AttributionComplete)
-        ReadTiers(JsonElement bundle, IReadOnlyList<string> queriedIds)
+        ReadTiers(JsonElement bundle, IReadOnlyList<string>? queriedIds)
     {
         if (GetElement(bundle, "tiers") is not { ValueKind: JsonValueKind.Array } tiers)
         {
             return ([], new HashSet<string>(StringComparer.OrdinalIgnoreCase), true);
         }
 
-        var queried = queriedIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var queried = queriedIds?.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var matched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var parsed = new List<ItadBundleTier>(Math.Min(tiers.GetArrayLength(), MaxTiersPerBundle));
         var tierIndex = 0;
@@ -427,7 +517,7 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
                 foreach (var game in allGames.Value.EnumerateArray())
                 {
                     if (game.ValueKind == JsonValueKind.Object &&
-                        GetIdString(game, "id") is { } id && queried.Contains(id))
+                        GetIdString(game, "id") is { } id && (queried is null || queried.Contains(id)))
                     {
                         matched.Add(id);
                     }
@@ -724,6 +814,47 @@ public sealed class ItadClient(HttpClient httpClient, ItadClientSettings setting
 
         await Task.Delay(retryAfter, cancellationToken);
         return await PostAsync(path, payload, withApiKey, priority, cancellationToken);
+    }
+
+    /// <summary>
+    /// GET twin of <see cref="PostWithRetryAsync"/>: the same shared governor and the same single
+    /// Retry-After-aware retry, so a paginated GET spends the same budget as every other ITAD call.
+    /// </summary>
+    private async Task<HttpResponseMessage> GetWithRetryAsync(
+        string path,
+        bool withApiKey,
+        ItadRequestPriority priority,
+        CancellationToken cancellationToken)
+    {
+        var response = await GetAsync(path, withApiKey, priority, cancellationToken);
+        if (response.StatusCode != HttpStatusCode.TooManyRequests)
+        {
+            return response;
+        }
+
+        var retryAfter = GetRetryAfter(response) ?? TimeSpan.FromSeconds(1);
+        response.Dispose();
+
+        await Task.Delay(retryAfter, cancellationToken);
+        return await GetAsync(path, withApiKey, priority, cancellationToken);
+    }
+
+    private async Task<HttpResponseMessage> GetAsync(
+        string path,
+        bool withApiKey,
+        ItadRequestPriority priority,
+        CancellationToken cancellationToken)
+    {
+        using var lease = await governor.AcquireAsync(priority, cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Get, path);
+
+        if (withApiKey)
+        {
+            request.Headers.TryAddWithoutValidation(ApiKeyHeader, settings.ApiKey);
+        }
+
+        // ResponseContentRead buffers the page, so the request can be disposed before the caller reads it.
+        return await httpClient.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken);
     }
 
     private async Task<HttpResponseMessage> PostAsync(

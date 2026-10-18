@@ -1,6 +1,8 @@
 // Contrato del catálogo de bundles (`GET /api/bundles`). Datos de solo lectura sobre bundles ITAD ya
 // observados: ningún precio de aquí es una oferta ni entra en el comparador. `allocatedPerGameMinor` es
 // un reparto estimado que exige comprar el tier completo, y solo existe con `allocationStatus === "ok"`.
+// El catálogo llega paginado (`page`/`pageSize`/`total`/`hasMore`) y marcado con los juegos de wishlist
+// del usuario autenticado (`hasWishlistMatch`/`wishlistMatches`): la coincidencia nunca usa títulos.
 
 export const BUNDLE_ALLOCATION_STATUSES = [
   "ok",
@@ -19,6 +21,11 @@ export type BundleCatalogGame = {
   readonly imageUrl: string | null;
 };
 
+export type BundleWishlistMatch = {
+  readonly appId: number;
+  readonly name: string;
+};
+
 export type BundleCatalogTier = {
   readonly priceMinor: number | null;
   readonly currency: string | null;
@@ -29,6 +36,7 @@ export type BundleCatalogTier = {
   readonly allocatedPerGameMinor: number | null;
   readonly allocationStatus: BundleAllocationStatus;
   readonly requiresWholeTierPurchase: boolean;
+  readonly selectionCount: number | null;
 };
 
 export type BundleCatalogItem = {
@@ -44,18 +52,35 @@ export type BundleCatalogItem = {
   readonly observedAt: string | null;
   readonly linkedGames: readonly BundleCatalogGame[];
   readonly tiers: readonly BundleCatalogTier[];
+  readonly hasWishlistMatch: boolean;
+  readonly wishlistMatches: readonly BundleWishlistMatch[];
 };
 
 export type BundleCatalog = {
   readonly items: readonly BundleCatalogItem[];
   readonly count: number;
-  readonly maxItems: number;
+  readonly total: number;
+  readonly page: number;
+  readonly pageSize: number;
+  readonly hasMore: boolean;
 };
 
 // Topes del contrato, iguales a los del backend. Acotan el render y la respuesta ante un payload ajeno.
-export const MAX_BUNDLES = 100;
+export const MAX_BUNDLES = 50;
 export const MAX_LINKED_GAMES = 20;
 export const MAX_TIERS = 20;
+export const MAX_WISHLIST_MATCHES = 20;
+export const BUNDLE_PAGE_SIZE_DEFAULT = 20;
+export const BUNDLE_PAGE_SIZE_MAX = MAX_BUNDLES;
+
+// Identificador de la fuente global de gg.deals. Se usa para la etiqueta de la tarjeta y para no
+// presentar su precio como MX: gg.deals no admite la región `mx`.
+export const GGDEALS_SOURCE = "ggdeals";
+// Región de referencia del proveedor gg.deals (su default documentado). No acredita disponibilidad ni
+// precio final para México; si se cambia `GgDeals:Region` en el backend, esta etiqueta debe cambiar.
+export const GGDEALS_REFERENCE_REGION = "US";
+// Cota defensiva de `page`: evita un offset gigantesco desde un parámetro de query manipulado.
+export const BUNDLE_PAGE_MAX = 1_000_000;
 const MAX_BUNDLE_TEXT = 512;
 const MAX_DETAILS_TEXT = 600;
 
@@ -116,6 +141,14 @@ function normalizeLinkedGame(value: unknown): BundleCatalogGame | null {
   return { appId, name, imageUrl: toText(read(value, "imageUrl")) };
 }
 
+function normalizeWishlistMatch(value: unknown): BundleWishlistMatch | null {
+  if (!isRecord(value)) return null;
+  const appId = toPositiveInteger(read(value, "appId"));
+  const name = toText(read(value, "name"));
+  if (appId === null || name === null) return null;
+  return { appId, name };
+}
+
 function normalizeTier(value: unknown): BundleCatalogTier | null {
   if (!isRecord(value)) return null;
   const status = toText(read(value, "allocationStatus"));
@@ -126,16 +159,23 @@ function normalizeTier(value: unknown): BundleCatalogTier | null {
   // reparto inventado. Un estado no asignable nunca conserva cifra.
   if (status === "ok" && allocated === null) return null;
 
+  const itemCount = toNonNegativeInteger(read(value, "itemCount")) ?? 0;
+  const rawSelection = toPositiveInteger(read(value, "selectionCount"));
+  // Una regla "elige N de M" mayor que los ítems listados es irresoluble: se descarta en vez de
+  // mostrar una proporción inventada.
+  const selectionCount = rawSelection !== null && rawSelection <= itemCount ? rawSelection : null;
+
   return {
     priceMinor: toNonNegativeInteger(read(value, "priceMinor")),
     currency: toBoundedText(read(value, "currency"), 8),
     addon: read(value, "addon") === true,
     itemsComplete: read(value, "itemsComplete") === true,
-    itemCount: toNonNegativeInteger(read(value, "itemCount")) ?? 0,
+    itemCount,
     eligibleGameCount: toNonNegativeInteger(read(value, "eligibleGameCount")) ?? 0,
     allocatedPerGameMinor: status === "ok" ? allocated : null,
     allocationStatus: status as BundleAllocationStatus,
-    requiresWholeTierPurchase: status === "ok"
+    requiresWholeTierPurchase: status === "ok",
+    selectionCount
   };
 }
 
@@ -171,6 +211,19 @@ function normalizeItem(value: unknown): BundleCatalogItem | null {
     }
   }
 
+  const wishlistMatches: BundleWishlistMatch[] = [];
+  const seenWishlistAppIds = new Set<number>();
+  const rawMatches = read(value, "wishlistMatches");
+  if (Array.isArray(rawMatches)) {
+    for (const entry of rawMatches) {
+      const match = normalizeWishlistMatch(entry);
+      if (match === null || seenWishlistAppIds.has(match.appId)) continue;
+      seenWishlistAppIds.add(match.appId);
+      wishlistMatches.push(match);
+      if (wishlistMatches.length === MAX_WISHLIST_MATCHES) break;
+    }
+  }
+
   return {
     source,
     bundleKey,
@@ -183,8 +236,18 @@ function normalizeItem(value: unknown): BundleCatalogItem | null {
     expiresAt: toIsoDateTime(read(value, "expiresAt")),
     observedAt: toIsoDateTime(read(value, "observedAt")),
     linkedGames,
-    tiers
+    tiers,
+    hasWishlistMatch: read(value, "hasWishlistMatch") === true || wishlistMatches.length > 0,
+    wishlistMatches
   };
+}
+
+// Parámetro de paginación reenviado por el BFF: solo un entero positivo dentro de la cota. Cualquier
+// otra cosa se descarta para que el backend aplique su default en vez de recibir basura.
+export function parseBundlePageParam(value: string | null): number | null {
+  if (value === null || !/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= BUNDLE_PAGE_MAX ? parsed : null;
 }
 
 export function normalizeBundleCatalog(input: unknown): BundleCatalog {
@@ -201,9 +264,15 @@ export function normalizeBundleCatalog(input: unknown): BundleCatalog {
     }
   }
 
+  const pageSize = toPositiveInteger(read(record, "pageSize"));
+
   return {
     items,
     count: toNonNegativeInteger(read(record, "count")) ?? items.length,
-    maxItems: toPositiveInteger(read(record, "maxItems")) ?? MAX_BUNDLES
+    // Un payload viejo (sin total) conserva el respaldo local; nunca se inventa un total mayor.
+    total: toNonNegativeInteger(read(record, "total")) ?? items.length,
+    page: Math.min(toPositiveInteger(read(record, "page")) ?? 1, BUNDLE_PAGE_MAX),
+    pageSize: Math.min(pageSize ?? BUNDLE_PAGE_SIZE_DEFAULT, BUNDLE_PAGE_SIZE_MAX),
+    hasMore: read(record, "hasMore") === true
   };
 }

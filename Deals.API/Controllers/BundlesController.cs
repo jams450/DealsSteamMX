@@ -1,4 +1,5 @@
 using Deals.API.Models.Bundles;
+using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Bundles;
 using Deals.BusinessLogic.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -9,23 +10,38 @@ namespace Deals.API.Controllers;
 
 /// <summary>
 /// Authenticated, read-only bundle catalog. It answers from the bundles already persisted by the game
-/// refresh (ITAD only) and never calls a provider, so it cannot fan out to an external source. The
-/// existing per-game bundle summary is served by the game detail payload and is unaffected.
+/// refresh and the global sweep and never calls a provider, so it cannot fan out to an external source.
+/// The authenticated user comes from <see cref="ICurrentUserService"/> only - the query string can page
+/// the catalog but can never choose whose wishlist is highlighted. The existing per-game bundle summary is
+/// served by the game detail payload and is unaffected.
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
 [Authorize(Policy = "UserWithId")]
 [EnableRateLimiting("steam-read")]
-public sealed class BundlesController(BundleCatalogService bundleCatalogService) : ControllerBase
+public sealed class BundlesController(
+    BundleCatalogService bundleCatalogService,
+    ICurrentUserService currentUserService) : ControllerBase
 {
     [HttpGet]
-    public async Task<ActionResult<BundleCatalogResponse>> Get(CancellationToken cancellationToken)
+    public async Task<ActionResult<BundleCatalogResponse>> Get(
+        [FromQuery] int? page,
+        [FromQuery] int? pageSize,
+        CancellationToken cancellationToken)
     {
-        var catalog = await bundleCatalogService.ListActiveAsync(cancellationToken);
+        var catalog = await bundleCatalogService.ListActiveAsync(
+            currentUserService.GetRequiredUserId(),
+            page,
+            pageSize,
+            cancellationToken);
+
         return Ok(new BundleCatalogResponse(
             catalog.Items.Select(ToResponse).ToList(),
             catalog.Count,
-            catalog.MaxItems));
+            catalog.Total,
+            catalog.Page,
+            catalog.PageSize,
+            catalog.HasMore));
     }
 
     private static BundleCatalogItemResponse ToResponse(BundleCatalogItem item) =>
@@ -44,7 +60,11 @@ public sealed class BundlesController(BundleCatalogService bundleCatalogService)
             item.LinkedGames
                 .Select(game => new BundleCatalogGameResponse(game.AppId, game.Name, game.ImageUrl))
                 .ToList(),
-            item.Tiers.Select(ToResponse).ToList());
+            item.Tiers.Select(ToResponse).ToList(),
+            item.HasWishlistMatch,
+            item.WishlistMatches
+                .Select(match => new BundleWishlistMatchResponse(match.AppId, match.Name))
+                .ToList());
 
     private static BundleCatalogTierResponse ToResponse(BundleCatalogTierShare share) =>
         new(
@@ -56,5 +76,6 @@ public sealed class BundlesController(BundleCatalogService bundleCatalogService)
             share.EligibleGameCount,
             share.AllocatedPerGameMinor,
             share.AllocationStatus,
-            share.RequiresWholeTierPurchase);
+            share.RequiresWholeTierPurchase,
+            share.SelectionCount);
 }

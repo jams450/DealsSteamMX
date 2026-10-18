@@ -32,9 +32,15 @@ public static class BundleShare
         var eligibleGameCount = items.Count(item =>
             string.Equals(item.Type, ComparableItemType, StringComparison.OrdinalIgnoreCase));
 
+        // gg.deals publishes a "choose N of M" count instead of listing only the included games. It is
+        // the honest denominator when present; a count outside the listed set cannot be satisfied and
+        // is treated as an incomplete tier instead of being clamped into a fabricated figure.
+        var selectionCount = tier.SelectionCount;
+        var selectionUnsatisfiable = selectionCount is { } selected && (selected <= 0 || selected > items.Count);
+
         int? allocated;
         string status;
-        if (!tier.ItemsComplete)
+        if (!tier.ItemsComplete || selectionUnsatisfiable)
         {
             allocated = null;
             status = ItemsIncompleteStatus;
@@ -61,7 +67,7 @@ public static class BundleShare
         }
         else
         {
-            allocated = DivideEvenly(tier.PriceMinor.Value, eligibleGameCount);
+            allocated = DivideEvenly(tier.PriceMinor.Value, selectionCount ?? eligibleGameCount);
             status = OkStatus;
         }
 
@@ -74,7 +80,8 @@ public static class BundleShare
             eligibleGameCount,
             allocated,
             status,
-            RequiresWholeTierPurchase: allocated is not null);
+            RequiresWholeTierPurchase: allocated is not null,
+            selectionCount);
     }
 
     /// <summary>
