@@ -19,6 +19,9 @@ builder.Services.Configure<FxOptions>(builder.Configuration.GetSection(FxOptions
 builder.Services.Configure<WishlistOptions>(builder.Configuration.GetSection(WishlistOptions.SectionName));
 builder.Services.Configure<JobBudgetOptions>(builder.Configuration.GetSection(JobBudgetOptions.SectionName));
 builder.Services.Configure<NtfyOptions>(builder.Configuration.GetSection(NtfyOptions.SectionName));
+builder.Services.Configure<GlobalBundleOptions>(builder.Configuration.GetSection(GlobalBundleOptions.SectionName));
+builder.Services.Configure<GgDealsBundleOptions>(builder.Configuration.GetSection(GgDealsBundleOptions.SectionName));
+builder.Services.Configure<GlobalDealOptions>(builder.Configuration.GetSection(GlobalDealOptions.SectionName));
 
 builder.Services
     .AddApiMvc()

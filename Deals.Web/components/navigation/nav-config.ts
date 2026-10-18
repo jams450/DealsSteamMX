@@ -22,6 +22,7 @@ export const productNavItems: NavItem[] = [
   { href: "/", label: "Inicio", icon: Home },
   { href: "/search", label: "Comparar", icon: Search },
   { href: "/discover", label: "Descubrir", icon: Compass },
+  { href: "/deals", label: "Ofertas globales", icon: Compass },
   { href: "/wishlist", label: "Wishlist", icon: Bookmark },
   { href: "/bundles", label: "Bundles", icon: Package },
   { href: "/library", label: "Biblioteca", icon: Library },

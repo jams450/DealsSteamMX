@@ -21,6 +21,58 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IUserService, UserService>();
         services.AddScoped<ISteamGameService, SteamGameService>();
         services.AddScoped<BundleCatalogService>();
+        services.AddOptions<GlobalBundleOptions>()
+            .Validate(o => o.PageSize is > 0 and <= GlobalBundleOptions.MaxPageSize,
+                "GlobalBundles:PageSize must be between 1 and 50.")
+            .Validate(o => o.MaxPages is > 0 and <= 200, "GlobalBundles:MaxPages must be between 1 and 200.")
+            .Validate(o => o.RefreshHours > 0, "GlobalBundles:RefreshHours must be greater than zero.")
+            .Validate(o => o.JitterMinutes is >= 0 and <= 1440, "GlobalBundles:JitterMinutes must be between 0 and 1440.")
+            .Validate(o => o.StartupDelaySeconds >= 0, "GlobalBundles:StartupDelaySeconds must not be negative.")
+            .Validate(o => o.MinHoursBetweenRuns >= 0, "GlobalBundles:MinHoursBetweenRuns must not be negative.")
+            .ValidateOnStart();
+        services.AddSingleton(sp =>
+        {
+            var global = sp.GetRequiredService<IOptions<GlobalBundleOptions>>().Value;
+            return new Deals.BusinessLogic.Models.Bundles.GlobalBundleSyncSettings(global.PageSize, global.MaxPages);
+        });
+        services.AddScoped<IGlobalBundleSnapshotWriter, EfGlobalBundleSnapshotWriter>();
+        services.AddScoped<GlobalBundleSyncService>();
+        services.AddHostedService<GlobalBundleSyncJob>();
+        services.AddOptions<GgDealsBundleOptions>()
+            .Validate(o => o.MaxPages is > 0 and <= 200, "GgDealsBundles:MaxPages must be between 1 and 200.")
+            .Validate(o => o.CursorValidityMinutes is > 0 and <= 60, "GgDealsBundles:CursorValidityMinutes must be between 1 and 60.")
+            .Validate(o => o.RefreshHours > 0, "GgDealsBundles:RefreshHours must be greater than zero.")
+            .Validate(o => o.JitterMinutes is >= 0 and <= 1440, "GgDealsBundles:JitterMinutes must be between 0 and 1440.")
+            .Validate(o => o.StartupDelaySeconds >= 0, "GgDealsBundles:StartupDelaySeconds must not be negative.")
+            .Validate(o => o.MinHoursBetweenRuns >= 0, "GgDealsBundles:MinHoursBetweenRuns must not be negative.")
+            .ValidateOnStart();
+        services.AddScoped<IGgDealsBundleSnapshotWriter, EfGgDealsBundleSnapshotWriter>();
+        services.AddScoped<GgDealsBundleSyncService>();
+        services.AddSingleton(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<GgDealsBundleOptions>>().Value;
+            return new Deals.BusinessLogic.Models.GgDeals.GgDealsBundleSyncSettings(options.MaxPages, options.CursorValidityMinutes);
+        });
+        services.AddHostedService<GgDealsBundleSyncJob>();
+        services.AddOptions<GlobalDealOptions>()
+            .Validate(o => o.PageSize is > 0 and <= 200, "GlobalDeals:PageSize must be between 1 and 200.")
+            .Validate(o => o.MaxPages is > 0 and <= 200, "GlobalDeals:MaxPages must be between 1 and 200.")
+            .Validate(o => o.RefreshHours > 0, "GlobalDeals:RefreshHours must be positive.")
+            .Validate(o => o.JitterMinutes is >= 0 and <= 1440, "GlobalDeals:JitterMinutes must be between 0 and 1440.")
+            .Validate(o => o.StartupDelaySeconds >= 0 && o.MinHoursBetweenRuns >= 0, "GlobalDeals delays must not be negative.")
+            .Validate(o => o.MinDiscountPercent is >= 0 and <= 100, "GlobalDeals:MinDiscountPercent must be between 0 and 100.")
+            .ValidateOnStart();
+        services.AddSingleton(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<GlobalDealOptions>>().Value;
+            return new Deals.BusinessLogic.Models.Discovery.GlobalDealSyncSettings(options.PageSize, options.MaxPages);
+        });
+        services.AddSingleton(sp => new Deals.BusinessLogic.Models.Discovery.GlobalDealCatalogSettings(
+            sp.GetRequiredService<IOptions<GlobalDealOptions>>().Value.MinDiscountPercent));
+        services.AddScoped<IGlobalDealSnapshotWriter, EfGlobalDealSnapshotWriter>();
+        services.AddScoped<GlobalDealSyncService>();
+        services.AddScoped<GlobalDealCatalogService>();
+        services.AddHostedService<GlobalDealSyncJob>();
         services.AddScoped<IGameIdentityResolver, GameIdentityResolver>();
         services.AddScoped<IGameMergeService, GameMergeService>();
         services.AddScoped<ICrossStateReconciliationService, CrossStateReconciliationService>();
@@ -139,6 +191,15 @@ public static class ServiceCollectionExtensions
             }
 
             client.BaseAddress = baseUri;
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.TimeoutSeconds, 1, 60));
+        });
+
+        services.AddHttpClient<IGlobalDealClient, ItadGlobalDealClient>((sp, client) =>
+        {
+            var options = sp.GetRequiredService<IOptions<ItadOptions>>().Value;
+            if (!IsHttps(options.BaseUrl))
+                throw new InvalidOperationException("ITAD:BaseUrl must be an absolute HTTPS URL.");
+            client.BaseAddress = new Uri(options.BaseUrl);
             client.Timeout = TimeSpan.FromSeconds(Math.Clamp(options.TimeoutSeconds, 1, 60));
         });
 

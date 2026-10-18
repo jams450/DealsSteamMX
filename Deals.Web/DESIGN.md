@@ -35,7 +35,7 @@ when it was last observed.
 | `/discover` | `app/discover/{page,discover-client}.tsx`, `app/discover/_lib/discover-api.ts` | Product | Discovery: three read-only lists over persisted `steam_games` rows (discount / historic / recent), capsule cards linking to `/games/[steamAppId]` |
 | `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: FX reference strip above the card, cover + official Steam price + sources historical minimum + local Steam minimum + the page's single refresh control, per-provider best-price cards with each price's observation date, CTA footer, ownership line (`ownership`), Steam source table, multi-store offers grouped by provider, bundles, reviews |
 | `/wishlist` | `app/wishlist/{page,wishlist-client}.tsx`, `app/wishlist/_lib/*` | Product | Steam wishlist: four explicit states, "Sincronizar ahora" with its report, capsule cards (base, historical low, MXN official/keyshop minimums, per-band discount % and a hybrid 0-10 deal score driven by a backend viable-minimum threshold) with a per-row refresh; a multi-game selection (by AppID) with a sticky bar showing the package total under two alternative scenarios (official / keys) |
-| `/bundles` | `app/bundles/{page,bundles-client}.tsx`, `app/bundles/_lib/bundles-api.ts` | Product | Bundle catalog: authenticated, bounded, read-only list of the persisted active ITAD bundles with their linked games and the equal-share estimate per tier; never a live provider call, never an offer |
+| `/bundles` | `app/bundles/{page,bundles-client}.tsx`, `app/bundles/_lib/bundles-api.ts` | Product | Bundle catalog: authenticated, paginated, read-only list of the persisted active ITAD bundles (per-game source `itad` and global sweep `itad_global`, deduplicated by `bundle_key`) with their linked games, the equal-share estimate per tier and the current user's exact wishlist matches marked in accent; never a live provider call, never an offer |
 | `/library` | `app/library/{page,library-client}.tsx`, `app/library/_lib/*` | Admin | Playnite library import (manual JSON upload of ≤10 MiB) plus the owned/subscription list grouped by store, with the Game Pass tag and the explicit "Sin precios vinculados" state |
 | `/login` | `app/login/page.tsx` | Public | Only public page, plus `/api/auth/{login,refresh,session}` |
 | `/users` | `app/users/*` | Admin | Reference admin slice (`AdminShell` + `DataGrid`), admin role only; consumes the same tokens, cards, badges and `Button` variants as the product surface |
@@ -93,7 +93,10 @@ when it was last observed.
   signal, and discount/base price form a restrained secondary rail. Refresh, category editing and
   timestamp stay beside the purchase path; historical, per-source and scoring facts remain in native
   `details`, so every fact is available without turning the immediate view into a dashboard. The
-  toolbar search input consumes the same name/AppID draft filter state as the filter panel.
+  toolbar search input applies live: each keystroke schedules a brief debounced commit
+  (`_lib/wishlist-search.ts`), Enter and the clear button apply immediately, and a commit changes only
+  `search` — pending panel edits (price, ownership, categories) still wait for «Aplicar filtros».
+  Sorting, paging and the URL keep their server-side contract.
 - **Wishlist package preview:** the same page supports selecting several games at once (by AppID, never by
   row index) and asking what that set would cost under two **alternative** scenarios: everything bought from
   a legitimate shop, or everything bought from the keyshop aggregate. The two subtotals never add up — there
@@ -104,16 +107,24 @@ when it was last observed.
   persisted, no bundle is applied, and no figure from here enters `game_offers` or any savings math.
 - **Bundle catalog reality:** `/bundles` is fed by the API's `GET /api/bundles` (BFF `GET /api/bff/bundles`),
   both `UserWithId` on the API and read-only. It answers from the `external_bundles` /
-  `external_bundle_games` rows the game refresh already persisted (ITAD only; expired rows excluded) and
-  never calls a provider, so opening the page cannot fan out to an external source. One read is capped at
-  `MaxBundles` (100) and at 20 linked games per bundle. Each bundle lists the games confirmed by the
-  persisted relation (the provider matched them by item identity, never by title) and one row per tier with
-  its published price and the **equal-share estimate**: tier price divided by its eligible plain-game count,
-  labelled as an estimate that requires buying the whole tier and explicitly not the price of any one game.
-  A tier with no published price (including a build-your-own selection), an addon, an incomplete item list,
-  a price without currency or no eligible game emits the machine reason and **no figure**: unknown is never
-  rendered as 0. Nothing here is an offer, nothing is written to `game_offers`, and the existing aggregate
-  tier savings on the game detail is a separate reading that this page does not replace or alter.
+  `external_bundle_games` rows the game refresh and the global sweep already persisted (sources `itad` and
+  `itad_global`; expired rows excluded) and never calls a provider, so opening the page cannot fan out to
+  an external source. A bundle observed in both sources is shown once, keeping the freshest snapshot and, on
+  a timestamp tie, `itad`. The API pages the deduplicated catalog with `page`/`pageSize` (1-based, page size
+  capped at 50) and reports the honest `total`, the `count` of this page and `hasMore`; it never reports a
+  fixed read cap as if it were the catalog size. The authenticated user comes from the token only, never
+  from the query string. Each bundle lists the games confirmed by the persisted relation (the provider
+  matched them by item identity, never by title) and one row per tier with its published price and the
+  **equal-share estimate**: tier price divided by its eligible plain-game count, labelled as an estimate
+  that requires buying the whole tier and explicitly not the price of any one game. A tier with no published
+  price (including a build-your-own selection), an addon, an incomplete item list, a price without currency
+  or no eligible game emits the machine reason and **no figure**: unknown is never rendered as 0. A bundle
+  that contains a game of the current user's wishlist is marked with the accent tint/border of
+  `app-card-accent` plus the textual badge «En tu wishlist»; the matching is exact (tier item UUID, or the
+  bundle's own linked Steam appid) and never a title match. Every non-matching bundle stays visible: the
+  page is the whole catalog, not only the wishlist. Nothing here is an offer, nothing is written to
+  `game_offers`, and the existing aggregate tier savings on the game detail is a separate reading that this
+  page does not replace or alter.
 - **Library reality:** `/library` is fed by the API's `GET /api/library` (BFF `GET /api/bff/library`) and
   `POST /api/library/import` (BFF `POST /api/bff/library/import`), both `AdminWithId` on the API. The list is
   the `user_library` snapshot imported by hand from a Playnite JSON export: the read answers `{ items: [...] }`

@@ -33,6 +33,7 @@ public class AppDbContext : DbContext
     public DbSet<UserGameFavorite> UserGameFavorites => Set<UserGameFavorite>();
     public DbSet<JobRun> JobRuns => Set<JobRun>();
     public DbSet<DealAlertEvent> DealAlertEvents => Set<DealAlertEvent>();
+    public DbSet<GlobalDeal> GlobalDeals => Set<GlobalDeal>();
 
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
@@ -77,6 +78,8 @@ public class AppDbContext : DbContext
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+        modelBuilder.Entity<GlobalDeal>().HasIndex(deal => new { deal.Source, deal.DealKey }).IsUnique();
+        modelBuilder.Entity<GlobalDeal>().HasIndex(deal => deal.ItadGameId);
 
         modelBuilder.Entity<User>(entity =>
         {
