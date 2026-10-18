@@ -12,6 +12,7 @@ import { cn } from "@/lib/ui/cn";
 import { ToastStack } from "@/components/feedback/toast-stack";
 import { useToasts } from "@/components/feedback/use-toasts";
 import { assignWishlistCategory, createWishlistCategory, getWishlist, previewWishlistPackage, removeWishlistCategoryItems, replaceWishlistItemCategories, serializeWishlistQuery, syncWishlist, updateWishlistPreferences, type WishlistQuery } from "./_lib/wishlist-api";
+import { createWishlistSearchScheduler, withAppliedSearch } from "./_lib/wishlist-search";
 import type { PaginationState, SortingState } from "@tanstack/react-table";
 import { dealScore, discountPercent, wishlistWinner } from "./_lib/wishlist-metrics";
 import {
@@ -734,9 +735,20 @@ const WISHLIST_SORT_OPTIONS: readonly { readonly value: WishlistSort; readonly l
   { value: "keyshopPrice", label: "Mín. keys" }
 ];
 
-// El buscador y el orden sustituyen a la fila de búsqueda y a los encabezados ordenables del grid: leen
-// y escriben el mismo estado (`search`/`sorting`), así que el servidor recibe exactamente lo mismo.
-function WishlistSearchInput({ value, onChange }: { readonly value: string; readonly onChange: (value: string) => void }) {
+// El buscador de la toolbar aplica mientras se escribe (retardo breve en `_lib/wishlist-search.ts`):
+// Enter y el botón de limpiar aplican de inmediato. El commit solo cambia `search`, así que las ediciones
+// pendientes del panel siguen esperando a «Aplicar filtros», y el orden conserva su propio estado.
+function WishlistSearchInput({
+  value,
+  onChange,
+  onCommit,
+  onClear
+}: {
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+  readonly onCommit: (value: string) => void;
+  readonly onClear: () => void;
+}) {
   const inputId = useId();
 
   return (
@@ -751,6 +763,12 @@ function WishlistSearchInput({ value, onChange }: { readonly value: string; read
           type="search"
           value={value}
           onChange={(event) => onChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              onCommit(value);
+            }
+          }}
           placeholder="Buscar por nombre o AppID"
           className="input-semantic h-8 w-full pl-7 pr-7 text-xs"
         />
@@ -758,7 +776,7 @@ function WishlistSearchInput({ value, onChange }: { readonly value: string; read
           <button
             type="button"
             aria-label="Limpiar búsqueda"
-            onClick={() => onChange("")}
+            onClick={onClear}
             className="absolute right-1 top-1/2 -translate-y-1/2 rounded-sm p-0.5 text-muted hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
           >
             <X className="h-3.5 w-3.5" aria-hidden="true" />
@@ -1016,6 +1034,8 @@ interface WishlistItemsProps {
   readonly onRefresh: (item: WishlistItem) => void;
   readonly search: string;
   readonly onSearchChange: (value: string) => void;
+  readonly onSearchCommit: (value: string) => void;
+  readonly onSearchClear: () => void;
   readonly pagination: PaginationState;
   readonly onPaginationChange: (next: PaginationState) => void;
   readonly sorting: SortingState;
@@ -1045,6 +1065,8 @@ function WishlistItems({
   onRefresh,
   search,
   onSearchChange,
+  onSearchCommit,
+  onSearchClear,
   pagination,
   onPaginationChange,
   sorting,
@@ -1234,7 +1256,7 @@ function WishlistItems({
         {filtersOpen ? (
           <form id="wishlist-filters" className="grid gap-3 border-t border-default p-3 sm:p-4 md:grid-cols-2" onSubmit={(event) => { event.preventDefault(); onApplyFilters(); }} aria-label="Filtros de wishlist">
             <div className="grid gap-2 sm:grid-cols-3">
-              <input type="search" value={draftFilters.search} onChange={(event) => onDraftFiltersChange({ ...draftFilters, search: event.target.value })} placeholder="Buscar por nombre o AppID" className="input-semantic h-9 text-xs sm:col-span-3" />
+              <input type="search" value={draftFilters.search} onChange={(event) => onSearchChange(event.target.value)} placeholder="Buscar por nombre o AppID" className="input-semantic h-9 text-xs sm:col-span-3" />
               <input type="number" min="0" inputMode="numeric" value={draftFilters.minPrice} onChange={(event) => onDraftFiltersChange({ ...draftFilters, minPrice: event.target.value })} placeholder="Precio mínimo MXN" className="input-semantic h-9 text-xs" />
               <input type="number" min="0" inputMode="numeric" value={draftFilters.maxPrice} onChange={(event) => onDraftFiltersChange({ ...draftFilters, maxPrice: event.target.value })} placeholder="Precio máximo MXN" className="input-semantic h-9 text-xs" />
             </div>
@@ -1261,7 +1283,7 @@ function WishlistItems({
       </div>
       <ThresholdControl value={minViableDiscountPercent} onCommit={onThresholdCommit} />
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <WishlistSearchInput value={search} onChange={onSearchChange} />
+        <WishlistSearchInput value={search} onChange={onSearchChange} onCommit={onSearchCommit} onClear={onSearchClear} />
         <WishlistSortControl sorting={sorting} onSortingChange={onSortingChange} />
         {filteredItems.length > 0 ? (
           <label className="flex items-center gap-2 text-xs text-secondary">
@@ -1372,6 +1394,23 @@ export function WishlistClient() {
   });
   const requestRef = useRef(0);
   const hasLoadedRef = useRef(false);
+  const appliedFiltersRef = useRef(appliedFilters);
+  appliedFiltersRef.current = appliedFilters;
+
+  // El buscador aplica mientras se escribe. La temporización vive en `_lib/wishlist-search.ts` (probada
+  // con reloj falso); aquí solo se conectan los temporizadores reales y el estado del componente.
+  const commitSearchRef = useRef<(value: string) => void>(() => {});
+  const searchSchedulerRef = useRef<ReturnType<typeof createWishlistSearchScheduler> | null>(null);
+  if (searchSchedulerRef.current === null) {
+    searchSchedulerRef.current = createWishlistSearchScheduler({
+      timer: {
+        setTimeout: (handler, timeoutMs) => window.setTimeout(handler, timeoutMs),
+        clearTimeout: (handle) => window.clearTimeout(handle)
+      },
+      onCommit: (value) => commitSearchRef.current(value)
+    });
+  }
+  useEffect(() => () => searchSchedulerRef.current?.dispose(), []);
 
   const wishlistQuery = useMemo<WishlistQuery>(() => ({
     ...queryFilters(appliedFilters),
@@ -1452,7 +1491,41 @@ export function WishlistClient() {
     router.replace(`/wishlist${params.size ? `?${params.toString()}` : ""}`, { scroll: false });
   }, [router]);
 
+  // Commit en vivo del buscador: cambia solo `search` sobre los filtros ya aplicados (nunca arrastra
+  // las ediciones pendientes del panel), reinicia la página y refleja la URL como cualquier filtro.
+  const commitSearch = useCallback((value: string) => {
+    setDraftFilters((draft) => (draft.search === value ? draft : { ...draft, search: value }));
+    const current = appliedFiltersRef.current;
+    if (current.search === value) return;
+    const next = withAppliedSearch(current, value);
+    setAppliedFilters(next);
+    setPagination((page) => (page.pageIndex === 0 ? page : { ...page, pageIndex: 0 }));
+    const active = wishlistQueryRef.current;
+    syncUrl({ ...queryFilters(next), page: 1, pageSize: active.pageSize, sort: active.sort, direction: active.direction });
+  }, [syncUrl]);
+  commitSearchRef.current = commitSearch;
+
+  const changeSearch = useCallback((value: string) => {
+    setDraftFilters((draft) => (draft.search === value ? draft : { ...draft, search: value }));
+    // Vaciar el campo es «limpiar la búsqueda aplicada»: se aplica de inmediato, sin esperar el retardo.
+    if (value.trim() === "") {
+      searchSchedulerRef.current?.clear();
+      return;
+    }
+    searchSchedulerRef.current?.change(value);
+  }, []);
+
+  const submitSearch = useCallback((value: string) => {
+    searchSchedulerRef.current?.submit(value);
+  }, []);
+
+  const clearSearch = useCallback(() => {
+    searchSchedulerRef.current?.clear();
+  }, []);
+
   function applyFilters() {
+    // Aplicar los filtros del panel también resuelve cualquier búsqueda en vivo que siguiera pendiente.
+    searchSchedulerRef.current?.dispose();
     const next = { ...draftFilters, categoryIds: [...draftFilters.categoryIds] };
     setAppliedFilters(next);
     setPagination((current) => ({ ...current, pageIndex: 0 }));
@@ -1461,6 +1534,7 @@ export function WishlistClient() {
   }
 
   function clearFilters() {
+    searchSchedulerRef.current?.dispose();
     setDraftFilters(DEFAULT_FILTERS);
     setAppliedFilters(DEFAULT_FILTERS);
     setPagination({ pageIndex: 0, pageSize: 50 });
@@ -1676,7 +1750,9 @@ export function WishlistClient() {
           onThresholdCommit={updateThreshold}
           onRefresh={(item) => void refreshItem(item)}
           search={draftFilters.search}
-          onSearchChange={(search) => setDraftFilters((current) => ({ ...current, search }))}
+          onSearchChange={changeSearch}
+          onSearchCommit={submitSearch}
+          onSearchClear={clearSearch}
           pagination={pagination}
           onPaginationChange={changePagination}
           sorting={sorting}

@@ -9,9 +9,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/ui/cn";
 import type { SteamSearchResult } from "@/lib/contracts/steam";
 import { searchSteam, suggestGames } from "@/app/steam/_lib/steam-api";
-
-const MIN_QUERY_LENGTH = 2;
-const SUGGESTION_DEBOUNCE_MS = 300;
+import { SUGGESTION_DEBOUNCE_MS, resolveSearchRequest, shouldSuggest } from "./_lib/search-query";
 
 const refreshedFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
 
@@ -80,7 +78,7 @@ export function SearchClient() {
 
   useEffect(() => {
     // Suggestions stop after an explicit search for the same term; typing again re-enables them.
-    if (trimmedQuery.length < MIN_QUERY_LENGTH || trimmedQuery === searchedQuery) {
+    if (!shouldSuggest(trimmedQuery, searchedQuery)) {
       setSuggestions([]);
       return;
     }
@@ -104,12 +102,12 @@ export function SearchClient() {
   }, [trimmedQuery, searchedQuery]);
 
   async function runSearch(value: string) {
-    const q = value.trim();
+    const { query: q, error: validationError } = resolveSearchRequest(value);
     setSearchedQuery(q);
     setError(null);
 
-    if (q.length < MIN_QUERY_LENGTH) {
-      setError(`Escribe al menos ${MIN_QUERY_LENGTH} caracteres.`);
+    if (validationError) {
+      setError(validationError);
       setResults([]);
       return;
     }
