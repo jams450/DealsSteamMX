@@ -14,8 +14,9 @@ namespace Deals.BusinessLogic.Services;
 /// command timeout, so a slow import held the lock - and every other identity writer - for the whole
 /// import; when that import got stuck, its pooled connection never came back and took the pool with it.
 /// <see cref="AcquireAsync"/> sets <c>lock_timeout</c> for the caller's transaction through
-/// <c>SET LOCAL</c> (so the caller must already be inside one) and reports an exhausted wait as "busy"
-/// instead of holding on.
+/// <c>SET LOCAL</c> (so the caller must already be inside one), reports an exhausted wait as "busy" instead
+/// of holding on, and releases the budget as soon as the gate is taken so nothing else in the transaction
+/// inherits it.
 ///
 /// The lock key is hashed exactly as it was before this helper existed. Changing it would make two
 /// binary versions block on two different keys, and imports would stop serializing against merges during
@@ -39,12 +40,21 @@ public static class GameIdentityLock
         "SELECT pg_advisory_xact_lock(hashtext('dealext.game_identity'))";
 
     /// <summary>
-    /// Bounds every lock this transaction takes afterwards, not only the advisory one, so a contended row
-    /// lock fails fast too rather than hanging. It is deliberately not reset to 0 afterwards: 0 would
-    /// disable a server-level <c>lock_timeout</c> an operator may have configured.
+    /// Bounds the wait for the gate itself.
     /// </summary>
     private static readonly string SetLockTimeoutSql =
         $"SET LOCAL lock_timeout = {WaitBudgetMilliseconds}";
+
+    /// <summary>
+    /// Gives the rest of the transaction its previous wait behaviour back. <c>SET LOCAL</c> applies to every
+    /// statement that follows it in the transaction, so leaving the budget in place would also cut short an
+    /// unrelated row lock - a concurrent import and merge touching the same user's rows, for instance - and
+    /// that timeout would surface as a 500 instead of the 409 this budget exists to produce.
+    ///
+    /// The cost is explicit: a server-level <c>lock_timeout</c> an operator configured is not in effect for
+    /// the remainder of this transaction.
+    /// </summary>
+    private static readonly string ReleaseLockTimeoutSql = "SET LOCAL lock_timeout = 0";
 
     /// <summary>
     /// Takes the identity gate inside the caller's transaction, or fails with
@@ -56,6 +66,7 @@ public static class GameIdentityLock
         {
             await repository.ExecuteSqlRawAsync(SetLockTimeoutSql);
             await repository.ExecuteSqlRawAsync(AcquireSql);
+            await repository.ExecuteSqlRawAsync(ReleaseLockTimeoutSql);
         }
         catch (PostgresException exception) when (IsLockTimeout(exception.SqlState))
         {

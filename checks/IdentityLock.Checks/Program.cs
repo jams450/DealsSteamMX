@@ -10,7 +10,8 @@ using Npgsql;
 // Rule: every path that creates or reassigns canonical game identity takes one gate, and it takes it in a
 // bounded way. The gate used to be a bare lock statement under an infinite command timeout, so a slow
 // import held it for its whole run and a stuck one pinned its pooled connection forever. Pinned here:
-//   1. the wait budget is set before the lock is taken,
+//   1. the wait budget is set before the lock is taken and released after, so nothing else in the
+//      transaction inherits it,
 //   2. the lock key is byte-for-byte the statement the call sites already used, so two versions of the
 //      binary cannot end up serializing on two different keys during a rollout,
 //   3. only PostgreSQL's lock_not_available means "busy",
@@ -41,16 +42,19 @@ static async Task<Exception?> Capture(Func<Task> action)
 var recorder = new RecordingRepository();
 await GameIdentityLock.AcquireAsync(recorder);
 
-Check(recorder.Statements.Count == 2,
-    $"the gate issues the budget and the lock and nothing else (issued {recorder.Statements.Count})");
+Check(recorder.Statements.Count == 3,
+    $"the gate bounds the wait, takes the lock and releases the budget, and nothing else (issued {recorder.Statements.Count})");
 
-if (recorder.Statements.Count == 2)
+if (recorder.Statements.Count == 3)
 {
     Check(recorder.Statements[0] == $"SET LOCAL lock_timeout = {GameIdentityLock.WaitBudgetMilliseconds}",
         $"the wait budget is set first (got '{recorder.Statements[0]}')");
 
     Check(recorder.Statements[1] == "SELECT pg_advisory_xact_lock(hashtext('dealext.game_identity'))",
         $"the identity gate key is unchanged (got '{recorder.Statements[1]}')");
+
+    Check(recorder.Statements[2] == "SET LOCAL lock_timeout = 0",
+        $"the budget is released for the rest of the transaction (got '{recorder.Statements[2]}')");
 }
 
 Check(GameIdentityLock.IsLockTimeout(GameIdentityLock.LockTimeoutSqlState),
