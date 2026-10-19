@@ -10,8 +10,11 @@ public static class DatabaseExtensions
         var connectionString = configuration.GetConnectionString("DefaultConnection")
             ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
 
+        var commandTimeoutSeconds = DatabaseCommandTimeout.Resolve(
+            configuration.GetValue<int?>("Database:CommandTimeoutSeconds"));
+
         services.AddDbContext<AppDbContext>(options =>
-            options.UseNpgsql(connectionString));
+            options.UseNpgsql(connectionString, npgsql => npgsql.CommandTimeout(commandTimeoutSeconds)));
 
         return services;
     }

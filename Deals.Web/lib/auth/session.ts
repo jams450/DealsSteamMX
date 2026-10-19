@@ -1,6 +1,7 @@
 import "server-only";
 import { cookies } from "next/headers";
 import { EncryptJWT, jwtDecrypt } from "jose";
+import { isPlaceholderSecret } from "@/lib/security/secret-quality";
 
 export const SESSION_COOKIE_SECURE = process.env.NODE_ENV === "production";
 
@@ -40,8 +41,10 @@ export function isSessionUsable(session: AuthSession): boolean {
 function getSessionSecret(): Uint8Array {
   const secret = process.env.SESSION_SECRET;
 
-  if (!secret || secret.length < 32) {
-    throw new Error("SESSION_SECRET must be configured with at least 32 characters");
+  // La misma regla que el guardián del API: un secreto que se declara placeholder no arranca. Un
+  // SESSION_SECRET conocido cifra la cookie de sesión con una clave que cualquiera puede leer.
+  if (!secret || secret.length < 32 || isPlaceholderSecret(secret)) {
+    throw new Error("SESSION_SECRET must be configured with at least 32 characters and must not be a placeholder");
   }
 
   return new TextEncoder().encode(secret);

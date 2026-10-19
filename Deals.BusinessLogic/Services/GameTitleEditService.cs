@@ -30,8 +30,6 @@ public sealed class GameTitleEditService : IGameTitleEditService
 {
     // Same global advisory lock as the import, the manual add and the manual merge: the igdb claim mutates
     // identity (game_external_ids), so it has to serialize with the writers that reassign it.
-    private const string IdentityLockSql = "SELECT pg_advisory_xact_lock(hashtext('dealext.game_identity'))";
-
     // Namespace vocabulary of game_external_ids: a provider namespace, like 'steam' for covers.
     private const string IgdbNamespace = "igdb";
 
@@ -84,7 +82,7 @@ public sealed class GameTitleEditService : IGameTitleEditService
 
         return await _repository.ExecuteInTransactionAsync(async () =>
         {
-            await _repository.ExecuteSqlRawAsync(IdentityLockSql);
+            await GameIdentityLock.AcquireAsync(_repository);
 
             // Resolve the target under the lock: a concurrent merge cannot have absorbed it meanwhile.
             var game = await _repository.GetTrack<Game>()

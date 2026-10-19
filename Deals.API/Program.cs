@@ -37,6 +37,11 @@ builder.Services
 
 var app = builder.Build();
 
+// Primero en la tubería: la dirección y el esquema que vean los middlewares siguientes (limitador de
+// tasa, autorización, auditoría) dependen de esta decisión. Por defecto no se registra nada: la cadena
+// de proxy se declara con Proxy:TrustForwardedHeaders + Proxy:KnownProxies.
+app.UseApiForwardedHeaders();
+
 await app.SeedStartupAdminAsync();
 
 app.UseApiOpenApiIfDevelopment();

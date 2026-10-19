@@ -1,6 +1,8 @@
 using System.Net.Mail;
+using Deals.API.Security;
 using Deals.BusinessLogic.Context;
 using Deals.BusinessLogic.Interfaces;
+using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -24,7 +26,7 @@ public static class StartupAdminExtensions
         var configuration = services.GetRequiredService<IConfiguration>();
         var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger("StartupAdminSeeder");
         var name = configuration[$"{SectionName}:Name"]?.Trim();
-        var email = configuration[$"{SectionName}:Email"]?.Trim().ToLowerInvariant();
+        var email = LoginIdentifier.Normalize(configuration[$"{SectionName}:Email"]);
         var password = configuration[$"{SectionName}:Password"];
 
         if (!IsValid(name, email, password))
@@ -51,7 +53,7 @@ public static class StartupAdminExtensions
     {
         if (string.IsNullOrWhiteSpace(name) || name.Length > 100 ||
             string.IsNullOrWhiteSpace(email) || email.Length > 100 ||
-            string.IsNullOrWhiteSpace(password) || password.Length < 8)
+            SecretPlaceholder.IsPlaceholder(password) || password.Length < 8)
         {
             return false;
         }

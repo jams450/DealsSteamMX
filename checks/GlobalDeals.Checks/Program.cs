@@ -16,7 +16,8 @@ using Microsoft.Extensions.Logging.Abstractions;
 // Layers exercised here:
 //   1. The public ItadGlobalDealClient parser over a fake HTTP handler: page envelope, key header,
 //      query bounds, hasMore/nextOffset, UTC expiry, malformed currency/price, 429 retry, transport
-//      failure and cancellation. Credential-free error messages are asserted explicitly.
+//      failure and cancellation. Credential-free error messages are asserted explicitly. The
+//      Retry-After wait is asserted to be capped by the request budget (spec S4).
 //   2. The primary shape is required: the old invented top-level shape is rejected.
 //   3. The pure GlobalDealSweep completion rule: hasMore end, repeated page, cursor loop, page budget
 //      and page failure.
@@ -451,6 +452,63 @@ static ItadGlobalDealClient CreateClient(
     Check(page.Deals.Count == 1 && attempts == 2, "a 429 is retried once after Retry-After");
     http.Dispose();
     governor.Dispose();
+}
+
+// Retry-After is capped by the request budget (spec S4).
+{
+    // The provider asks for a day; what this process waits is bounded by the budget of the request being
+    // retried, so a hostile or broken header cannot park a caller - and the per-app gate it holds - for a
+    // day. The client's own Timeout is that budget, so the retry is observable without waiting for it.
+    var attempts = 0;
+    var handler = new FakeHttpHandler(_ =>
+    {
+        attempts++;
+        if (attempts == 1)
+        {
+            var tooMany = JsonResponse("{}", HttpStatusCode.TooManyRequests);
+            tooMany.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromDays(1));
+            return tooMany;
+        }
+
+        return JsonResponse(Envelope(SyntheticDealJson, hasMore: false));
+    });
+    var client = CreateClient(handler, out var http, out var governor);
+    http.Timeout = TimeSpan.FromMilliseconds(200);
+    var startedAt = DateTime.UtcNow;
+    var page = await client.GetDealsPageAsync(0, 200, CancellationToken.None);
+    var elapsed = DateTime.UtcNow - startedAt;
+    Check(page.Deals.Count == 1 && attempts == 2, "a hostile Retry-After still retries once");
+    Check(elapsed < TimeSpan.FromSeconds(10),
+        $"a hostile Retry-After does not park the caller (waited {elapsed.TotalSeconds:0.00}s)");
+    http.Dispose();
+    governor.Dispose();
+}
+
+// The cap rule itself, independent of any client.
+{
+    var huge = JsonResponse("{}", HttpStatusCode.TooManyRequests);
+    huge.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromDays(1));
+    Check(ItadRetryAfter.Read(huge, TimeSpan.FromSeconds(10)) == TimeSpan.FromSeconds(10),
+        "a retry wait is capped at the request budget");
+
+    var modest = JsonResponse("{}", HttpStatusCode.TooManyRequests);
+    modest.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromMilliseconds(250));
+    Check(ItadRetryAfter.Read(modest, TimeSpan.FromSeconds(10)) == TimeSpan.FromMilliseconds(250),
+        "a wait below the budget is honoured exactly");
+
+    var absent = JsonResponse("{}", HttpStatusCode.TooManyRequests);
+    Check(ItadRetryAfter.Read(absent, TimeSpan.FromSeconds(10)) is null,
+        "no Retry-After means no imposed wait");
+
+    var past = JsonResponse("{}", HttpStatusCode.TooManyRequests);
+    past.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(DateTimeOffset.UtcNow.AddMinutes(-5));
+    Check(ItadRetryAfter.Read(past, TimeSpan.FromSeconds(10)) is null,
+        "a date already in the past imposes no wait");
+
+    var unbudgeted = JsonResponse("{}", HttpStatusCode.TooManyRequests);
+    unbudgeted.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromDays(1));
+    Check(ItadRetryAfter.Read(unbudgeted, Timeout.InfiniteTimeSpan) == ItadRetryAfter.StandaloneCap,
+        "a client with no time budget still caps the wait");
 }
 
 // Cancellation propagates.

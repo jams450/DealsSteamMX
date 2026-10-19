@@ -24,14 +24,18 @@ public static class RateLimitingExtensions
                     cancellationToken: cancellationToken);
             };
 
-            options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
-                context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-                _ => new FixedWindowRateLimiterOptions
-                {
-                    PermitLimit = 10,
-                    Window = TimeSpan.FromMinutes(1),
-                    QueueLimit = 0
-                }));
+            // Login y refresh llevan presupuestos separados a propósito. La partición es la misma (la IP del
+            // par; en docker-compose, el contenedor del BFF), así que un cubo único permitía que diez POST de
+            // login por minuto agotaran también el refresh y expulsaran a todos los usuarios con
+            // SESSION_EXPIRED. Residuo conocido: cada cubo sigue siendo compartido mientras la API no vea la
+            // dirección real del cliente; eso lo habilita UseApiForwardedHeaders con Proxy:KnownProxies.
+            options.AddPolicy("auth-login", context => RateLimitPartition.GetFixedWindowLimiter(
+                GetClientIp(context),
+                _ => AuthWindow()));
+
+            options.AddPolicy("auth-refresh", context => RateLimitPartition.GetFixedWindowLimiter(
+                GetClientIp(context),
+                _ => AuthWindow()));
 
             options.AddPolicy("steam-read", context => RateLimitPartition.GetFixedWindowLimiter(
                 GetClientKey(context),
@@ -77,6 +81,14 @@ public static class RateLimitingExtensions
             ? $"ip:{GetClientIp(context)}"
             : $"user:{userId}";
     }
+
+    // Cada partición necesita sus propias opciones: el limitador las conserva por clave.
+    private static FixedWindowRateLimiterOptions AuthWindow() => new()
+    {
+        PermitLimit = 10,
+        Window = TimeSpan.FromMinutes(1),
+        QueueLimit = 0
+    };
 
     private static string GetClientIp(HttpContext context) =>
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown";

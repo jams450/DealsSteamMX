@@ -3,6 +3,7 @@ using Deals.API.Models.Auth;
 using Deals.API.Security;
 using Deals.BusinessLogic.Context;
 using Deals.BusinessLogic.Interfaces;
+using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -101,13 +102,19 @@ public class AuthService : IAuthService
 
     private async Task<User?> AuthenticateRegularUserAsync(LoginRequest request)
     {
-        var existing = await _context.Users.FirstOrDefaultAsync(u => u.Email == request.Username);
+        // The account must be looked up under the same normalization the credential check uses
+        // (LoginIdentifier). Comparing the raw submitted string made "User@x.com " a different account:
+        // the lock check below was skipped and RegisterFailedLoginAttemptAsync received a null account,
+        // so neither the lock nor the failure counter ever moved and the only brute-force control on this
+        // endpoint was defeated by respelling the login.
+        var identifier = LoginIdentifier.Normalize(request.Username);
+        var existing = await _context.Users.FirstOrDefaultAsync(u => u.Email == identifier);
         if (existing != null && existing.LockedUntil.HasValue && existing.LockedUntil.Value > DateTime.UtcNow)
         {
             return null;
         }
 
-        var user = await _userService.ValidateCredentialsAsync(request.Username, request.Password);
+        var user = await _userService.ValidateCredentialsAsync(identifier, request.Password);
         if (user == null)
         {
             await RegisterFailedLoginAttemptAsync(existing);

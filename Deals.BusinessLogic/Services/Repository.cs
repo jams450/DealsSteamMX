@@ -17,7 +17,6 @@ namespace Deals.BusinessLogic.Services
         public Repository(AppDbContext context)
         {
             _context = context;
-            _context.Database.SetCommandTimeout(0);
         }
 
         #region Query Methods

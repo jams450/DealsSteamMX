@@ -4,6 +4,7 @@ using Deals.API.Models.Reviews;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Catalog;
 using Deals.BusinessLogic.Models.Library;
+using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -100,10 +101,10 @@ public class LibraryController : ControllerBase
                 throw new ArgumentException("The library payload must not contain null entries", nameof(entries));
             }
 
-            var gameId = RequireText(entry.GameId, nameof(PlayniteLibraryEntry.GameId));
+            var gameId = RequireTextWithin(entry.GameId, nameof(PlayniteLibraryEntry.GameId), LibraryImportLimits.MaxStoreGameIdLength);
             var pluginIdRaw = RequireText(entry.PluginId, nameof(PlayniteLibraryEntry.PluginId));
             var source = RequireText(entry.Source, nameof(PlayniteLibraryEntry.Source));
-            var name = RequireText(entry.Name, nameof(PlayniteLibraryEntry.Name));
+            var name = RequireTextWithin(entry.Name, nameof(PlayniteLibraryEntry.Name), LibraryImportLimits.MaxTitleLength);
             var isInstalled = entry.IsInstalled
                 ?? throw new ArgumentException("IsInstalled is required", nameof(PlayniteLibraryEntry.IsInstalled));
             var addedAt = ParseAdded(entry.Added);
@@ -131,7 +132,7 @@ public class LibraryController : ControllerBase
             // el resolver inserta game_external_ids y borra filas games huérfanas, así que una fusión
             // concurrente podría dejar un game_id colgando. ponytail: lock global; si algún día hay imports
             // concurrentes multi-usuario, fragmentar por usuario (la creación de identidad seguiría necesitando el global).
-            await _repository.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(hashtext('dealext.game_identity'))");
+            await GameIdentityLock.AcquireAsync(_repository);
 
             var userExists = await _repository.Get<User>()
                 .AnyAsync(candidate => candidate.UserId == userId, cancellationToken);
@@ -376,8 +377,15 @@ public class LibraryController : ControllerBase
     /// Removes one library row of the caller. Undo for a manual addition — there was no way to delete any
     /// library row before. The canonical game, its mappings, reviews and favorites stay: identity and
     /// user content are shared, and a Playnite reimport can recreate the row.
+    ///
+    /// The path is <c>DELETE /api/library/{userLibraryId}</c>, composed from this controller's own
+    /// <c>api/[controller]</c> prefix. The attribute used to repeat the resource segment
+    /// (<c>"library/{userLibraryId:long}"</c>), which composed to <c>api/library/library/{id}</c> while the
+    /// only caller — <c>Deals.Web/app/api/bff/library/manual/[id]/route.ts</c> — requested
+    /// <c>api/library/{id}</c>. Every id answered 404 and the undo never worked; the same endpoint is also
+    /// the caller's own DELETE, so the short path is the contract the client was written against.
     /// </summary>
-    [HttpDelete("library/{userLibraryId:long}")]
+    [HttpDelete("{userLibraryId:long}")]
     public async Task<IActionResult> DeleteLibraryRow(long userLibraryId, CancellationToken cancellationToken)
     {
         var userId = GetUserId();
@@ -553,6 +561,20 @@ public class LibraryController : ControllerBase
         string.IsNullOrWhiteSpace(value)
             ? throw new ArgumentException($"{field} is required", field)
             : value;
+
+    /// <summary>
+    /// <see cref="RequireText"/> plus the column width from <see cref="LibraryImportLimits"/>. Rejecting here
+    /// costs a 400 for the offending entry; not rejecting costs the whole import, because the 22001 it would
+    /// produce aborts the transaction every entry shares.
+    /// </summary>
+    private static string RequireTextWithin(string? value, string field, int maxLength)
+    {
+        var text = RequireText(value, field);
+
+        return text.Length > maxLength
+            ? throw new ArgumentException($"{field} cannot exceed {maxLength} characters", field)
+            : text;
+    }
 
     /// <summary>
     /// Maps the console preview payload to the business contract. A null element is a malformed payload, not

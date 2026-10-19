@@ -1,5 +1,6 @@
 using Deals.API.HostedServices;
 using Deals.API.Interfaces;
+using Deals.API.Security;
 using Deals.API.Services;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Services;
@@ -137,8 +138,7 @@ public static class ServiceCollectionExtensions
                            shopIds.All(id => int.TryParse(id, out var value) && value > 0),
                 "ITAD:OfficialShopIds must contain at least one positive numeric shop id.")
             .Validate(
-                options => !string.IsNullOrWhiteSpace(options.ApiKey) &&
-                           !options.ApiKey.StartsWith("SET_", StringComparison.OrdinalIgnoreCase),
+                options => !SecretPlaceholder.IsPlaceholder(options.ApiKey),
                 "ITAD:ApiKey must be configured with a non-placeholder value.")
             .ValidateOnStart();
 
@@ -209,8 +209,7 @@ public static class ServiceCollectionExtensions
                 options => IsHttps(options.BaseUrl),
                 "GgDeals:BaseUrl must be an absolute HTTPS URL.")
             .Validate(
-                options => !string.IsNullOrWhiteSpace(options.ApiKey) &&
-                           !options.ApiKey.StartsWith("SET_", StringComparison.OrdinalIgnoreCase),
+                options => !SecretPlaceholder.IsPlaceholder(options.ApiKey),
                 "GgDeals:ApiKey must be configured with a non-placeholder value.")
             .ValidateOnStart();
 
@@ -320,8 +319,7 @@ public static class ServiceCollectionExtensions
                 options => IsHttps(options.BaseUrl),
                 "FX:BaseUrl must be an absolute HTTPS URL.")
             .Validate(
-                options => !string.IsNullOrWhiteSpace(options.BanxicoToken) &&
-                           !options.BanxicoToken.StartsWith("SET_", StringComparison.OrdinalIgnoreCase),
+                options => !SecretPlaceholder.IsPlaceholder(options.BanxicoToken),
                 "FX:BanxicoToken must be configured with a non-placeholder value.")
             .ValidateOnStart();
 

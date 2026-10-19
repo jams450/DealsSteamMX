@@ -61,7 +61,7 @@ Backend:
 - Policies in `AuthorizationExtensions`: `UserWithId` (authenticated + valid id claim), `AdminWithId` (+ `Role=Admin`).
 - `UsersController` uses `AdminWithId`. `MeController` uses `UserWithId` and reads claims itself, throwing `UnauthorizedAccessException` when the id is missing. `CurrentUserService` (`ICurrentUserService`) exposes nullable `GetUserId()`; `GetRequiredUserId()` throws `InvalidOperationException`.
 - `ExceptionHandler` maps `ArgumentException` to 400, `UnauthorizedAccessException` to 401, everything else to 500 (ProblemDetails, Spanish titles).
-- Public endpoints: `POST /api/auth/login` and `/refresh`; `POST /api/auth/logout` requires `UserWithId`. Login and refresh are rate-limited by the `auth` policy: fixed window 10/min per IP (`RateLimitingExtensions` + `[EnableRateLimiting("auth")]`). User creation is admin-only through `POST /api/users`.
+- Public endpoints: `POST /api/auth/login` and `/refresh`; `POST /api/auth/logout` requires `UserWithId`. Login and refresh have **separate** budgets (`auth-login`, `auth-refresh`): fixed window 10/min per partition key (`RateLimitingExtensions`). A single shared bucket let a login flood consume the refresh budget and log every user out. The partition key is the immediate peer address, so every request arriving through the BFF shares one bucket until the proxy chain is declared (`Proxy__TrustForwardedHeaders` + `Proxy__KnownProxies`, which accepts a comma string or a list); trusting that chain without naming it is a startup failure, because `X-Forwarded-For` would then let any caller pick its own partition. User creation is admin-only through `POST /api/users`.
 - Gotcha: login's `username` field is matched against the stored **email**.
 
 Frontend BFF (the template's main value):
@@ -126,7 +126,7 @@ Corolario para lo medible: una verificación que corre en el cliente equivocado 
 ## Config
 Backend (env vars or `appsettings.json`):
 ```
-Jwt__Key                       # >= 32 UTF-8 bytes; SET_* or short values throw at startup
+Jwt__Key                       # >= 32 UTF-8 bytes and not a placeholder; short or placeholder values throw at startup
 Jwt__Issuer                    # default Deals
 Jwt__Audience                  # default DealExtUsers
 Jwt__ExpirationHours           # optional, default 2
@@ -134,12 +134,15 @@ Auth__MaxFailedAttempts        # default 5
 Auth__LockMinutes              # default 15
 Auth__RefreshDays              # default 30
 ConnectionStrings__DefaultConnection
+Database__CommandTimeoutSeconds  # optional, default 60; 0 means no timeout (the old behaviour)
 Cors__AllowedOrigins           # array or comma string; fallback http://localhost:3000
+Proxy__TrustForwardedHeaders   # optional, default false: trust X-Forwarded-* only from a declared chain
+Proxy__KnownProxies            # comma string of exact proxy IPs; required when TrustForwardedHeaders is true
 ```
 Frontend:
 ```
 API_BASE_URL                   # default http://localhost:5181
-SESSION_SECRET                 # >= 32 chars
+SESSION_SECRET                 # >= 32 chars and not a placeholder
 CSRF_ENFORCE                   # true|false; default is production-only
 CSRF_TRUSTED_ORIGINS           # comma-separated origins
 ```

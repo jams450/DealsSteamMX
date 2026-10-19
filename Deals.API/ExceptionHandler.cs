@@ -21,6 +21,8 @@ public sealed class ExceptionHandler(ILogger<ExceptionHandler> logger) : IExcept
             Deals.BusinessLogic.Exceptions.GameCoverSourceNotFoundException => (StatusCodes.Status404NotFound, "No encontrado", "Ese juego no existe en el proveedor de portadas o no tiene portada."),
             // Cover provider unreachable or unconfigured: nothing was written, the caller can retry later.
             Deals.BusinessLogic.Exceptions.GameCoverSourceUnavailableException => (StatusCodes.Status503ServiceUnavailable, "Servicio no disponible", "El proveedor de portadas no está disponible; intente de nuevo."),
+            // Another identity writer held the gate past the wait budget: nothing was written, retry works.
+            Deals.BusinessLogic.Exceptions.IdentityLockUnavailableException => (StatusCodes.Status409Conflict, "Operación en curso", "Otra operación de identidad está en curso; intente de nuevo en unos segundos."),
             UnauthorizedAccessException => (StatusCodes.Status401Unauthorized, "No autorizado", "No fue posible autenticar la solicitud."),
             // Kestrel raises this when the endpoint/body size limit is exceeded; keep its status (413).
             BadHttpRequestException badRequest => (badRequest.StatusCode, "Solicitud no válida", "Revise los datos enviados."),

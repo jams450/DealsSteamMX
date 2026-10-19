@@ -1,4 +1,5 @@
 using Deals.API.HostedServices;
+using Deals.API.Security;
 using Deals.API.Services.Notifications;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
@@ -25,9 +26,7 @@ public static class NtfyServiceCollectionExtensions
                 options => !options.Enabled || IsValidTopic(options.Topic),
                 "Ntfy:Topic must be a non-empty single path segment of at most 64 characters.")
             .Validate(
-                options => !options.Enabled ||
-                    (!string.IsNullOrWhiteSpace(options.AuthToken) &&
-                     !options.AuthToken.StartsWith("SET_", StringComparison.OrdinalIgnoreCase)),
+                options => !options.Enabled || !SecretPlaceholder.IsPlaceholder(options.AuthToken),
                 "Ntfy:AuthToken must be configured with a non-placeholder value.")
             .Validate(
                 options => options.PollSeconds is >= 5 and <= 86_400,

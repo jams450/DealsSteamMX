@@ -105,7 +105,7 @@ public class ManualLibraryService : IManualLibraryService
         {
             // Same global lock as the import and the manual merge: this path creates identity (a games
             // row plus its mapping), and the pair must serialize with the writers that reassign it.
-            await _repository.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(hashtext('dealext.game_identity'))");
+            await GameIdentityLock.AcquireAsync(_repository);
 
             var userExists = await _repository.Get<User>()
                 .AnyAsync(candidate => candidate.UserId == userId, cancellationToken);

@@ -89,8 +89,7 @@ public static class AuthenticationExtensions
 
     private static void ValidateJwtKey(string jwtKey)
     {
-        if (string.IsNullOrWhiteSpace(jwtKey) ||
-            jwtKey.StartsWith("SET_", StringComparison.OrdinalIgnoreCase) ||
+        if (SecretPlaceholder.IsPlaceholder(jwtKey) ||
             Encoding.UTF8.GetByteCount(jwtKey) < 32)
         {
             throw new InvalidOperationException(
