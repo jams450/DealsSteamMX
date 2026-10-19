@@ -133,6 +133,30 @@ Check(RaisesStartupError(() => TrustedProxySettings.Resolve(true, [])),
 Check(RaisesStartupError(() => TrustedProxySettings.Resolve(true, ["not-an-address"])),
     "trusted-proxy: a malformed proxy address is refused instead of silently dropped");
 
+// Secret placeholders (spec S5). The guard that only looked for the repository's SET_ convention accepted
+// Jwt__Key=replace-with-a-long-random-secret - 33 characters - which would have signed forgeable tokens.
+// The same cases are asserted on the TypeScript side (checks/secret-quality).
+Check(SecretPlaceholder.IsPlaceholder("replace-with-a-long-random-secret"),
+    "secret: the shipped example Jwt__Key is a placeholder");
+
+Check(SecretPlaceholder.IsPlaceholder("SET_ITAD_API_KEY") &&
+      SecretPlaceholder.IsPlaceholder("change-me-please-0123456789abcdef") &&
+      SecretPlaceholder.IsPlaceholder("change me please 0123456789abcdefgh"),
+    "secret: the repository placeholder convention is a placeholder in any of its spellings");
+
+Check(SecretPlaceholder.IsPlaceholder(null) && SecretPlaceholder.IsPlaceholder("   "),
+    "secret: an absent secret is a placeholder");
+
+Check(SecretPlaceholder.IsPlaceholder(new string('X', 32)) &&
+      SecretPlaceholder.IsPlaceholder(new string('a', 32)),
+    "secret: a repeated-character secret is a placeholder whatever its length");
+
+Check(!SecretPlaceholder.IsPlaceholder("k7Qv2mNp9Rt4Xw1Zb6Ld3Fs8Gh5Jc0Ya"),
+    "secret: a varied 32-character secret is accepted");
+
+Check(SecretPlaceholder.MinDistinctCharacters == 8,
+    "secret: the distinct-character floor matches the mirrored rule");
+
 if (failures.Count > 0)
 {
     foreach (var failure in failures)
@@ -143,7 +167,7 @@ if (failures.Count > 0)
     return 1;
 }
 
-Console.WriteLine("PASS: login identification, account lockout and trusted-proxy checks");
+Console.WriteLine("PASS: login identification, account lockout, trusted-proxy and secret-placeholder checks");
 return 0;
 
 static bool RaisesStartupError(Action action)

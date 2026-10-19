@@ -1,4 +1,5 @@
 using System.Net.Mail;
+using Deals.API.Security;
 using Deals.BusinessLogic.Context;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Services;
@@ -52,7 +53,7 @@ public static class StartupAdminExtensions
     {
         if (string.IsNullOrWhiteSpace(name) || name.Length > 100 ||
             string.IsNullOrWhiteSpace(email) || email.Length > 100 ||
-            string.IsNullOrWhiteSpace(password) || password.Length < 8)
+            SecretPlaceholder.IsPlaceholder(password) || password.Length < 8)
         {
             return false;
         }

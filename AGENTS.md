@@ -126,7 +126,7 @@ Corolario para lo medible: una verificación que corre en el cliente equivocado 
 ## Config
 Backend (env vars or `appsettings.json`):
 ```
-Jwt__Key                       # >= 32 UTF-8 bytes; SET_* or short values throw at startup
+Jwt__Key                       # >= 32 UTF-8 bytes and not a placeholder; short or placeholder values throw at startup
 Jwt__Issuer                    # default Deals
 Jwt__Audience                  # default DealExtUsers
 Jwt__ExpirationHours           # optional, default 2
@@ -142,7 +142,7 @@ Proxy__KnownProxies            # comma string of exact proxy IPs; required when 
 Frontend:
 ```
 API_BASE_URL                   # default http://localhost:5181
-SESSION_SECRET                 # >= 32 chars
+SESSION_SECRET                 # >= 32 chars and not a placeholder
 CSRF_ENFORCE                   # true|false; default is production-only
 CSRF_TRUSTED_ORIGINS           # comma-separated origins
 ```
