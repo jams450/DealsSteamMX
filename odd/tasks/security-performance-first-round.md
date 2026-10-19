@@ -50,7 +50,7 @@ are availability, secret-handling and dead-feature defects.
 - [x] T4 S4 Route: inline (two clients, one shared reader). Commit `c48a71d`. Evidence: `checks/GlobalDeals.Checks` asserts a day-long `Retry-After` still retries once without parking the caller.
 - [x] T5 S5 Route: inline (shared guard + TypeScript mirror). Commit `9b89e55`. Evidence: `checks/Auth.Checks` and `checks/secret-quality` assert the same cases on both sides.
 - [x] T6 S6 Route: inline (shared limits + controller). Commit `4169b03`. Evidence: `checks/IdentityLock.Checks` reads `SQL/schema.sql` and asserts the three column widths equal the limits.
-- [x] T7 S7 Route: inline (one route attribute). Commit `fix(library): ...`. Evidence: route composition checked at both ends; no other caller existed.
+- [x] T7 S7 Route: inline (one route attribute). Commit `e44237f`. Evidence: route composition checked at both ends; no other caller existed.
 
 ## Log
 - **L1** (user, verbatim) `Necesito review de seguridad y optimizacion para front y back de cada modulo que tenemos`
@@ -83,3 +83,20 @@ are availability, secret-handling and dead-feature defects.
   or bootstrap administrator password now refuses to start (T5); an identity transaction that waits more
   than 15 s for the gate now answers 409 instead of waiting (T3); commands have a 60 s timeout unless
   `Database__CommandTimeoutSeconds` changes it (T3).
+- **L10** Independent verification (`gentle-ai-verify` over `afeb106..ca80a13`) returned S1, S4, S5, S6 and
+  S7 verified and S2 and S3 partially verified, and its verdict was "not safe to keep as-is". What it found,
+  and what was done about it: (a) **blocker, now fixed** - `Proxy:KnownProxies` read as a list returns null
+  for the comma-separated leaf that `AGENTS.md` documents, so enabling the feature failed at startup
+  claiming no proxy was named; `TrustedProxySettings.FromConfiguration` now reads both shapes and the check
+  builds real configuration for each. (b) **false claim, now fixed** - the `IdentityLock.Checks` banner
+  advertised "command timeout checks" while nothing asserted the timeout; the timeout decision is now a
+  resolver with its own check and the banner was corrected. (c) **regression introduced by T3, now fixed** -
+  `SET LOCAL lock_timeout` lasted the whole identity transaction, so a later row-lock wait beyond 15 s turned
+  into a 500 instead of waiting; the budget is now released after the gate. (d) **documentation drift, now
+  fixed** - `AGENTS.md` still described the abolished `auth` policy. (e) **coverage gap, now closed** - S2's policy split is asserted against the real
+  `RateLimiterOptions` policy map (read by reflection: it is not part of the public surface, and an
+  unreachable map fails the check instead of passing green).
+- **L11** Provenance of the observed RED: the T1 and T4 RED runs happened in this session against the working
+  tree (the check projects did not exist at `afeb106`), so they cannot be re-derived from the commit graph.
+  The GREEN results can: every suite is reproducible from `ca80a13` with the commands in this document.
+  Stated plainly rather than left as an implicit claim.

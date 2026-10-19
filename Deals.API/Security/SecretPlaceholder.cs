@@ -17,6 +17,16 @@ namespace Deals.API.Security;
 /// Mirrored in <c>Deals.Web/lib/security/secret-quality.ts</c>; both sides are pinned by checks
 /// (<c>checks/Auth.Checks</c> and <c>checks/secret-quality</c>) over the same cases, so a change here that
 /// is not made there fails.
+///
+/// The false-positive surface is measured rather than assumed, because a rule that stops a deployment is
+/// only acceptable when its rejections are deliberate: a value starting with <c>todo</c>, <c>xxx</c>,
+/// <c>your_</c>, <c>replace</c>, <c>change</c> or <c>set_</c> is rejected even when the rest looks like a
+/// secret, and so is any value with fewer than <see cref="MinDistinctCharacters"/> distinct characters
+/// however long it is. Both refuse startup naming the option, and both are a one-character change for an
+/// operator who picked such a prefix. Realistic material passes: a 32-character base64 secret, a
+/// 64-character hex key and a twelve-character random password all carry well over eight distinct
+/// characters. What this rule does not judge is strength - a short but varied password passes here, and
+/// that question belongs to the length rule where the secret is validated.
 /// </summary>
 public static class SecretPlaceholder
 {
