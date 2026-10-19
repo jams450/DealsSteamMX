@@ -377,8 +377,15 @@ public class LibraryController : ControllerBase
     /// Removes one library row of the caller. Undo for a manual addition — there was no way to delete any
     /// library row before. The canonical game, its mappings, reviews and favorites stay: identity and
     /// user content are shared, and a Playnite reimport can recreate the row.
+    ///
+    /// The path is <c>DELETE /api/library/{userLibraryId}</c>, composed from this controller's own
+    /// <c>api/[controller]</c> prefix. The attribute used to repeat the resource segment
+    /// (<c>"library/{userLibraryId:long}"</c>), which composed to <c>api/library/library/{id}</c> while the
+    /// only caller — <c>Deals.Web/app/api/bff/library/manual/[id]/route.ts</c> — requested
+    /// <c>api/library/{id}</c>. Every id answered 404 and the undo never worked; the same endpoint is also
+    /// the caller's own DELETE, so the short path is the contract the client was written against.
     /// </summary>
-    [HttpDelete("library/{userLibraryId:long}")]
+    [HttpDelete("{userLibraryId:long}")]
     public async Task<IActionResult> DeleteLibraryRow(long userLibraryId, CancellationToken cancellationToken)
     {
         var userId = GetUserId();
