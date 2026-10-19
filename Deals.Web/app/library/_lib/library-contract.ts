@@ -100,6 +100,29 @@ export type LibraryGame = {
   readonly item: LibraryItem;
 };
 
+export type LibraryPlayStatus = ReviewStatus | "backlog";
+export type LibraryYearFilter = number | "all" | "none";
+
+/** Applies the library's store, status, and played-year filters in one deterministic pass. */
+export function filterLibraryGames(
+  games: readonly LibraryGame[],
+  filters: { readonly store?: string; readonly status?: LibraryPlayStatus | "all"; readonly year?: LibraryYearFilter }
+): LibraryGame[] {
+  return games.filter((game) => {
+    if (filters.store && !game.stores.includes(filters.store)) return false;
+    if (filters.status && filters.status !== "all" && game.playStatus !== filters.status) return false;
+    if (filters.year === "none") return game.playedYears.length === 0;
+    if (typeof filters.year === "number") return game.playedYears.includes(filters.year);
+    return true;
+  });
+}
+
+export function countLibraryPlayStatuses(games: readonly LibraryGame[]): Map<LibraryPlayStatus, number> {
+  const counts = new Map<LibraryPlayStatus, number>();
+  for (const game of games) counts.set(game.playStatus, (counts.get(game.playStatus) ?? 0) + 1);
+  return counts;
+}
+
 // Marca temporal de una reseña, para elegir la más reciente. `updated` manda; si falta, `created`. Una
 // fecha ilegible devuelve `null` (más antigua que cualquiera con fecha válida).
 function reviewTimestamp(review: Review): number | null {

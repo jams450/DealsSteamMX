@@ -19,6 +19,7 @@ import { CoverPicker } from "./_components/cover-picker";
 import { TitleEditor } from "./_components/title-editor";
 import type { LibraryCoverSyncReport } from "@/lib/contracts/library-covers";
 import {
+  filterLibraryGames,
   groupLibraryItems,
   LIBRARY_IMPORT_MAX_BYTES,
   type LibraryGame,
@@ -1148,15 +1149,12 @@ export function LibraryClient() {
   // La paginación, el orden y el buscador se resuelven en el navegador; aquí solo se aplican los
   // tres filtros propios, y sobre ese conjunto corren búsqueda, orden y paginación.
   const filteredGames = useMemo(
-    () =>
-      storeFilteredGames.filter((game) => {
-        if (playStatusFilter !== "all" && game.playStatus !== playStatusFilter) return false;
-        if (yearFilter === "all") return true;
-        return yearFilter === NO_YEAR
-          ? game.playedYears.length === 0
-          : game.playedYears.includes(Number(yearFilter));
-      }),
-    [storeFilteredGames, playStatusFilter, yearFilter]
+    () => filterLibraryGames(games, {
+      store: storeFilter,
+      status: playStatusFilter,
+      year: yearFilter === "all" ? "all" : yearFilter === NO_YEAR ? "none" : Number(yearFilter)
+    }),
+    [games, storeFilter, playStatusFilter, yearFilter]
   );
 
   const searchedGames = useMemo(
