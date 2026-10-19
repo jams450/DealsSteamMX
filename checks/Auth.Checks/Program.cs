@@ -1,6 +1,9 @@
+using System.Collections;
 using System.Net;
+using System.Reflection;
 using AuthChecks;
 using Deals.API;
+using Deals.API.Extensions;
 using Deals.API.Models.Auth;
 using Deals.API.Security;
 using Deals.API.Services;
@@ -8,7 +11,9 @@ using Microsoft.Extensions.Configuration;
 using Deals.BusinessLogic.Context;
 using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 // Deterministic checks for the account-lockout rule (spec S1).
@@ -192,6 +197,33 @@ Check(!SecretPlaceholder.IsPlaceholder("k7Qv2mNp9Rt4Xw1Zb6Ld3Fs8Gh5Jc0Ya"),
 Check(SecretPlaceholder.MinDistinctCharacters == 8,
     "secret: the distinct-character floor matches the mirrored rule");
 
+// The rate-limit split (spec S2), asserted against the policies the API actually registers rather than
+// against the source text: one shared bucket is what let a login flood consume every user's refresh budget
+// and log everybody out. RateLimiterOptions keeps its policy map out of the public surface, so it is read by
+// reflection - and an unreachable map fails this check loudly instead of passing silently.
+var rateLimitServices = new ServiceCollection();
+rateLimitServices.AddApiRateLimiting();
+using var rateLimitProvider = rateLimitServices.BuildServiceProvider();
+var rateLimiterOptions = rateLimitProvider.GetRequiredService<IOptions<RateLimiterOptions>>().Value;
+var policyMap = ReadPolicyMap(rateLimiterOptions);
+
+Check(policyMap is IDictionary,
+    "rate-limit: the configured policy map is reachable from the check");
+
+if (policyMap is IDictionary map)
+{
+    var policyNames = map.Keys
+        .Cast<object>()
+        .Select(key => key.ToString() ?? string.Empty)
+        .ToHashSet(StringComparer.Ordinal);
+
+    Check(policyNames.Contains("auth-login") && policyNames.Contains("auth-refresh"),
+        $"rate-limit: login and refresh are separate policies (registered: {string.Join(", ", policyNames.Order(StringComparer.Ordinal))})");
+
+    Check(!policyNames.Contains("auth"),
+        "rate-limit: the single shared auth bucket is gone");
+}
+
 if (failures.Count > 0)
 {
     foreach (var failure in failures)
@@ -216,4 +248,15 @@ static bool RaisesStartupError(Action action)
     {
         return true;
     }
+}
+
+// RateLimiterOptions exposes AddPolicy but not the resulting map, so the check reads it directly. Both
+// shapes are tried: if neither exists, the caller reports a failed check rather than a green suite.
+static object? ReadPolicyMap(RateLimiterOptions options)
+{
+    const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+    var type = typeof(RateLimiterOptions);
+
+    return type.GetProperty("PolicyMap", Flags)?.GetValue(options)
+        ?? type.GetField("PolicyMap", Flags)?.GetValue(options);
 }

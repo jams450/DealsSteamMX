@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
+using Deals.API.Extensions;
 using Deals.BusinessLogic.Exceptions;
 using Deals.BusinessLogic.Services;
 using IdentityLockChecks;
@@ -17,6 +18,12 @@ using Npgsql;
 //   3. only PostgreSQL's lock_not_available means "busy",
 //   4. any other failure surfaces as itself instead of being reported as a busy gate.
 // No PostgreSQL server is contacted and no credential is used: the repository seam is a recorder.
+//
+// It also pins the two things this suite's banner claims. The import field widths against SQL/schema.sql
+// (spec S6): a guard that rejects an oversized entry is only as good as its agreement with the column it
+// writes to, and one long title used to lose the whole 10 000-entry payload. And the command timeout
+// decision (spec S3): finite by default, zero as an explicit escape hatch, a negative value refused at
+// startup.
 //
 // A non-zero exit or a thrown exception marks the check suite failed.
 
@@ -111,6 +118,9 @@ if (schemaPath is not null)
         $"the same limit covers game_external_ids.external_id (schema {externalIdWidth?.ToString(CultureInfo.InvariantCulture) ?? "not found"})");
 }
 
+Check(RaisesStartupError(() => DatabaseCommandTimeout.Resolve(-1)),
+    "a negative command timeout is refused at startup");
+
 if (failures.Count > 0)
 {
     foreach (var failure in failures)
@@ -158,4 +168,17 @@ static int? DeclaredWidth(string schema, string table, string column)
     var match = Regex.Match(block, $@"^\s*{column}\s+VARCHAR\((\d+)\)", RegexOptions.Multiline);
 
     return match.Success ? int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture) : null;
+}
+
+static bool RaisesStartupError(Action action)
+{
+    try
+    {
+        action();
+        return false;
+    }
+    catch (InvalidOperationException)
+    {
+        return true;
+    }
 }

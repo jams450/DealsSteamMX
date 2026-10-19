@@ -6,6 +6,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../../Deals.API/Deals.API.csproj" />
     <ProjectReference Include="../../Deals.BusinessLogic/Deals.BusinessLogic.csproj" />
   </ItemGroup>
 </Project>
