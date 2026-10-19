@@ -4,6 +4,7 @@ using Deals.API;
 using Deals.API.Models.Auth;
 using Deals.API.Security;
 using Deals.API.Services;
+using Microsoft.Extensions.Configuration;
 using Deals.BusinessLogic.Context;
 using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
@@ -132,6 +133,40 @@ Check(RaisesStartupError(() => TrustedProxySettings.Resolve(true, [])),
 
 Check(RaisesStartupError(() => TrustedProxySettings.Resolve(true, ["not-an-address"])),
     "trusted-proxy: a malformed proxy address is refused instead of silently dropped");
+
+// The documented configuration shape has to work. Proxy__KnownProxies is a comma-separated leaf, which is a
+// single configuration value with no children: read as a list it yields nothing at all, and a chain that was
+// declared would be refused at startup - which is what the first version of this did.
+var commaForm = new ConfigurationBuilder()
+    .AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        ["Proxy:TrustForwardedHeaders"] = "true",
+        ["Proxy:KnownProxies"] = "10.0.0.5, 10.0.0.6"
+    })
+    .Build();
+var commaSettings = TrustedProxySettings.FromConfiguration(commaForm.GetSection("Proxy"));
+Check(commaSettings.Enabled &&
+      commaSettings.KnownProxies.SequenceEqual([IPAddress.Parse("10.0.0.5"), IPAddress.Parse("10.0.0.6")]),
+    "trusted-proxy: the documented comma-separated value names both proxies");
+
+var listForm = new ConfigurationBuilder()
+    .AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        ["Proxy:TrustForwardedHeaders"] = "true",
+        ["Proxy:KnownProxies:0"] = "10.0.0.5",
+        ["Proxy:KnownProxies:1"] = "10.0.0.6"
+    })
+    .Build();
+var listSettings = TrustedProxySettings.FromConfiguration(listForm.GetSection("Proxy"));
+Check(listSettings.Enabled && listSettings.KnownProxies.Count == 2,
+    "trusted-proxy: the list form names both proxies");
+
+var absentForm = new ConfigurationBuilder().AddInMemoryCollection([]).Build();
+Check(!TrustedProxySettings.FromConfiguration(absentForm.GetSection("Proxy")).Enabled,
+    "trusted-proxy: an absent section trusts nothing");
+
+Check(RaisesStartupError(() => TrustedProxySettings.Resolve(true, ["10.0.0.5,nonsense"])),
+    "trusted-proxy: one malformed entry inside the comma form is refused");
 
 // Secret placeholders (spec S5). The guard that only looked for the repository's SET_ convention accepted
 // Jwt__Key=replace-with-a-long-random-secret - 33 characters - which would have signed forgeable tokens.

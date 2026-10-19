@@ -14,17 +14,15 @@ public static class ForwardedHeadersExtensions
     /// audit trail by sending headers.
     ///
     /// Declaring the chain is what makes the auth limiter fair behind a proxy: set
-    /// <c>Proxy:TrustForwardedHeaders</c> to true and name the proxies in <c>Proxy:KnownProxies</c> (the
-    /// frontend container or the ingress address). Only exact addresses are supported; the implicit
-    /// loopback entry is dropped, and only one hop is trusted, so a chain longer than one proxy is
+    /// <c>Proxy:TrustForwardedHeaders</c> to true and name the proxies in <c>Proxy:KnownProxies</c> (a
+    /// comma-separated list of exact addresses, or a list; see
+    /// <see cref="TrustedProxySettings.FromConfiguration"/>). Only exact addresses are supported; the
+    /// implicit loopback entry is dropped, and only one hop is trusted, so a chain longer than one proxy is
     /// ignored rather than followed.
     /// </summary>
     public static WebApplication UseApiForwardedHeaders(this WebApplication app)
     {
-        var section = app.Configuration.GetSection(SectionName);
-        var settings = TrustedProxySettings.Resolve(
-            section.GetValue("TrustForwardedHeaders", false),
-            section.GetSection("KnownProxies").Get<string[]>());
+        var settings = TrustedProxySettings.FromConfiguration(app.Configuration.GetSection(SectionName));
 
         if (!settings.Enabled)
         {

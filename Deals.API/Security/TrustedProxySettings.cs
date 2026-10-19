@@ -1,10 +1,11 @@
 using System.Net;
+using Microsoft.Extensions.Configuration;
 
 namespace Deals.API.Security;
 
 /// <summary>
-/// The trust decision for the forwarded-proxy chain, kept as a pure function so the rule can be
-/// exercised without a host (see <c>checks/Auth.Checks</c>, "trusted-proxy" checks).
+/// The trust decision for the forwarded-proxy chain, kept as a pure function over configuration so the
+/// rule can be exercised without a host (see <c>checks/Auth.Checks</c>, "trusted-proxy" checks).
 ///
 /// The rule exists because the auth rate limiter partitions by the client address. While no proxy is
 /// trusted, <see cref="HttpContext.Connection"/>.RemoteIpAddress is the immediate peer and every request
@@ -15,28 +16,62 @@ namespace Deals.API.Security;
 /// </summary>
 public sealed record TrustedProxySettings(bool Enabled, IReadOnlyList<IPAddress> KnownProxies)
 {
+    private const string SectionName = "Proxy";
+
     /// <summary>
-    /// Resolves the trust decision from configuration. Entries that are not valid IP addresses are
-    /// rejected: a typo must fail loudly instead of silently dropping the proxy it was meant to name.
+    /// Reads the decision from the <c>Proxy</c> section.
+    ///
+    /// <c>Proxy:KnownProxies</c> is accepted in both shapes an operator can actually write: a
+    /// comma-separated value (<c>Proxy__KnownProxies=10.0.0.5,10.0.0.6</c>) and a list
+    /// (<c>Proxy__KnownProxies__0</c>, or a JSON array). The comma form is a single configuration value
+    /// with no children, so reading it as a list yields nothing at all - which would refuse a chain that
+    /// was in fact declared, and do it as a startup failure. That is the shape this repository documents.
+    /// </summary>
+    public static TrustedProxySettings FromConfiguration(IConfigurationSection proxySection)
+    {
+        var declared = proxySection.GetSection("KnownProxies");
+
+        var children = declared.GetChildren()
+            .Select(child => child.Value)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .ToArray();
+
+        var entries = children.Length > 0
+            ? children
+            : string.IsNullOrWhiteSpace(declared.Value) ? [] : [declared.Value!];
+
+        return Resolve(proxySection.GetValue("TrustForwardedHeaders", false), entries);
+    }
+
+    /// <summary>
+    /// Resolves the trust decision from already-read configuration. Entries that are not valid IP
+    /// addresses are rejected: a typo must fail loudly instead of silently dropping the proxy it was
+    /// meant to name. A single entry may carry a comma-separated list.
     /// </summary>
     public static TrustedProxySettings Resolve(bool trustForwardedHeaders, IEnumerable<string>? knownProxies)
     {
         var proxies = new List<IPAddress>();
 
-        foreach (var value in knownProxies ?? [])
+        foreach (var entry in knownProxies ?? [])
         {
-            if (string.IsNullOrWhiteSpace(value))
+            if (string.IsNullOrWhiteSpace(entry))
             {
                 continue;
             }
 
-            if (!IPAddress.TryParse(value.Trim(), out var address))
+            foreach (var value in entry.Split(
+                ',',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                throw new InvalidOperationException(
-                    $"Proxy:KnownProxies entry '{value.Trim()}' is not a valid IP address.");
-            }
+                if (!IPAddress.TryParse(value, out var address))
+                {
+                    throw new InvalidOperationException(
+                        $"Proxy:KnownProxies entry '{value}' is not a valid IP address.");
+                }
 
-            proxies.Add(address);
+                proxies.Add(address);
+            }
         }
 
         if (!trustForwardedHeaders)
