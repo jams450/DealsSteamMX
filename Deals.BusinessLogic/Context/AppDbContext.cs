@@ -23,6 +23,7 @@ public class AppDbContext : DbContext
     public DbSet<WishlistCategory> WishlistCategories { get; set; } = null!;
     public DbSet<WishlistCategoryItem> WishlistCategoryItems { get; set; } = null!;
     public DbSet<GameReview> GameReviews { get; set; } = null!;
+    public DbSet<UserGameTier> UserGameTiers => Set<UserGameTier>();
     public DbSet<SteamGame> SteamGames { get; set; } = null!;
     public DbSet<SteamPriceObservation> SteamPriceObservations { get; set; } = null!;
     public DbSet<GameOffer> GameOffers { get; set; } = null!;
@@ -159,6 +160,14 @@ public class AppDbContext : DbContext
                 .WithMany()
                 .HasForeignKey(e => e.GameId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<UserGameTier>(entity =>
+        {
+            entity.HasKey(e => new { e.UserId, e.Year, e.GameId });
+            entity.HasIndex(e => new { e.UserId, e.Year, e.Tier, e.Position });
+            entity.HasOne<User>().WithMany().HasForeignKey(e => e.UserId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<Game>().WithMany().HasForeignKey(e => e.GameId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<Game>(entity =>

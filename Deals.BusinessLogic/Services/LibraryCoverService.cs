@@ -15,13 +15,10 @@ namespace Deals.BusinessLogic.Services;
 /// never rewrites a library row, so a wrong cover is a cosmetic mistake the user can replace with the next
 /// pick.
 ///
-/// The chain, per game, stops at the first source that yields a URL: Steam by an appid the catalog already
-/// knows, Steam by title, IGDB by title, SteamGridDB. Its order follows the game's stores — a game with any
-/// canonical store key is a PC game, so Steam goes first; a game whose stores are only open platform slugs
-/// is a console game, so IGDB goes first — which mirrors <c>resolveCoverSource</c> in
-/// <c>Deals.Web/lib/contracts/library-covers.ts</c> so the automatic pass and the manual picker agree about
-/// which catalogue is the natural home of a game. The pass visits the games whose appid is already known
-/// first, so a bounded click spends its cheapest wins before its expensive guesses.
+/// The chain, per game, stops at the first source that yields a URL: Steam by a known appid, Steam by title,
+/// IGDB by title, then SteamGridDB. Steam is always attempted before IGDB per the library sync priority;
+/// the bounded pass visits games whose appid is already known first, so it spends its cheapest wins before
+/// title guesses.
 ///
 /// Identity is never claimed here, and the reason is not cosmetic: writing a <c>game_external_ids</c> row
 /// with namespace <c>steam</c> would make <c>LibraryPriceBindingService</c> start pricing that game from
@@ -102,8 +99,6 @@ public sealed class LibraryCoverService : ILibraryCoverService
                 .ToListAsync(cancellationToken);
             var trackedById = tracked.ToDictionary(game => game.GameId);
 
-            var consoleOnlyGameIds = await ResolveConsoleOnlyAsync(userId, batch, cancellationToken);
-
             foreach (var gameId in batch)
             {
                 if (!trackedById.TryGetValue(gameId, out var game))
@@ -111,11 +106,7 @@ public sealed class LibraryCoverService : ILibraryCoverService
                     continue;
                 }
 
-                var attempt = await ResolveCoverAsync(
-                    game,
-                    appIdByGameId,
-                    consoleOnlyGameIds.Contains(gameId),
-                    cancellationToken);
+                var attempt = await ResolveCoverAsync(game, appIdByGameId, cancellationToken);
 
                 if (attempt.Url is null)
                 {
@@ -282,12 +273,9 @@ public sealed class LibraryCoverService : ILibraryCoverService
     private async Task<CoverAttempt> ResolveCoverAsync(
         Game game,
         IReadOnlyDictionary<long, int> appIdByGameId,
-        bool consoleOnly,
         CancellationToken cancellationToken)
     {
-        var steps = consoleOnly
-            ? new[] { CoverStep.Igdb, CoverStep.SteamGridDb, CoverStep.SteamAppId, CoverStep.SteamTitle }
-            : new[] { CoverStep.SteamAppId, CoverStep.SteamTitle, CoverStep.Igdb, CoverStep.SteamGridDb };
+        var steps = new[] { CoverStep.SteamAppId, CoverStep.SteamTitle, CoverStep.Igdb, CoverStep.SteamGridDb };
 
         var failed = false;
         foreach (var step in steps)
@@ -434,38 +422,6 @@ public sealed class LibraryCoverService : ILibraryCoverService
             _logger.LogWarning(exception, "Steam returned no cover for appid {AppId}", appId);
             return (null, true);
         }
-    }
-
-    /// <summary>
-    /// Games of the batch whose stores carry no canonical key, so they are console games: their store values
-    /// are open platform slugs alone. A game with several rows is console-only only when <em>none</em> of them
-    /// is a canonical store key — one PC row is enough to make it a PC game.
-    /// </summary>
-    private async Task<HashSet<long>> ResolveConsoleOnlyAsync(
-        int userId,
-        IReadOnlyCollection<long> gameIds,
-        CancellationToken cancellationToken)
-    {
-        var consoleOnly = new HashSet<long>();
-        if (gameIds.Count == 0)
-        {
-            return consoleOnly;
-        }
-
-        var rows = await _repository.Get<UserLibrary>()
-            .Where(row => row.UserId == userId && row.GameId != null && gameIds.Contains(row.GameId.Value))
-            .Select(row => new { GameId = row.GameId!.Value, row.Store })
-            .ToListAsync(cancellationToken);
-
-        foreach (var group in rows.GroupBy(row => row.GameId))
-        {
-            if (!group.Any(row => StoreKeys.IsKnown(row.Store)))
-            {
-                consoleOnly.Add(group.Key);
-            }
-        }
-
-        return consoleOnly;
     }
 
     /// <summary>

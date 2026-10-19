@@ -25,3 +25,16 @@ WHERE absorbed_game_id = survivor_game_id;
 SELECT m.game_merge_id
 FROM public.game_merges m
 WHERE NOT EXISTS (SELECT 1 FROM public.games g WHERE g.game_id = m.survivor_game_id);
+
+-- 5. Ningún puesto de tier list huérfano: un puesto existe solo si el usuario tiene una reseña fechada
+--    ese año sobre el mismo juego (el año del puesto es Fin, o Inicio si no hay Fin).
+--    Importa después de fusionar: `user_game_tiers.game_id` es CASCADE, así que una fusión que no la
+--    repunta borra el puesto sin error, y una que la repunta mal deja el puesto apuntando a un juego
+--    que ese año no fue reseñado (la fila queda invisible en la UI, pero viva en la BD).
+SELECT t.user_id, t.year, t.game_id
+FROM public.user_game_tiers t
+WHERE NOT EXISTS (
+    SELECT 1 FROM public.game_reviews r
+    WHERE r.user_id = t.user_id AND r.game_id = t.game_id
+      AND COALESCE(r.finished_month, r.started_month) IS NOT NULL
+      AND EXTRACT(YEAR FROM COALESCE(r.finished_month, r.started_month)) = t.year);

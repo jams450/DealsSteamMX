@@ -81,12 +81,12 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
   return (
     <main className="app-page">
       <div className="w-full space-y-4 p-2 md:p-4">
-        <header className="app-topbar flex min-h-16 items-center gap-3 px-3 py-2 md:px-4">
+        <header className="app-topbar flex min-h-16 min-w-0 flex-wrap items-center gap-2 px-2 py-2 sm:gap-3 sm:px-3 md:px-4">
           <Button
             ref={triggerRef}
             type="button"
             variant="ghost"
-            className="h-10 w-10 p-0 md:hidden"
+            className="h-10 w-10 shrink-0 p-0 lg:hidden"
             onClick={() => setMobileOpen(true)}
             aria-label="Abrir menú principal"
             aria-expanded={mobileOpen}
@@ -96,14 +96,14 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
           </Button>
           <Link
             href="/"
-            className="flex shrink-0 items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
+            className="flex min-w-0 shrink-0 items-center rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
           >
             <Logo />
           </Link>
-          <div className="hidden md:block">
+          <div className="hidden min-w-0 flex-1 lg:block">
             <Navigation />
           </div>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
             {meta ? <div className="hidden sm:block">{meta}</div> : null}
             <ThemeToggle className="hidden sm:inline-flex" />
             <span
@@ -121,7 +121,7 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
         <div>{children}</div>
       </div>
       {mobileOpen ? (
-        <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-modal="true" aria-label="Menú principal">
+        <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Menú principal">
           <button
             type="button"
             className="absolute inset-0 bg-[var(--color-overlay)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]"
@@ -136,7 +136,8 @@ export function ProductShell({ title, subtitle, meta, children }: ProductShellPr
               </Button>
             </div>
             <Navigation mobile />
-            <ThemeToggle className="mt-6 w-full" />
+            {meta ? <div className="mt-6 rounded-lg border border-default bg-[var(--color-surface-2)] p-3">{meta}</div> : null}
+            <ThemeToggle className="mt-4 w-full" />
           </aside>
         </div>
       ) : null}

@@ -340,6 +340,22 @@ CREATE TABLE user_game_favorites (
 
 CREATE INDEX idx_user_game_favorites_game ON user_game_favorites(game_id);
 
+-- Annual review tier placements are per user, year, and canonical game. Unranked reviewed games have no row.
+CREATE TABLE user_game_tiers (
+    user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    year INT NOT NULL,
+    game_id BIGINT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
+    tier VARCHAR(1) NOT NULL,
+    position INT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100),
+    updated_by VARCHAR(100),
+    PRIMARY KEY (user_id, year, game_id)
+);
+
+CREATE INDEX idx_user_game_tiers_order ON user_game_tiers(user_id, year, tier, position);
+
 -- Manual canonical merge (log). Identity is repointed, never aliased: the absorbed games row is
 -- deleted after every referrer has moved. No FK on purpose: absorbed_game_id no longer exists and
 -- the log must survive its own subject. Undo is deferred to v1.1; this log is the only record of

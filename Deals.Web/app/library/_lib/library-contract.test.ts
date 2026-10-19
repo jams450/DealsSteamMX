@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  countLibraryPlayStatuses,
+  filterLibraryGames,
   groupLibraryItems,
   normalizeLibraryImportResponse,
   normalizeLibraryResponse,
@@ -323,6 +325,20 @@ test("agrupación: sin años registrados playedYears queda vacío", () => {
   assert.equal(game?.lastReview, null);
   assert.deepEqual(game?.playedYears, []);
   assert.equal(game?.isInstalled, false);
+});
+
+test("filtros: tienda, estado y año se combinan; none solo incluye sin año", () => {
+  const games = groupLibraryItems([
+    row({ userLibraryId: 1, gameId: 101, store: "gog", playedYears: [2024], review: reviewFor({ status: "finished" }) }),
+    row({ userLibraryId: 2, gameId: 102, store: "steam", playedYears: [2024], review: reviewFor({ gameId: 102, status: "dropped" }) }),
+    row({ userLibraryId: 3, gameId: 103, store: "gog", playedYears: [], review: reviewFor({ gameId: 103, status: "completed" }) })
+  ]);
+
+  assert.deepEqual(filterLibraryGames(games, { store: "gog", year: 2024 }).map((game) => game.gameId), [101]);
+  assert.deepEqual(filterLibraryGames(games, { status: "dropped", year: 2024 }).map((game) => game.gameId), [102]);
+  assert.deepEqual(filterLibraryGames(games, { year: "none" }).map((game) => game.gameId), [103]);
+  const filtered = filterLibraryGames(games, { store: "gog", year: 2024 });
+  assert.deepEqual([...countLibraryPlayStatuses(filtered)], [["finished", 1]]);
 });
 
 test("agrupación: playStatus es el de la reseña representativa; sin reseña es backlog", () => {
