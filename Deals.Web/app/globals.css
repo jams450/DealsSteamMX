@@ -250,6 +250,11 @@ body {
     letter-spacing: -0.01em;
   }
 
+  .tier-row-drop-target {
+    outline: 2px solid var(--color-border-focus);
+    outline-offset: 2px;
+  }
+
   .deal-price-strike {
     color: var(--color-text-muted);
     font-variant-numeric: tabular-nums;

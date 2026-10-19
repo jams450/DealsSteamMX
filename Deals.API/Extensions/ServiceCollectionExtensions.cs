@@ -82,6 +82,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISteamGameUserStateService, SteamGameUserStateService>();
         services.AddScoped<IReviewService, ReviewService>();
         services.AddScoped<IFavoriteService, FavoriteService>();
+        services.AddScoped<IGameTierService, GameTierService>();
     services.AddScoped<IManualLibraryService, ManualLibraryService>();
     services.AddScoped<IConsoleLibraryImportService, ConsoleLibraryImportService>();
     services.AddHttpClient<IManualSearchService, ManualSearchService>();
