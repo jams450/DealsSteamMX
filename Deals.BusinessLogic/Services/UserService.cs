@@ -338,9 +338,14 @@ namespace Deals.BusinessLogic.Services
                 return null;
             }
 
-            var normalizedEmail = email.Trim().ToLowerInvariant();
+            var normalizedEmail = LoginIdentifier.Normalize(email);
             var user = await _repository.Get<User>(u => u.Email == normalizedEmail).FirstOrDefaultAsync();
             if (user == null || !user.Active)
+                return null;
+
+            // The lock belongs to the credential check, not only to its caller: a locked account must not
+            // authenticate from any other path that reaches this method.
+            if (user.LockedUntil.HasValue && user.LockedUntil.Value > DateTime.UtcNow)
                 return null;
 
             if (!_passwordService.VerifyPassword(password, user.Password))
@@ -372,7 +377,7 @@ namespace Deals.BusinessLogic.Services
                 throw new ArgumentException("Email is required");
             }
 
-            var cleaned = value.Trim().ToLowerInvariant();
+            var cleaned = LoginIdentifier.Normalize(value);
             if (cleaned.Length > MaxEmailLength)
             {
                 throw new ArgumentException($"Email cannot exceed {MaxEmailLength} characters");
