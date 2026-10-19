@@ -4,6 +4,7 @@ using Deals.API.Models.Reviews;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Catalog;
 using Deals.BusinessLogic.Models.Library;
+using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -131,7 +132,7 @@ public class LibraryController : ControllerBase
             // el resolver inserta game_external_ids y borra filas games huérfanas, así que una fusión
             // concurrente podría dejar un game_id colgando. ponytail: lock global; si algún día hay imports
             // concurrentes multi-usuario, fragmentar por usuario (la creación de identidad seguiría necesitando el global).
-            await _repository.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(hashtext('dealext.game_identity'))");
+            await GameIdentityLock.AcquireAsync(_repository);
 
             var userExists = await _repository.Get<User>()
                 .AnyAsync(candidate => candidate.UserId == userId, cancellationToken);

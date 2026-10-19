@@ -104,7 +104,7 @@ public class ConsoleLibraryImportService : IConsoleLibraryImportService
         {
             // Same global lock as the import, the manual add and the manual merge: this path creates and
             // claims canonical identity, so it must serialize with the writers that reassign it.
-            await _repository.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(hashtext('dealext.game_identity'))");
+            await GameIdentityLock.AcquireAsync(_repository);
 
             var userExists = await _repository.Get<User>()
                 .AnyAsync(candidate => candidate.UserId == userId, cancellationToken);

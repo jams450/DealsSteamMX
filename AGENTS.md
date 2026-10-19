@@ -134,6 +134,7 @@ Auth__MaxFailedAttempts        # default 5
 Auth__LockMinutes              # default 15
 Auth__RefreshDays              # default 30
 ConnectionStrings__DefaultConnection
+Database__CommandTimeoutSeconds  # optional, default 60; 0 means no timeout (the old behaviour)
 Cors__AllowedOrigins           # array or comma string; fallback http://localhost:3000
 Proxy__TrustForwardedHeaders   # optional, default false: trust X-Forwarded-* only from a declared chain
 Proxy__KnownProxies            # comma string of exact proxy IPs; required when TrustForwardedHeaders is true

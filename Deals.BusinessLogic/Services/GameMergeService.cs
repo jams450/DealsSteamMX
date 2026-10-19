@@ -25,8 +25,6 @@ public sealed class GameMergeService : IGameMergeService
     // run; a single advisory lock is the lazy correct guard.
     // ponytail: global lock, fragment per user if concurrent multi-user imports ever matter (identity
     // creation would still need the global one).
-    private const string IdentityLockSql = "SELECT pg_advisory_xact_lock(hashtext('dealext.game_identity'))";
-
     private readonly IRepository _repository;
 
     public GameMergeService(IRepository repository)
@@ -166,7 +164,7 @@ public sealed class GameMergeService : IGameMergeService
         return await _repository.ExecuteInTransactionAsync(async () =>
         {
             // 0. Serialize every identity operation (merge and import) for the life of the transaction.
-            await _repository.ExecuteSqlRawAsync(IdentityLockSql);
+            await GameIdentityLock.AcquireAsync(_repository);
 
             // 1. Lock both rows in ascending id order: a deterministic order is what avoids deadlocks
             //    between two concurrent merges of the same pair.
