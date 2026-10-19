@@ -1,0 +1,9 @@
+# Tasks mirror — library review, covers, navigation, and annual tiers
+
+- T1: Validate /library filters and correct proven defects.
+- T2: Confirm bounded cover synchronization prioritizes Steam then IGDB.
+- T3: Improve top bar for short/narrow screens with grouped navigation where practical.
+- T4: Annual reviewed-games view with draggable six-range tiers (S, A, B, C, D, F) persisted per user.
+- T5: Keep tier placements alive across a canonical game merge (CASCADE repoint + dedup + audit) and add the SQL invariant check.
+- User clarified T4: drag between ranges; persistent per user; six ranges, no E.
+- Verification blocker B1 (merge destroyed tier rows by cascade) is fixed; backend build and 31 contract tests pass.
