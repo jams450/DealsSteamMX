@@ -12,9 +12,12 @@ namespace Deals.BusinessLogic.Services;
 /// transaction before deleting it. Everything runs as raw SQL (no tracked entities): the order of the
 /// statements is the correctness argument, not the change tracker's.
 ///
-/// Referrer order is mandatory: <c>user_game_favorites</c> carries a composite primary key that would
-/// raise 23505 on a collision and a CASCADE foreign key that would delete the rows outright, while
-/// <c>steam_games</c> and <c>user_library</c> are NO ACTION and would raise 23503.
+/// Referrer order is mandatory: <c>user_game_favorites</c> and <c>user_game_tiers</c> carry a composite
+/// primary key that would raise 23505 on a collision and a CASCADE foreign key that would delete the
+/// rows outright, while <c>steam_games</c> and <c>user_library</c> are NO ACTION and would raise 23503.
+/// A CASCADE referrer that is not repointed is not merely lost: the row disappears with the deleted
+/// game, silently, so every new table keyed by <c>game_id</c> has to be added here in the same change
+/// that creates it.
 /// </summary>
 public sealed class GameMergeService : IGameMergeService
 {
@@ -321,6 +324,26 @@ public sealed class GameMergeService : IGameMergeService
                 survivorGameId,
                 absorbedGameId);
 
+            // The tier list has the same composite key (user_id, year, game_id) and the same CASCADE
+            // foreign key, with one difference that decides the collision rule: a placement carries data
+            // (tier, position), so dropping one of the two is a real loss. The survivor is the game the
+            // human chose to keep, so its placement wins and the absorbed duplicate is counted instead of
+            // silently disappearing.
+            var droppedAbsorbedTiers = await _repository.ExecuteSqlRawAsync(
+                """
+                DELETE FROM public.user_game_tiers a
+                USING public.user_game_tiers b
+                WHERE a.game_id = {1} AND b.game_id = {0}
+                  AND b.user_id = a.user_id AND b.year = a.year
+                """,
+                survivorGameId,
+                absorbedGameId);
+
+            var movedTierRows = await _repository.ExecuteSqlRawAsync(
+                "UPDATE public.user_game_tiers SET game_id = {0}, updated_at = NOW() WHERE game_id = {1}",
+                survivorGameId,
+                absorbedGameId);
+
             // 10. The log is the only record of the merge: no FK, because the absorbed row is deleted next.
             var mergedBy = string.IsNullOrWhiteSpace(actorName)
                 ? null
@@ -339,8 +362,10 @@ public sealed class GameMergeService : IGameMergeService
                 VALUES ({0}, 'merge_counters', NULL, jsonb_build_object(
                     'deduplicated_external_ids', {1},
                     'dropped_survivor_offers', {2},
-                    'dropped_absorbed_offers', {3}), 'post_write')
-                """, auditId, deduplicatedExternalIds, droppedSurvivorOffers, droppedAbsorbedOffers);
+                    'dropped_absorbed_offers', {3},
+                    'moved_tier_rows', {4},
+                    'dropped_absorbed_tiers', {5}), 'post_write')
+                """, auditId, deduplicatedExternalIds, droppedSurvivorOffers, droppedAbsorbedOffers, movedTierRows, droppedAbsorbedTiers);
 
             // 11. Both NO ACTION referrers are already repointed, so this cannot raise 23503.
             await _repository.ExecuteSqlRawAsync(
@@ -375,6 +400,7 @@ public sealed class GameMergeService : IGameMergeService
                 UNION ALL SELECT 'game_offer', o.game_offer_id, to_jsonb(o), 'repoint_or_deduplicate' FROM public.game_offers o WHERE o.game_id IN ({0},{1})
                 UNION ALL SELECT 'game_review', r.game_review_id, to_jsonb(r), 'repoint' FROM public.game_reviews r WHERE r.game_id IN ({0},{1})
                 UNION ALL SELECT 'favorite', NULL, to_jsonb(f), 'repoint_or_deduplicate' FROM public.user_game_favorites f WHERE f.game_id IN ({0},{1})
+                UNION ALL SELECT 'user_game_tier', NULL, to_jsonb(t), 'repoint_or_deduplicate' FROM public.user_game_tiers t WHERE t.game_id IN ({0},{1})
             ) captured
             """, absorbedGameId, survivorGameId);
         return rows.Count == 0 || string.IsNullOrWhiteSpace(rows[0].Snapshot) ? "[]" : rows[0].Snapshot;
