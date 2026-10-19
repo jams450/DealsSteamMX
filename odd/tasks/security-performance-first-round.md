@@ -105,3 +105,11 @@ are availability, secret-handling and dead-feature defects.
   file as 76 insertions/73 deletions instead of the real 5/2. `git diff --ignore-all-space` isolates the real
   change, and every other file of the round is unaffected. History was not rewritten to hide it: the branch was
   already merged and this document cites those commit hashes. The file ends up on one consistent convention.
+- **L13** Housekeeping on the user's request ("limpia wortress y branch que ya no se ocupen"): removed the two
+  linked worktrees (`.worktrees/ntfy`, `.worktrees/review-search`), the five local branches already merged into
+  `main`, and the reviewer sandbox `.verify-t6/` (208 MB, a plain copy with no `.git` and no file absent from
+  `main`). 298 MB freed and `git status` is clean for the first time in the round. Before deleting, the eleven
+  uncommitted files in `.worktrees/ntfy` were proven to be older leftovers rather than unsaved work: every one
+  exists in `main`, and the two that differ (`NtfyServiceCollectionExtensions.cs`, `odd/tasks/bundles-ntfy.md`)
+  differ only because `main` is newer. `.worktrees/` and `.verify-*/` are now ignored so scratch cannot re-enter
+  `git status`. Verified `main` still at `64f8731` and equal to `origin/main`.

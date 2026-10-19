@@ -98,3 +98,8 @@ Templates/1777396645352.pdf
 .opencode/
 .omo
 .playwright-mcp
+
+# Espacio de trabajo local: worktrees enlazados y sandboxes de revisión. Son scratch, nunca
+# artefactos de entrega (ver docs/2026-10-17_DEPLOY_DISCOVERY.md).
+.worktrees/
+.verify-*/
