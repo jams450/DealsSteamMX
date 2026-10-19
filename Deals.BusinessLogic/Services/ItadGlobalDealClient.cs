@@ -452,7 +452,7 @@ public sealed class ItadGlobalDealClient(
             return response;
         }
 
-        var retryAfter = GetRetryAfter(response) ?? TimeSpan.FromSeconds(1);
+        var retryAfter = ItadRetryAfter.Read(response, httpClient.Timeout) ?? TimeSpan.FromSeconds(1);
         response.Dispose();
 
         await Task.Delay(retryAfter, cancellationToken);
@@ -480,16 +480,4 @@ public sealed class ItadGlobalDealClient(
         }
     }
 
-    private static TimeSpan? GetRetryAfter(HttpResponseMessage response)
-    {
-        var retryAfter = response.Headers.RetryAfter;
-        if (retryAfter?.Delta is { } delta && delta > TimeSpan.Zero)
-        {
-            return delta;
-        }
-
-        return retryAfter?.Date is { } date && date - DateTimeOffset.UtcNow is { Ticks: > 0 } wait
-            ? wait
-            : null;
-    }
 }
