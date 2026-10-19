@@ -100,3 +100,8 @@ are availability, secret-handling and dead-feature defects.
   tree (the check projects did not exist at `afeb106`), so they cannot be re-derived from the commit graph.
   The GREEN results can: every suite is reproducible from `ca80a13` with the commands in this document.
   Stated plainly rather than left as an implicit claim.
+- **L12** One diff artifact, disclosed rather than hidden: editing `Deals.Web/lib/auth/session.ts` normalized
+  its mixed line endings (the blob at `afeb106` carries 73 CRLF and 53 LF lines) to LF, so the merge shows that
+  file as 76 insertions/73 deletions instead of the real 5/2. `git diff --ignore-all-space` isolates the real
+  change, and every other file of the round is unaffected. History was not rewritten to hide it: the branch was
+  already merged and this document cites those commit hashes. The file ends up on one consistent convention.
