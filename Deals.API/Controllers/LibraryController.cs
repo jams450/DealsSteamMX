@@ -101,10 +101,10 @@ public class LibraryController : ControllerBase
                 throw new ArgumentException("The library payload must not contain null entries", nameof(entries));
             }
 
-            var gameId = RequireText(entry.GameId, nameof(PlayniteLibraryEntry.GameId));
+            var gameId = RequireTextWithin(entry.GameId, nameof(PlayniteLibraryEntry.GameId), LibraryImportLimits.MaxStoreGameIdLength);
             var pluginIdRaw = RequireText(entry.PluginId, nameof(PlayniteLibraryEntry.PluginId));
             var source = RequireText(entry.Source, nameof(PlayniteLibraryEntry.Source));
-            var name = RequireText(entry.Name, nameof(PlayniteLibraryEntry.Name));
+            var name = RequireTextWithin(entry.Name, nameof(PlayniteLibraryEntry.Name), LibraryImportLimits.MaxTitleLength);
             var isInstalled = entry.IsInstalled
                 ?? throw new ArgumentException("IsInstalled is required", nameof(PlayniteLibraryEntry.IsInstalled));
             var addedAt = ParseAdded(entry.Added);
@@ -554,6 +554,20 @@ public class LibraryController : ControllerBase
         string.IsNullOrWhiteSpace(value)
             ? throw new ArgumentException($"{field} is required", field)
             : value;
+
+    /// <summary>
+    /// <see cref="RequireText"/> plus the column width from <see cref="LibraryImportLimits"/>. Rejecting here
+    /// costs a 400 for the offending entry; not rejecting costs the whole import, because the 22001 it would
+    /// produce aborts the transaction every entry shares.
+    /// </summary>
+    private static string RequireTextWithin(string? value, string field, int maxLength)
+    {
+        var text = RequireText(value, field);
+
+        return text.Length > maxLength
+            ? throw new ArgumentException($"{field} cannot exceed {maxLength} characters", field)
+            : text;
+    }
 
     /// <summary>
     /// Maps the console preview payload to the business contract. A null element is a malformed payload, not
