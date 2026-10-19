@@ -135,6 +135,8 @@ Auth__LockMinutes              # default 15
 Auth__RefreshDays              # default 30
 ConnectionStrings__DefaultConnection
 Cors__AllowedOrigins           # array or comma string; fallback http://localhost:3000
+Proxy__TrustForwardedHeaders   # optional, default false: trust X-Forwarded-* only from a declared chain
+Proxy__KnownProxies            # comma string of exact proxy IPs; required when TrustForwardedHeaders is true
 ```
 Frontend:
 ```

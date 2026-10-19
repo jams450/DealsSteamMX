@@ -1,6 +1,8 @@
+using System.Net;
 using AuthChecks;
 using Deals.API;
 using Deals.API.Models.Auth;
+using Deals.API.Security;
 using Deals.API.Services;
 using Deals.BusinessLogic.Context;
 using Deals.BusinessLogic.Services;
@@ -108,6 +110,29 @@ Check(await auth.AuthenticateAsync(new LoginRequest("mixed@example.com", correct
 Check(await auth.AuthenticateAsync(new LoginRequest("  FRESH@example.com  ", correctPassword)) is not null,
     "existing behavior: a differently spelled identifier still authenticates with the correct password");
 
+// Trusted-proxy decision (spec S2). Processing X-Forwarded-For is what makes the auth rate limiter fair
+// behind a proxy, and trusting it without naming the chain is what turns that limiter into a spoofable
+// no-op: the caller would choose its own partition. Both directions are asserted, plus the two loud
+// failures.
+var untrustedByDefault = TrustedProxySettings.Resolve(false, null);
+Check(!untrustedByDefault.Enabled && untrustedByDefault.KnownProxies.Count == 0,
+    "trusted-proxy: the default configuration trusts nothing");
+
+var listedButNotTrusted = TrustedProxySettings.Resolve(false, ["10.0.0.5"]);
+Check(!listedButNotTrusted.Enabled,
+    "trusted-proxy: naming an address does not by itself enable trust");
+
+var trusted = TrustedProxySettings.Resolve(true, ["10.0.0.5", " 10.0.0.6 "]);
+Check(trusted.Enabled &&
+      trusted.KnownProxies.SequenceEqual([IPAddress.Parse("10.0.0.5"), IPAddress.Parse("10.0.0.6")]),
+    "trusted-proxy: a declared chain is trusted and its entries are trimmed");
+
+Check(RaisesStartupError(() => TrustedProxySettings.Resolve(true, [])),
+    "trusted-proxy: trust requested without a named proxy is refused at startup");
+
+Check(RaisesStartupError(() => TrustedProxySettings.Resolve(true, ["not-an-address"])),
+    "trusted-proxy: a malformed proxy address is refused instead of silently dropped");
+
 if (failures.Count > 0)
 {
     foreach (var failure in failures)
@@ -118,5 +143,18 @@ if (failures.Count > 0)
     return 1;
 }
 
-Console.WriteLine("PASS: login identification and account lockout checks");
+Console.WriteLine("PASS: login identification, account lockout and trusted-proxy checks");
 return 0;
+
+static bool RaisesStartupError(Action action)
+{
+    try
+    {
+        action();
+        return false;
+    }
+    catch (InvalidOperationException)
+    {
+        return true;
+    }
+}
