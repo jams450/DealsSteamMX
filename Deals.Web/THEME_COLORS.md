@@ -24,11 +24,16 @@ Ahí se controla el gradiente global (radial/colores/opacidades).
 
 ### Menú lateral (hover de opciones)
 Archivo:
-- `components/navigation/admin-shell.tsx` → `Navigation()`
+- `components/navigation/app-navigation.tsx` → `AppNavigation()`
+
+Ese renderer es el único que dibuja las rutas: lo consumen el riel de escritorio
+(`ShellRail`) y el drawer móvil (`ShellDrawer`), ambos en
+`components/navigation/shell-chrome.tsx`. La superficie del riel es la clase de componente
+`.app-rail` (más `.app-rail-scroll` para la zona con scroll propio) en `app/globals.css`.
 
 Clases reales (tokens semánticos, no utilidades de paleta):
-- opción normal: `border-transparent text-secondary hover:border-accent hover:bg-[var(--color-accent-soft)] hover:text-primary`
-- opción activa: `border-accent bg-[var(--color-accent-soft)] text-primary`
+- opción normal: `border-l-transparent text-secondary hover:border-l-[color:var(--color-accent)] hover:bg-[var(--color-accent-soft)] hover:text-primary`
+- opción activa: `border-l-[color:var(--color-accent)] bg-[var(--color-accent-soft)] text-primary` (`aria-current="page"`)
 - foco: `focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]`
 
 Para ajustar el hover, cambia esas clases o el token `--color-accent-soft` en `app/globals.css`.

@@ -202,6 +202,35 @@ body {
     box-shadow: var(--shadow-md);
   }
 
+  /* Left rail of the shells: desktop-only, sticky, and with its own scroll region, so a
+     long route list never pushes the page content or needs the document to scroll. */
+  .app-rail {
+    @apply p-3;
+    position: sticky;
+    top: 0;
+    display: none;
+    height: 100dvh;
+    width: 16rem;
+    flex-shrink: 0;
+    flex-direction: column;
+    overflow: hidden;
+    border-right: 1px solid var(--color-border-strong);
+  }
+
+  .app-rail-scroll {
+    @apply pr-1;
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  @media (min-width: 1024px) {
+    .app-rail {
+      display: flex;
+    }
+  }
+
   .app-card {
     background: var(--color-surface-1);
     border: 1px solid var(--color-border);

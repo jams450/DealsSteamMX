@@ -17,7 +17,10 @@ Tailwind v4 is configured in CSS (`@import "tailwindcss"` in `app/globals.css`);
   `lib/bff/http.ts` (typed errors).
 - Shells: `components/navigation/product-shell.tsx` (product surface) and
   `components/navigation/admin-shell.tsx` (admin surface, despite the file name — it is imported by
-  `/users` and `/steam`). Both now draw on the same tokens, `.app-card`/`.app-topbar`, radii and shadows.
+  `/users` and `/steam`). Both compose the same chrome from `components/navigation/shell-chrome.tsx`
+  (`ShellRail`, `ShellDrawer`, `ShellHeader`), the same grouped routes from `nav-config.ts` and the same
+  vertical renderer from `app-navigation.tsx`; both draw on the same tokens, `.app-card`/`.app-topbar`,
+  radii and shadows.
 - Patterns: semantic classes (`btn-*-semantic`, `input-semantic`, `table-*`, `app-card`,
   `tabler-badge-*`) instead of raw Tailwind palette utilities.
 - Theme starts dark by default (`app/layout.tsx` init script, `localStorage.theme`), so dark values
@@ -145,17 +148,20 @@ when it was last observed.
    never one-off literals.
 2. **Dark-native graphite.** The default canvas is graphite with a blue brand signal, layered
    surfaces and restrained luminous edges. Light mode is a deliberate porcelain counterpart.
-3. **Search-first.** Search is the primary action: it lives in the home hero, in the desktop header
-   and in the mobile drawer, and it is always a native `GET /search?q=` form.
-4. **Semantics over decoration.** Blue is brand/action only. Offer state is carried by
+3. **Search-first.** Search is the primary action: it lives in the home hero and in the `/search`
+   page's own controls, and it is always a native `GET /search?q=` form. The shells do not carry a
+   search field.
+4. **Navigation on the left.** One grouped vertical rail on `lg` and up, one accessible drawer below
+   it. The header never holds route links, so no width has to fit a row of options.
+5. **Semantics over decoration.** Blue is brand/action only. Offer state is carried by
    success/warning/info/danger plus a text label — never color alone.
-5. **Reuse before extend.** `app-card`, `Button`, `Input`, `Alert`, `ThemeToggle`, `.tabler-badge-*`
+6. **Reuse before extend.** `app-card`, `Button`, `Input`, `Alert`, `ThemeToggle`, `.tabler-badge-*`
    and `.table-*` are consumed as-is; new tokens are added only when this UI consumes them.
-6. **Accessible by default.** Visible keyboard focus, `aria-current` on the active route,
+7. **Accessible by default.** Visible keyboard focus, `aria-current` on the active route,
    `aria-expanded`/`aria-controls` on the drawer trigger, focus trap + `Escape` + focus return in the
    mobile drawer, `sr-only` table captions, labelled search inputs.
-7. **Additive compatibility.** `ProductShell`, `Card`, `Button`, `Input`, `Alert` and `DataGrid` keep
-   their existing props; nothing is renamed or removed for the sake of a restyle.
+8. **Additive compatibility.** `ProductShell`, `AdminShell`, `Card`, `Button`, `Input`, `Alert` and
+   `DataGrid` keep their existing props; nothing is renamed or removed for the sake of a restyle.
 
 ## 3. Color & surfaces
 
@@ -308,7 +314,7 @@ same source.
   package is installed and no new dependency is allowed, so the Deals Steam MX voice comes from tracking,
   size and uppercase kickers rather than a display family.
 - Scale in use: `text-xs` (kickers, meta), `text-sm` (body/table), `text-base` (card titles),
-  `text-xl`/`text-2xl` (page title, via `ProductShell`), `text-2xl`/`text-3xl` (home headline and
+  `text-base`/`text-xl` (page title, via `ShellHeader`), `text-2xl`/`text-3xl` (home headline and
   detail price). No ad-hoc `font-size` in px.
 - Kickers use `uppercase tracking-widest` at `text-xs`.
 - `.deal-price`: tabular numerals, bold, slight negative tracking. `.deal-price-strike`: muted,
@@ -323,18 +329,47 @@ same source.
 
 ## 7. Primitives
 
-### ProductShell (`components/navigation/product-shell.tsx`)
+### Shells: left rail + drawer (`components/navigation/`)
 
-- Owns the product surface: sticky translucent header (`.app-topbar`), brand mark + `Deals Steam MX`
-  wordmark, desktop navigation, header search, page title/subtitle, and the mobile drawer.
-- Props are unchanged: `title`, `subtitle`, `meta`, `children`.
-- Header search is a native `role="search"` form posting `GET /search?q=`. It is hidden below `lg`;
-  the drawer renders the same form (id `shell-search-mobile`) for mobile.
-- Active route: `data-active` styling is not used; the active link gets
-  `.border-accent` + `.bg-[var(--color-accent-soft)]` and `aria-current="page"`.
-- Mobile drawer: full-height `app-sidebar` panel, scrim, `role="dialog" aria-modal="true"`, focus
-  trap, `Escape` to close, focus returned to the trigger, body scroll lock, and `overflow-y-auto`
-  so the search + navigation + theme toggle always fit.
+Both shells share one implementation; only their surface-specific content differs.
+
+| File | Owns |
+|---|---|
+| `nav-config.ts` | `navGroups` (the single source of routes, grouped) + `appNavItems` (its flattening) + `isRouteActive` + `nextFocusIndex` |
+| `app-navigation.tsx` | The vertical grouped renderer used by the rail **and** the drawer |
+| `shell-chrome.tsx` | `ShellRail`, `ShellDrawer`, `ShellHeader` |
+| `product-shell.tsx` | Product surface: rail footer with theme + meta, header user badge |
+| `admin-shell.tsx` | Admin surface: `section` kicker, `actions` card, user menu with logout, session block in rail and drawer |
+
+- **Route groups, not a flat row.** `navGroups` is `Explorar` (Inicio, Comparar, Descubrir, Ofertas
+  globales), `Tu colección` (Wishlist, Bundles, Biblioteca, Tier list), `Catálogo` (Duplicados,
+  Reconciliación) and `Administración` (Usuarios, Jobs). `MAX_NAV_GROUP_ITEMS` (6) is the brake: a group
+  that grows past it stops grouping anything and starts reading as the old flat row again. Every route
+  appears exactly once, and `appNavItems` is derived from the groups, so there is no second list to
+  forget.
+- **Rail (`lg` and up).** `.app-rail` (left, `sticky top-0`, `100dvh`, `flex-col`, right hairline over
+  `.app-sidebar`) holds a fixed brand lockup on top, `.app-rail-scroll` (`overflow-y-auto` +
+  `overscroll-behavior: contain`, `min-height: 0`, `flex: 1 1 auto`) for the groups, and a fixed footer
+  (theme toggle, session, `meta`). It scrolls independently of the page, so the route list never drags
+  the content and the footer is always one glance away. Below `lg` it is `display:none` — the drawer is
+  the only navigation exposed to assistive tech at that width.
+- **Content column.** `main.app-page` is a flex row: rail + `min-w-0 flex-1` column. The `min-w-0` is
+  load-bearing: without it a wide table inside the page pushes the whole layout and produces horizontal
+  overflow.
+- **Header (`ShellHeader`, lean by contract).** Drawer trigger (`lg:hidden`), brand lockup
+  (`lg:hidden`, because the rail owns it on desktop), `section` kicker (admin only),
+  `title`/`subtitle`, then `meta`, `ThemeToggle` (`hidden sm:inline-flex`) and the `user` slot. No route
+  links, no search field: those crowded the row at small widths.
+- **Active route.** The active link carries `aria-current="page"` plus a left accent bar
+  (`border-l-2 border-l-[color:var(--color-accent)]`) over `bg-[var(--color-accent-soft)]`. A nested
+  entry does not light up its parent (`isRouteActive`), so `/library/duplicates` marks only
+  «Duplicados».
+- **Mobile drawer (`ShellDrawer`).** Full-height `app-sidebar` panel (`w-[min(21rem,88vw)]`), scrim
+  button over `--color-overlay`, `role="dialog" aria-modal="true"` with a visible name, focus trap
+  driven by `nextFocusIndex`, `Escape` to close, focus returned to the trigger, body scroll lock, an
+  independently scrolling body so brand + groups + theme + session always fit, and auto-close on route
+  change and on a `min-width: 64rem` media change (an open drawer at desktop width would hide the panel
+  while the body stays locked).
 
 ### Brand lockup (`components/brand/logo.tsx`)
 
@@ -536,7 +571,7 @@ same source.
 - Rendered inside `ProductShell` (`title="Descubrir"`, meta badge `Steam · México`). The page is a
   server component that redirects to `/login` without a session and delegates every state to
   `discover-client.tsx`; the route is protected by the global matcher in `middleware.ts`
-  (`lib/security/route-policy.ts` is untouched). Nav entry «Descubrir» in `productNavItems`.
+  (`lib/security/route-policy.ts` is untouched). Nav entry «Descubrir» in `navGroups` → `Explorar`.
 - One loading state (`app-card p-5 text-sm text-muted` "Cargando..."), one failure state
   (`Alert variant="danger"` + `Button variant="secondary"` "Reintentar"), then three sections fed by
   one parallel fetch each (`discount | historic | recent`, `pageSize` default server-side).
@@ -822,7 +857,7 @@ de ahorro. Contrato en `lib/contracts/games-merge.ts`, cliente en
 
 - Rendered inside `ProductShell` (`wide`, `title="Duplicados del catálogo"`). The server page calls
   `requireAdminSession()`, so the route is admin-only like `/library`; the global matcher already protects
-  it and `route-policy.ts` is untouched. `productNavItems` gains the explicit `Duplicados` entry pointing
+  it and `route-policy.ts` is untouched. `navGroups` gains the explicit `Duplicados` entry (group `Catálogo`) pointing
   at `/library/duplicates`; `/library` keeps its own active state because `isRouteActive` no longer treats
   a route with a nested nav entry as active for its children.
 - La lista llega como un arreglo crudo de grupos (el BFF lo reenvía tal cual). El normalizador descarta
@@ -973,8 +1008,9 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   `--color-border-accent`; `Button` variants per `.btn-*-semantic:hover`.
 - **Focus (required):** `focus-visible:outline-none` + 2px ring in `var(--color-border-focus)` on
   every link, button, search input, nav item, drawer trigger and scrim.
-- **Nav active:** accent border + soft accent background + `aria-current="page"`.
-- **Drawer open:** trigger carries `aria-expanded` and `aria-controls="product-navigation-drawer"`.
+- **Nav active:** left accent bar + soft accent background + `aria-current="page"`.
+- **Drawer open:** trigger carries `aria-expanded` and `aria-controls` pointing at its own panel id
+  (`product-navigation-drawer` for the product surface, `mobile-navigation-drawer` for admin).
 - **Loading:** muted "Cargando..." text at the same size as the resolved content, so there is no
   layout shift (detail page and search skeleton both use `.app-card`/`text-sm text-muted`).
 - **Suggestions:** local (BFF → DB) suggestions appear in an `.app-card` under the search input from
@@ -1052,11 +1088,16 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
 ## 9. Accessibility
 
 - Search inputs have an accessible name (`aria-label`) and a unique `id` per instance
-  (`shell-search`, `shell-search-mobile`, `home-search`) because the header and drawer forms can be
-  mounted at the same time.
+  (`home-search` plus the `/search` page's own control) because both can be mounted on one page.
+- Nav landmarks: one `<nav>` per visible surface (`Navegación principal` on the rail,
+  `Navegación móvil principal` in the drawer). The rail is `display:none` below `lg` and the drawer is
+  unmounted when closed, so assistive tech never sees two navigations to the same destinations.
+- Groups: each group's `<p>` heading is `id`-referenced by its `<ul aria-labelledby>`, so a screen
+  reader announces «Explorar, lista» and not an unlabelled list of links.
 - Nav links: `aria-current="page"` on the active route; icons are `aria-hidden`.
-- Drawer: `role="dialog"`, `aria-modal`, labelled close control, focus trap, `Escape`, focus
-  restoration, body scroll lock.
+- Drawer: `role="dialog"`, `aria-modal`, visible name, labelled close control, focus trap
+  (`nextFocusIndex`), `Escape`, focus restoration to the trigger, body scroll lock, and auto-close on
+  route change or when the viewport crosses into `lg`.
 - Detail table: `caption` with `sr-only` text; `th scope="col"`.
 - Offers section: one `sr-only` label per provider group — a `<caption>` on the ITAD table and an
   `sr-only` paragraph on the gg.deals list, both "Ofertas de <juego> en <grupo>" — plus `th scope="col"`
@@ -1097,9 +1138,9 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   `opengraph-image`, so link previews render text only and older browsers fall back to a default icon.
   The 16px legibility of the mark was asserted from its geometry, not from a human eye on a rendered
   bitmap. Add a raster `apple-icon` only when a touch/home-screen use actually exists.
-- **Header search duplication.** On `lg` and up the `/search` page shows the header search and the
-  page's own input. Acceptable while search stays the primary action; collapse to one if the header
-  search ever becomes the canonical control.
+- **No search in the shells.** The header no longer carries a search form: search lives in the home
+  hero and in the `/search` page. If a global search returns, it belongs in the rail (one control,
+  always in the same place), not in the header row where it competed with the title at 360px.
 - **Control height.** Shell controls are 2.5rem (40px), inherited from the previous shell; the 44px
   touch guideline is not met on the product surface. Raise `.shell`-level control sizes only with a
   touch-audit requirement.
@@ -1114,9 +1155,14 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   legible, but they were not visually reviewed in this change.
 - **Shared tokens.** The dark token retune is global, so `/steam` (which renders inside `AdminShell`) also
   shifts to graphite without a layout migration. `/users` was migrated to this contract (`app-card`/
-  `app-topbar`, semantic badges, `Button` variants) inside `AdminShell`; `AdminShell`'s props, drawer,
-  focus trap and scroll lock are unchanged, and the `AdminShell`/`ProductShell` duplication remains
-  accepted debt.
+  `app-topbar`, semantic badges, `Button` variants) inside `AdminShell`. The former
+  `AdminShell`/`ProductShell` duplication of the drawer, focus trap and scroll lock is now resolved: both
+  compose `shell-chrome.tsx`. What each shell still owns is only its surface content (rail footer,
+  header user control, `section` kicker, `actions` card).
+- **Rail and header at short viewports.** The rail is `100dvh` with its own scroll region; the header
+  keeps its pre-existing `.app-topbar` rule that turns it non-sticky below 600px of height. A viewport
+  that short shows both a scrollable rail and a non-sticky header — acceptable, and the reason the rail
+  scrolls instead of stretching the page.
 - **Providers in scope (policy reversal).** An earlier version of this contract excluded keyshops,
   forbade the word "keys" and forbade claiming "all stores". gg.deals is now a first-class second
   provider and its keyshop aggregate is deliberately in scope, so the UI renders those rows and labels
