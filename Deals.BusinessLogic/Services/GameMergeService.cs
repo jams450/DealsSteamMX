@@ -227,15 +227,8 @@ public sealed class GameMergeService : IGameMergeService
             // deduplicated or destroyed must be reconstructible, not inferred from the absorbed id.
             var snapshot = await CaptureSnapshotAsync(absorbedGameId, survivorGameId);
             var mergeAudit = await _repository.SqlQueryAsync<MergeAuditRow>(
-                """
-                INSERT INTO public.game_merges
-                    (survivor_game_id, absorbed_game_id, absorbed_snapshot, moved_external_ids,
-                     moved_steam_games, moved_library_rows, dropped_reviews, merged_at, merged_by, actor_user_id)
-                VALUES ({0}, {1}, {2}::jsonb, 0, 0, 0, 0, NOW(), {3}, {4})
-                RETURNING game_merge_id AS "GameMergeId"
-                """, survivorGameId, absorbedGameId, snapshot,
-                (object?)(string.IsNullOrWhiteSpace(actorName) ? null : actorName.Trim()[..Math.Min(actorName.Trim().Length, 100)]) ?? DBNull.Value,
-                actorUserId);
+                MergeAuditInsertSql,
+                BuildMergeAuditBindings(survivorGameId, absorbedGameId, snapshot, actorName, actorUserId));
             var auditId = mergeAudit.Single().GameMergeId;
             await _repository.ExecuteSqlRawAsync(
                 """
@@ -343,9 +336,6 @@ public sealed class GameMergeService : IGameMergeService
                 absorbedGameId);
 
             // 10. The log is the only record of the merge: no FK, because the absorbed row is deleted next.
-            var mergedBy = string.IsNullOrWhiteSpace(actorName)
-                ? null
-                : actorName.Trim()[..Math.Min(actorName.Trim().Length, 100)];
 
             await _repository.ExecuteSqlRawAsync(
                 """
@@ -378,6 +368,44 @@ public sealed class GameMergeService : IGameMergeService
                 movedLibraryRows);
         });
     }
+
+    /// <summary>
+    /// The statement of the merge's first write. Public, together with
+    /// <see cref="BuildMergeAuditBindings"/>, so <c>checks/SqlParameters.Checks</c> can build this exact
+    /// command through EF Core without a database and observe how a missing actor is bound. Both
+    /// <c>merged_by</c> and <c>actor_user_id</c> are nullable in the schema.
+    /// </summary>
+    public const string MergeAuditInsertSql = """
+        INSERT INTO public.game_merges
+            (survivor_game_id, absorbed_game_id, absorbed_snapshot, moved_external_ids,
+             moved_steam_games, moved_library_rows, dropped_reviews, merged_at, merged_by, actor_user_id)
+        VALUES ({0}, {1}, {2}::jsonb, 0, 0, 0, 0, NOW(), {3}, {4})
+        RETURNING game_merge_id AS "GameMergeId"
+        """;
+
+    /// <summary>
+    /// One binding per <c>{n}</c> placeholder of <see cref="MergeAuditInsertSql"/>: (survivor, absorbed,
+    /// snapshot, merged_by, actor_user_id). A merge started by a principal without a display name carries
+    /// no actor, so <c>merged_by</c> binds as a typed null through <see cref="SqlParameters"/> instead of a
+    /// bare <see cref="DBNull"/>, which EF Core 9 cannot map (spec S1).
+    /// </summary>
+    public static object[] BuildMergeAuditBindings(
+        long survivorGameId,
+        long absorbedGameId,
+        string snapshot,
+        string? actorName,
+        int actorUserId) =>
+    [
+        SqlParameters.Bigint("survivor_game_id", survivorGameId),
+        SqlParameters.Bigint("absorbed_game_id", absorbedGameId),
+        SqlParameters.Text("absorbed_snapshot", snapshot),
+        SqlParameters.Text(
+            "merged_by",
+            string.IsNullOrWhiteSpace(actorName)
+                ? null
+                : actorName.Trim()[..Math.Min(actorName.Trim().Length, 100)]),
+        SqlParameters.Integer("actor_user_id", actorUserId),
+    ];
 
     /// <summary>
     /// Full JSONB snapshot of the absorbed game's destroyed rows. <c>to_jsonb</c> keeps every column, so

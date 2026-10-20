@@ -59,30 +59,7 @@ public sealed class EfGlobalDealSnapshotWriter(IRepository repository, IFxRateSe
                 var projection = GlobalDealCurrency.Project(deal.Currency, deal.CurrentPriceMinor, usdToMxn);
                 await repository.ExecuteSqlRawAsync(
                     UpsertSql,
-                    GlobalDealSources.GlobalDeals,
-                    deal.DealKey,
-                    deal.ItadGameId,
-                    deal.GameTitle,
-                    (object?)deal.GameSlug ?? DBNull.Value,
-                    (object?)deal.GameType ?? DBNull.Value,
-                    deal.GameMature,
-                    deal.ShopId,
-                    deal.ShopName,
-                    deal.IsOfficial,
-                    deal.Currency,
-                    deal.CurrentPriceMinor,
-                    (object?)deal.RegularPriceMinor ?? DBNull.Value,
-                    (object?)deal.DiscountPercent ?? DBNull.Value,
-                    (object?)deal.HistoryLowMinor ?? DBNull.Value,
-                    (object?)deal.HistoryLowCurrency ?? DBNull.Value,
-                    (object?)projection.MxnCurrentPriceMinor ?? DBNull.Value,
-                    (object?)projection.FxRate ?? DBNull.Value,
-                    (object?)projection.FxRateDate ?? DBNull.Value,
-                    (object?)projection.FxSource ?? DBNull.Value,
-                    projection.PricingType,
-                    (object?)deal.DealUrl ?? DBNull.Value,
-                    (object?)deal.ExpiresAt ?? DBNull.Value,
-                    observedAt);
+                    BuildUpsertBindings(deal, projection, observedAt));
             }
 
             var obsolete = await repository.GetTrack<GlobalDeal>()
@@ -100,7 +77,12 @@ public sealed class EfGlobalDealSnapshotWriter(IRepository repository, IFxRateSe
         });
     }
 
-    private const string UpsertSql = """
+    /// <summary>
+    /// The statement of <see cref="ReplaceAsync"/>. Public, together with <see cref="BuildUpsertBindings"/>,
+    /// so <c>checks/SqlParameters.Checks</c> can build this exact command through EF Core without a
+    /// database and observe how a null provider field is bound.
+    /// </summary>
+    public const string UpsertSql = """
         INSERT INTO global_deals
             (source, deal_key, itad_game_id, game_title, game_slug, game_type, game_mature,
              shop_id, shop_name, is_official, original_currency, original_current_price_minor,
@@ -134,6 +116,43 @@ public sealed class EfGlobalDealSnapshotWriter(IRepository repository, IFxRateSe
             observed_at = EXCLUDED.observed_at,
             updated_at = NOW()
         """;
+
+    /// <summary>
+    /// One binding per <c>{n}</c> placeholder of <see cref="UpsertSql"/>, in order. The MXN projection is
+    /// passed in because it is computed once per page from the persisted FX rate, not per statement. Every
+    /// argument is an explicitly typed <see cref="SqlParameters"/> value: an unconverted deal legitimately
+    /// carries no MXN figure and must not abort the sweep (spec S1).
+    /// </summary>
+    public static object[] BuildUpsertBindings(
+        ItadGlobalDeal deal,
+        GlobalDealPriceProjection projection,
+        DateTime observedAt) =>
+    [
+        SqlParameters.Text("source", GlobalDealSources.GlobalDeals),
+        SqlParameters.Text("deal_key", deal.DealKey),
+        SqlParameters.Text("itad_game_id", deal.ItadGameId),
+        SqlParameters.Text("game_title", deal.GameTitle),
+        SqlParameters.Text("game_slug", deal.GameSlug),
+        SqlParameters.Text("game_type", deal.GameType),
+        SqlParameters.Boolean("game_mature", deal.GameMature),
+        SqlParameters.Text("shop_id", deal.ShopId),
+        SqlParameters.Text("shop_name", deal.ShopName),
+        SqlParameters.Boolean("is_official", deal.IsOfficial),
+        SqlParameters.Text("original_currency", deal.Currency),
+        SqlParameters.Integer("original_current_price_minor", deal.CurrentPriceMinor),
+        SqlParameters.Integer("original_regular_price_minor", deal.RegularPriceMinor),
+        SqlParameters.Integer("discount_percent", deal.DiscountPercent),
+        SqlParameters.Integer("history_low_all_minor", deal.HistoryLowMinor),
+        SqlParameters.Text("history_low_currency", deal.HistoryLowCurrency),
+        SqlParameters.Integer("mxn_current_price_minor", projection.MxnCurrentPriceMinor),
+        SqlParameters.Numeric("fx_rate", projection.FxRate),
+        SqlParameters.Date("fx_rate_date", projection.FxRateDate),
+        SqlParameters.Text("fx_source", projection.FxSource),
+        SqlParameters.Text("pricing_type", projection.PricingType),
+        SqlParameters.Text("deal_url", deal.DealUrl),
+        SqlParameters.TimestampTz("expires_at", deal.ExpiresAt),
+        SqlParameters.TimestampTz("observed_at", observedAt),
+    ];
 }
 
 /// <summary>

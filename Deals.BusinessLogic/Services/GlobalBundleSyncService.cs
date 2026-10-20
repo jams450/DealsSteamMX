@@ -59,20 +59,7 @@ public sealed class EfGlobalBundleSnapshotWriter(IRepository repository) : IGlob
         {
             foreach (var bundle in bundles)
             {
-                await repository.ExecuteSqlRawAsync(
-                    UpsertSql,
-                    Source,
-                    bundle.BundleKey,
-                    bundle.Title,
-                    (object?)bundle.ShopId ?? DBNull.Value,
-                    (object?)bundle.ShopName ?? DBNull.Value,
-                    (object?)SafeItadUrl(bundle.PageUrl) ?? DBNull.Value,
-                    (object?)SafeItadUrl(bundle.Url) ?? DBNull.Value,
-                    (object?)bundle.Details ?? DBNull.Value,
-                    (object?)bundle.PublishedAt ?? DBNull.Value,
-                    (object?)SerializeTiers(bundle.Tiers) ?? DBNull.Value,
-                    (object?)bundle.ExpiresAt ?? DBNull.Value,
-                    observedAt);
+                await repository.ExecuteSqlRawAsync(UpsertSql, BuildUpsertBindings(bundle, observedAt));
             }
 
             var obsolete = await repository.GetTrack<ExternalBundle>()
@@ -89,7 +76,12 @@ public sealed class EfGlobalBundleSnapshotWriter(IRepository repository) : IGlob
         });
     }
 
-    private const string UpsertSql = """
+    /// <summary>
+    /// The statement of <see cref="ReplaceAsync"/>. Public, together with <see cref="BuildUpsertBindings"/>,
+    /// so <c>checks/SqlParameters.Checks</c> can build this exact command through EF Core without a
+    /// database and observe how a null provider field is bound.
+    /// </summary>
+    public const string UpsertSql = """
         INSERT INTO external_bundles
             (source, bundle_key, title, shop_id, shop_name, page_url, deal_url, details,
              published_at, tiers_json, expires_at, observed_at, updated_at)
@@ -107,6 +99,27 @@ public sealed class EfGlobalBundleSnapshotWriter(IRepository repository) : IGlob
             observed_at = EXCLUDED.observed_at,
             updated_at = NOW()
         """;
+
+    /// <summary>
+    /// One binding per <c>{n}</c> placeholder of <see cref="UpsertSql"/>, in order. Every argument is an
+    /// explicitly typed <see cref="SqlParameters"/> value: a bundle with no shop, no link and no dates is
+    /// ordinary provider data, and it must not abort the sweep (spec S1).
+    /// </summary>
+    public static object[] BuildUpsertBindings(ItadBundle bundle, DateTime observedAt) =>
+    [
+        SqlParameters.Text("source", Source),
+        SqlParameters.Text("bundle_key", bundle.BundleKey),
+        SqlParameters.Text("title", bundle.Title),
+        SqlParameters.Text("shop_id", bundle.ShopId),
+        SqlParameters.Text("shop_name", bundle.ShopName),
+        SqlParameters.Text("page_url", SafeItadUrl(bundle.PageUrl)),
+        SqlParameters.Text("deal_url", SafeItadUrl(bundle.Url)),
+        SqlParameters.Text("details", bundle.Details),
+        SqlParameters.TimestampTz("published_at", bundle.PublishedAt),
+        SqlParameters.Text("tiers_json", SerializeTiers(bundle.Tiers)),
+        SqlParameters.TimestampTz("expires_at", bundle.ExpiresAt),
+        SqlParameters.TimestampTz("observed_at", observedAt),
+    ];
 
     private static string? SerializeTiers(IReadOnlyList<ItadBundleTier> tiers)
     {

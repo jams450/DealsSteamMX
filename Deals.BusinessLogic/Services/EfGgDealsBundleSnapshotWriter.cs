@@ -39,23 +39,7 @@ public sealed class EfGgDealsBundleSnapshotWriter(IRepository repository) : IGgD
         {
             foreach (var raw in bundles)
             {
-                var bundle = GgDealsBundleMapper.Map(raw, observedAt);
-                await repository.ExecuteSqlRawAsync(
-                    UpsertSql,
-                    Source,
-                    bundle.BundleKey,
-                    bundle.Title,
-                    (object?)bundle.ShopId ?? DBNull.Value,
-                    (object?)bundle.ShopName ?? DBNull.Value,
-                    (object?)SafeGgDealsUrl(bundle.PageUrl) ?? DBNull.Value,
-                    // GG.deals publishes no affiliate redirector, so deal_url stays null and the page
-                    // URL is the only stored link.
-                    DBNull.Value,
-                    (object?)bundle.Details ?? DBNull.Value,
-                    (object?)bundle.PublishedAt ?? DBNull.Value,
-                    (object?)SerializeTiers(bundle.Tiers) ?? DBNull.Value,
-                    (object?)bundle.ExpiresAt ?? DBNull.Value,
-                    observedAt);
+                await repository.ExecuteSqlRawAsync(UpsertSql, BuildUpsertBindings(raw, observedAt));
             }
 
             var obsolete = await repository.GetTrack<ExternalBundle>()
@@ -72,7 +56,12 @@ public sealed class EfGgDealsBundleSnapshotWriter(IRepository repository) : IGgD
         });
     }
 
-    private const string UpsertSql = """
+    /// <summary>
+    /// The statement of <see cref="ReplaceAsync"/>. Public, together with <see cref="BuildUpsertBindings"/>,
+    /// so <c>checks/SqlParameters.Checks</c> can build this exact command through EF Core without a
+    /// database and observe how a null provider field is bound.
+    /// </summary>
+    public const string UpsertSql = """
         INSERT INTO external_bundles
             (source, bundle_key, title, shop_id, shop_name, page_url, deal_url, details,
              published_at, tiers_json, expires_at, observed_at, updated_at)
@@ -90,6 +79,34 @@ public sealed class EfGgDealsBundleSnapshotWriter(IRepository repository) : IGgD
             observed_at = EXCLUDED.observed_at,
             updated_at = NOW()
         """;
+
+    /// <summary>
+    /// One binding per <c>{n}</c> placeholder of <see cref="UpsertSql"/>, in order. The mapping runs here
+    /// so the persisted shape and the bindings cannot drift apart, and every argument is an explicitly
+    /// typed <see cref="SqlParameters"/> value: an article with no link or no end date is ordinary provider
+    /// data and must not abort the sweep (spec S1).
+    /// </summary>
+    public static object[] BuildUpsertBindings(GgDealsBundle raw, DateTime observedAt)
+    {
+        var bundle = GgDealsBundleMapper.Map(raw, observedAt);
+        return
+        [
+            SqlParameters.Text("source", Source),
+            SqlParameters.Text("bundle_key", bundle.BundleKey),
+            SqlParameters.Text("title", bundle.Title),
+            SqlParameters.Text("shop_id", bundle.ShopId),
+            SqlParameters.Text("shop_name", bundle.ShopName),
+            SqlParameters.Text("page_url", SafeGgDealsUrl(bundle.PageUrl)),
+            // GG.deals publishes no affiliate redirector, so deal_url stays null and the page
+            // URL is the only stored link.
+            SqlParameters.Text("deal_url", null),
+            SqlParameters.Text("details", bundle.Details),
+            SqlParameters.TimestampTz("published_at", bundle.PublishedAt),
+            SqlParameters.Text("tiers_json", SerializeTiers(bundle.Tiers)),
+            SqlParameters.TimestampTz("expires_at", bundle.ExpiresAt),
+            SqlParameters.TimestampTz("observed_at", observedAt),
+        ];
+    }
 
     private static string? SerializeTiers(IReadOnlyList<SteamGameBundleTier> tiers) =>
         tiers.Count == 0 ? null : JsonSerializer.Serialize(tiers, TierJsonOptions);
