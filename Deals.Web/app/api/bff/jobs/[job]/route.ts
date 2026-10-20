@@ -6,13 +6,13 @@ import { badRequest, forbidden, unauthorized, upstreamError } from "@/lib/bff/ht
 
 // Detalle de una ejecución. El `details` ya viene saneado por la API: esta capa no lo reinterpreta, solo lo
 // entrega normalizado para que la UI pueda expandirlo sin adivinar la forma.
-export async function GET(request: Request, { params }: { params: Promise<{ jobRunId: string }> }) {
+export async function GET(request: Request, { params }: { params: Promise<{ job: string }> }) {
   const session = await getServerSession();
   if (!session) return unauthorized(request);
   if ((session.user.role ?? "").toLowerCase() !== "admin") return forbidden(request);
 
-  const { jobRunId } = await params;
-  const id = Number(jobRunId);
+  const { job } = await params;
+  const id = Number(job);
   if (!Number.isInteger(id) || id <= 0) return badRequest(request, "Id de ejecución inválido");
 
   const { response, session: updatedSession } = await fetchApiWithAutoRefresh(

@@ -148,7 +148,7 @@ function CatalogCard({
         )}
         <span className="flex gap-1.5">
           {item.lastRun ? (
-            <Button type="button" variant="ghost" className="h-8 px-2" onClick={() => onShowLast(item.lastRun!)}>
+            <Button type="button" variant="primary" className="h-8 px-3" onClick={() => onShowLast(item.lastRun!)}>
               Ver último
             </Button>
           ) : null}
