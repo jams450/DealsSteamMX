@@ -242,3 +242,154 @@ test("una regla de selección imposible o inválida se descarta", () => {
     [null, null, null, null]
   );
 });
+
+// --- dinero dual USD/MXN del tier (S1) ---------------------------------------------------------
+// El servidor ya convierte con la tasa persistida: aquí solo se valida la forma. Un campo ausente o
+// inválido queda en null —nunca en 0— para que la UI no pueda pintar una cifra que el servidor no dio.
+
+function money(overrides: Record<string, unknown> = {}) {
+  return {
+    usdMinor: 1299,
+    mxnMinor: 23942,
+    fxRate: 18.4321,
+    fxRateDate: "2026-10-19",
+    fxSource: "banxico",
+    pricingType: "regional",
+    ...overrides
+  };
+}
+
+test("el bloque de dinero del tier se conserva exacto, sin recalcular nada", () => {
+  const catalog = normalizeBundleCatalog({
+    items: [bundle({ tiers: [tier({ priceMoney: money(), allocatedPerGameMoney: money({ usdMinor: 650, mxnMinor: 11971 }) })] })]
+  });
+  const normalized = catalog.items[0].tiers[0];
+  assert.deepEqual(normalized.priceMoney, {
+    usdMinor: 1299,
+    mxnMinor: 23942,
+    fxRate: 18.4321,
+    fxRateDate: "2026-10-19",
+    fxSource: "banxico",
+    pricingType: "regional"
+  });
+  assert.deepEqual(normalized.allocatedPerGameMoney, {
+    usdMinor: 650,
+    mxnMinor: 11971,
+    fxRate: 18.4321,
+    fxRateDate: "2026-10-19",
+    fxSource: "banxico",
+    pricingType: "regional"
+  });
+});
+
+test("un payload viejo sin bloque de dinero deja null, nunca cero", () => {
+  const catalog = normalizeBundleCatalog({ items: [bundle({ tiers: [tier()] })] });
+  assert.equal(catalog.items[0].tiers[0].priceMoney, null);
+  assert.equal(catalog.items[0].tiers[0].allocatedPerGameMoney, null);
+});
+
+test("un bloque de dinero que no es objeto se descarta entero", () => {
+  for (const value of ["12.99", 1299, [], true]) {
+    const catalog = normalizeBundleCatalog({
+      items: [bundle({ tiers: [tier({ priceMoney: value, allocatedPerGameMoney: value })] })]
+    });
+    assert.equal(catalog.items[0].tiers[0].priceMoney, null);
+    assert.equal(catalog.items[0].tiers[0].allocatedPerGameMoney, null);
+  }
+});
+
+test("campos inválidos del bloque de dinero se normalizan a null sin inventar cifras", () => {
+  const catalog = normalizeBundleCatalog({
+    items: [
+      bundle({
+        tiers: [
+          tier({
+            priceMoney: money({
+              usdMinor: -5,
+              mxnMinor: "mucho",
+              fxRate: 0,
+              fxRateDate: "19/10/2026",
+              fxSource: "   ",
+              pricingType: "inventado"
+            })
+          })
+        ]
+      })
+    ]
+  });
+  const normalized = catalog.items[0].tiers[0].priceMoney;
+  assert.equal(normalized?.usdMinor, null);
+  assert.equal(normalized?.mxnMinor, null);
+  assert.equal(normalized?.fxRate, null);
+  assert.equal(normalized?.fxRateDate, null);
+  assert.equal(normalized?.fxSource, null);
+  assert.equal(normalized?.pricingType, null);
+});
+
+test("una fecha de tasa imposible no se acepta", () => {
+  const catalog = normalizeBundleCatalog({
+    items: [bundle({ tiers: [tier({ priceMoney: money({ fxRateDate: "2026-02-30" }) })] })]
+  });
+  assert.equal(catalog.items[0].tiers[0].priceMoney?.fxRateDate, null);
+});
+
+test("el tipo de precio se acepta solo dentro del vocabulario y sin distinguir mayúsculas", () => {
+  const statuses = ["regional", "fx_estimate", "unconverted", "FX_ESTIMATE", "Regional"];
+  const expected = ["regional", "fx_estimate", "unconverted", "fx_estimate", "regional"];
+  for (const [index, status] of statuses.entries()) {
+    const catalog = normalizeBundleCatalog({
+      items: [bundle({ tiers: [tier({ priceMoney: money({ pricingType: status }) })] })]
+    });
+    assert.equal(catalog.items[0].tiers[0].priceMoney?.pricingType, expected[index]);
+  }
+  const unknown = normalizeBundleCatalog({
+    items: [bundle({ tiers: [tier({ priceMoney: money({ pricingType: "gratis" }) })] })]
+  });
+  assert.equal(unknown.items[0].tiers[0].priceMoney?.pricingType, null);
+});
+
+// --- details: URL completa de ITAD clickeable (S2) ---------------------------------------------
+// `details` es texto del proveedor. Solo cuando ES una URL https completa e íntegra se expone además
+// como `detailsUrl`; cualquier otra cosa queda como texto y sin ancla.
+
+test("un details que es una URL https completa se conserva exacto para el ancla", () => {
+  const url = "https://isthereanydeal.com/bundles/16637/";
+  const catalog = normalizeBundleCatalog({ items: [bundle({ details: url })] });
+  assert.equal(catalog.items[0].details, url);
+  assert.equal(catalog.items[0].detailsUrl, url);
+});
+
+test("un details que no es una URL https segura queda como texto y sin ancla", () => {
+  const unsafe = [
+    "Bundle de 3 juegos por tiempo limitado",
+    "http://isthereanydeal.com/bundles/16637/",
+    "javascript:alert(1)",
+    "data:text/html,<b>hola</b>",
+    "//isthereanydeal.com/bundles/16637/",
+    "isthereanydeal.com/bundles/16637/",
+    "https://user:pass@isthereanydeal.com/bundles/16637/",
+    "https://isthereanydeal.com/bundles/16637/?q=a b",
+    "mira https://isthereanydeal.com/bundles/16637/ aquí",
+    "https://"
+  ];
+  for (const details of unsafe) {
+    const catalog = normalizeBundleCatalog({ items: [bundle({ details })] });
+    assert.equal(catalog.items[0].detailsUrl, null, `no debe ser ancla: ${details}`);
+    assert.equal(catalog.items[0].details, details.trim());
+  }
+});
+
+test("una URL truncada por el tope de texto no se convierte en un enlace roto", () => {
+  const longUrl = `https://isthereanydeal.com/bundles/16637/${"a".repeat(700)}`;
+  const catalog = normalizeBundleCatalog({ items: [bundle({ details: longUrl })] });
+  assert.equal(catalog.items[0].detailsUrl, null);
+  assert.ok((catalog.items[0].details ?? "").length < longUrl.length);
+});
+
+test("sin details no hay ancla ni texto", () => {
+  for (const details of [null, undefined, "", "   "]) {
+    const catalog = normalizeBundleCatalog({ items: [bundle({ details })] });
+    assert.equal(catalog.items[0].details, null);
+    assert.equal(catalog.items[0].detailsUrl, null);
+  }
+});

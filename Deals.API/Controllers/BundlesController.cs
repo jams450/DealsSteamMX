@@ -77,5 +77,18 @@ public sealed class BundlesController(
             share.AllocatedPerGameMinor,
             share.AllocationStatus,
             share.RequiresWholeTierPurchase,
-            share.SelectionCount);
+            share.SelectionCount,
+            ToResponse(share.PriceMoney),
+            ToResponse(share.AllocatedPerGameMoney));
+
+    private static BundleMoneyResponse? ToResponse(BundleMoney? money) =>
+        money is null
+            ? null
+            : new BundleMoneyResponse(
+                money.UsdMinor,
+                money.MxnMinor,
+                money.FxRate,
+                money.FxRateDate,
+                money.FxSource,
+                money.PricingType);
 }

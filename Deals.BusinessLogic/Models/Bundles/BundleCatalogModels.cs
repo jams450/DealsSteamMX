@@ -31,7 +31,20 @@ public sealed record BundleCatalogTierShare(
     /// null. It is the denominator the allocation uses when present; ITAD tiers leave it null and keep
     /// dividing by their eligible-game count. It is never the price of any one game.
     /// </summary>
-    int? SelectionCount = null);
+    int? SelectionCount = null,
+    /// <summary>
+    /// The tier total read in USD and MXN (<see cref="BundleCurrencyProjection"/>). It is additive: the
+    /// existing <see cref="PriceMinor"/> and <see cref="Currency"/> stay the published, native figure.
+    /// A side with no persisted rate stays null instead of being invented, and an unknown price is null
+    /// on both sides.
+    /// </summary>
+    BundleMoney? PriceMoney = null,
+    /// <summary>
+    /// The equal share read in USD and MXN, present only when <see cref="AllocationStatus"/> is
+    /// <c>ok</c> — exactly when <see cref="AllocatedPerGameMinor"/> is present. Its native side is that
+    /// same figure; the other side is the converted tier total divided by the same count.
+    /// </summary>
+    BundleMoney? AllocatedPerGameMoney = null);
 
 /// <summary>
 /// One game of the current user's wishlist that this bundle provably contains. Exact identity only: the

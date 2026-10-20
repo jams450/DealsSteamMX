@@ -1,6 +1,9 @@
+using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Bundles;
+using Deals.BusinessLogic.Models.Discovery;
 using Deals.BusinessLogic.Models.Itad;
 using Deals.BusinessLogic.Models.Steam;
+using Deals.BusinessLogic.Services;
 using System.Text.Json;
 
 // Deterministic checks for the equal-share allocation rule of the bundle catalog (PLAN_BUNDLES.md).
@@ -252,6 +255,256 @@ Check(noCrossSource.Count == 2, "a gg.deals key never deduplicates against an IT
 Check(noCrossSource.Any(snapshot => snapshot.Source == BundleCatalogOrder.GgDealsSource),
     "the gg.deals snapshot survives the cross-source dedup");
 
+// --- Dual currency money block (S1, shared tier contract L4) -----------------------------------
+// The catalog keeps the tier's own price and currency and adds a USD/MXN reading built only from the
+// persisted FX rows: forward USD/MXN for a USD tier, explicit MXN/USD for an MXN tier. A missing pair
+// keeps the native figure and leaves the other currency null (never 0), and the inverse pair is never
+// synthesized from the forward one. Unknown prices stay unknown.
+
+var usdMxnDate = new DateOnly(2026, 10, 4);
+var mxnUsdDate = new DateOnly(2026, 10, 3);
+var usdToMxn = new GlobalDealFxRate(17.5m, usdMxnDate, "banxico");
+var mxnToUsd = new GlobalDealFxRate(0.055m, mxnUsdDate, "frankfurter");
+var fx = new BundleFxRates(usdToMxn, mxnToUsd);
+var noFx = BundleFxRates.None;
+
+var usdMoney = BundleCurrencyProjection.ForAmount(1499, "USD", fx);
+Check(usdMoney.UsdMinor == 1499, "a native USD amount keeps its own figure");
+Check(usdMoney.MxnMinor == 26233, "the MXN reading is the converted native amount");
+Check(usdMoney.FxRate == 17.5m && usdMoney.FxRateDate == usdMxnDate && usdMoney.FxSource == "banxico",
+    "a USD tier reports the exact forward pair it used");
+Check(usdMoney.PricingType == GlobalDealPricingTypes.FxEstimate, "a converted reading is an fx estimate");
+Check(BundleCurrencyProjection.ForAmount(1499, " usd ", fx).UsdMinor == 1499,
+    "the currency code is matched case-insensitively and trimmed");
+
+var usdWithoutPair = BundleCurrencyProjection.ForAmount(1499, "USD", noFx);
+Check(usdWithoutPair.UsdMinor == 1499 && usdWithoutPair.MxnMinor is null,
+    "a USD amount without a persisted pair keeps USD and claims no MXN");
+Check(usdWithoutPair.FxRate is null && usdWithoutPair.FxRateDate is null && usdWithoutPair.FxSource is null,
+    "no conversion means no FX metadata");
+Check(usdWithoutPair.PricingType == GlobalDealPricingTypes.Unconverted,
+    "a USD amount without a pair is unconverted, not regional");
+
+var usdOnlyInverse = BundleCurrencyProjection.ForAmount(1499, "USD", new BundleFxRates(null, mxnToUsd));
+Check(usdOnlyInverse.MxnMinor is null,
+    "the MXN/USD pair is never inverted to price a USD tier");
+
+var mxnMoney = BundleCurrencyProjection.ForAmount(29900, "MXN", fx);
+Check(mxnMoney.MxnMinor == 29900, "a native MXN amount keeps its own figure");
+Check(mxnMoney.UsdMinor == 1645, "the USD reading uses the explicit MXN/USD pair");
+Check(mxnMoney.FxRate == 0.055m && mxnMoney.FxRateDate == mxnUsdDate && mxnMoney.FxSource == "frankfurter",
+    "an MXN tier reports the exact MXN/USD pair it used");
+Check(mxnMoney.PricingType == GlobalDealPricingTypes.FxEstimate, "a converted MXN reading is an fx estimate");
+
+var mxnWithoutPair = BundleCurrencyProjection.ForAmount(29900, "MXN", new BundleFxRates(usdToMxn, null));
+Check(mxnWithoutPair.MxnMinor == 29900 && mxnWithoutPair.UsdMinor is null,
+    "an MXN amount without an explicit MXN/USD pair keeps MXN and claims no USD");
+Check(mxnWithoutPair.FxRate is null && mxnWithoutPair.PricingType == GlobalDealPricingTypes.Regional,
+    "an MXN amount without a pair is regional, never a fabricated estimate");
+
+var unsupported = BundleCurrencyProjection.ForAmount(5000, "EUR", fx);
+Check(unsupported.UsdMinor is null && unsupported.MxnMinor is null,
+    "an unsupported currency never claims a USD or MXN figure");
+Check(unsupported.PricingType == GlobalDealPricingTypes.Unconverted && unsupported.FxRate is null,
+    "an unsupported currency is unconverted and carries no rate");
+
+var unknownUsd = BundleCurrencyProjection.ForAmount(null, "USD", fx);
+Check(unknownUsd.UsdMinor is null && unknownUsd.MxnMinor is null,
+    "an unknown price stays null in both currencies instead of becoming 0");
+Check(unknownUsd.PricingType == GlobalDealPricingTypes.Unconverted, "an unknown price claims nothing");
+var unknownMxn = BundleCurrencyProjection.ForAmount(null, "MXN", fx);
+Check(unknownMxn.MxnMinor is null && unknownMxn.UsdMinor is null,
+    "an unknown MXN price stays null in both currencies");
+
+var freeUsd = BundleCurrencyProjection.ForAmount(0, "USD", fx);
+Check(freeUsd.UsdMinor == 0 && freeUsd.MxnMinor == 0,
+    "a published zero stays a real zero in both currencies");
+Check(freeUsd.FxRate == 17.5m && freeUsd.PricingType == GlobalDealPricingTypes.FxEstimate,
+    "the justified zero carries the rate that produced it");
+var freeMxn = BundleCurrencyProjection.ForAmount(0, "MXN", fx);
+Check(freeMxn.MxnMinor == 0 && freeMxn.UsdMinor == 0, "a free MXN tier is zero in both currencies");
+var freeWithoutPair = BundleCurrencyProjection.ForAmount(0, "USD", noFx);
+Check(freeWithoutPair.UsdMinor == 0 && freeWithoutPair.MxnMinor is null,
+    "a zero is not invented for a currency that has no rate");
+
+var zeroRate = BundleCurrencyProjection.ForAmount(1000, "USD",
+    new BundleFxRates(new GlobalDealFxRate(0m, usdMxnDate, "banxico"), null));
+Check(zeroRate.MxnMinor is null && zeroRate.FxRate is null,
+    "a non-positive persisted rate converts nothing");
+Check(zeroRate.UsdMinor == 1000 && zeroRate.PricingType == GlobalDealPricingTypes.Unconverted,
+    "a tier whose rate is unusable keeps only its native figure");
+var negativeRate = BundleCurrencyProjection.ForAmount(1000, "USD",
+    new BundleFxRates(new GlobalDealFxRate(-3m, usdMxnDate, "banxico"), null));
+Check(negativeRate.MxnMinor is null, "a negative persisted rate converts nothing");
+
+var overflow = BundleCurrencyProjection.ForAmount(int.MaxValue, "USD",
+    new BundleFxRates(new GlobalDealFxRate(2m, usdMxnDate, "banxico"), null));
+Check(overflow.MxnMinor is null && overflow.FxRate is null,
+    "an overflowing conversion emits no MXN figure and no rate");
+Check(overflow.UsdMinor == int.MaxValue && overflow.PricingType == GlobalDealPricingTypes.Unconverted,
+    "an overflowing conversion keeps the native figure intact");
+
+// The per-tier projection wraps the untouched equal share and only allocates when the share is honest.
+var roundedTotal = BundleShare.Allocate(Tier(1001, "USD", false, true, ("A", "game", 1), ("B", "game", 1), ("C", "game", 1)));
+var doubled = new BundleFxRates(new GlobalDealFxRate(2m, usdMxnDate, "banxico"), null);
+var projectedTier = BundleCurrencyProjection.Apply(roundedTotal, doubled);
+Check(projectedTier.PriceMoney is not null && projectedTier.PriceMoney.UsdMinor == 1001,
+    "the tier total keeps its native USD figure");
+Check(projectedTier.PriceMoney!.MxnMinor == 2002, "the tier total is converted once");
+Check(projectedTier.AllocatedPerGameMoney is not null, "an allocatable tier emits an allocated money block");
+Check(projectedTier.AllocatedPerGameMoney!.UsdMinor == roundedTotal.AllocatedPerGameMinor,
+    "the allocated USD figure is the untouched equal share");
+Check(projectedTier.AllocatedPerGameMoney!.MxnMinor == 667,
+    "the converted share divides the converted total, not the converted share");
+Check(projectedTier.AllocatedPerGameMoney!.MxnMinor != 668,
+    "converting the rounded share first would report a different figure");
+
+// PRESERVE: the projection is additive, the existing tier contract keeps every value it had.
+Check(projectedTier.PriceMinor == roundedTotal.PriceMinor && projectedTier.Currency == roundedTotal.Currency,
+    "the projection preserves the tier's own price and currency");
+Check(projectedTier.AllocatedPerGameMinor == roundedTotal.AllocatedPerGameMinor &&
+    projectedTier.AllocationStatus == roundedTotal.AllocationStatus &&
+    projectedTier.EligibleGameCount == roundedTotal.EligibleGameCount &&
+    projectedTier.ItemCount == roundedTotal.ItemCount &&
+    projectedTier.SelectionCount == roundedTotal.SelectionCount &&
+    projectedTier.Addon == roundedTotal.Addon &&
+    projectedTier.ItemsComplete == roundedTotal.ItemsComplete &&
+    projectedTier.RequiresWholeTierPurchase == roundedTotal.RequiresWholeTierPurchase,
+    "every existing tier field survives the projection unchanged");
+
+var projectedMxnShare = BundleCurrencyProjection.Apply(
+    BundleShare.Allocate(Tier(900, "MXN", false, true, ("A", "game", 1), ("B", "game", 1), ("C", "game", 1))),
+    new BundleFxRates(null, new GlobalDealFxRate(0.05m, mxnUsdDate, "frankfurter")));
+Check(projectedMxnShare.PriceMoney!.MxnMinor == 900 && projectedMxnShare.PriceMoney.UsdMinor == 45,
+    "an MXN tier total is read in both currencies");
+Check(projectedMxnShare.AllocatedPerGameMoney!.MxnMinor == 300,
+    "the MXN share keeps the native equal share");
+Check(projectedMxnShare.AllocatedPerGameMoney!.UsdMinor == 15,
+    "the converted MXN share divides the converted total by the same count");
+
+var addonMoney = BundleCurrencyProjection.Apply(
+    BundleShare.Allocate(Tier(1000, "USD", true, true, ("A", "game", 1))), fx);
+Check(addonMoney.AllocatedPerGameMoney is null, "an addon tier emits no allocated money block");
+var incompleteMoney = BundleCurrencyProjection.Apply(
+    BundleShare.Allocate(Tier(1000, "USD", false, false, ("A", "game", 1))), fx);
+Check(incompleteMoney.AllocatedPerGameMoney is null, "an incomplete tier emits no allocated money block");
+var noEligibleMoney = BundleCurrencyProjection.Apply(
+    BundleShare.Allocate(Tier(1000, "USD", false, true, ("A", "dlc", 1))), fx);
+Check(noEligibleMoney.AllocatedPerGameMoney is null, "a tier with no eligible game emits no allocated money block");
+var noPriceMoney = BundleCurrencyProjection.Apply(
+    BundleShare.Allocate(Tier(null, "USD", false, true, ("A", "game", 1))), fx);
+Check(noPriceMoney.AllocatedPerGameMoney is null, "a tier without a price emits no allocated money block");
+Check(noPriceMoney.PriceMoney is not null && noPriceMoney.PriceMoney.UsdMinor is null &&
+    noPriceMoney.PriceMoney.MxnMinor is null,
+    "a tier without a price emits a money block with no figure");
+
+var alreadyConverted = BundleCurrencyProjection.Apply(roundedTotal, noFx);
+Check(alreadyConverted.AllocatedPerGameMoney!.UsdMinor == roundedTotal.AllocatedPerGameMinor &&
+    alreadyConverted.AllocatedPerGameMoney!.MxnMinor is null,
+    "an allocated share without a rate keeps the native figure and no MXN");
+
+var byoShare = BundleShare.Allocate(byoTier);
+var byoMoney = BundleCurrencyProjection.Apply(byoShare, doubled);
+Check(byoMoney.AllocatedPerGameMoney!.UsdMinor == 500, "a choose-N tier keeps its native share");
+Check(byoMoney.AllocatedPerGameMoney!.MxnMinor == 1000,
+    "a choose-N tier divides its converted total by the same selection count");
+Check(byoMoney.AllocatedPerGameMoney!.MxnMinor != 200,
+    "a choose-N tier never divides the converted total by the listed game count");
+
+var unsupportedShare = BundleCurrencyProjection.Apply(
+    BundleShare.Allocate(Tier(1000, "EUR", false, true, ("A", "game", 1), ("B", "game", 1))), fx);Check(unsupportedShare.AllocatedPerGameMoney!.UsdMinor is null &&
+    unsupportedShare.AllocatedPerGameMoney!.MxnMinor is null,
+    "an unsupported tier currency never claims a USD or MXN share");
+Check(unsupportedShare.AllocatedPerGameMinor == 500 && unsupportedShare.Currency == "EUR",
+    "the unsupported tier keeps its native currency and share unchanged");
+
+// A priced tier always carries a price block, even when neither currency can be claimed: the absence of
+// a figure is expressed by the null amounts, never by a missing block (a missing block means "old payload").
+var blankCurrency = BundleCurrencyProjection.Apply(
+    BundleShare.Allocate(Tier(1000, " ", false, true, ("A", "game", 1))), fx);
+Check(blankCurrency.PriceMoney is not null && blankCurrency.PriceMoney.UsdMinor is null &&
+    blankCurrency.PriceMoney.MxnMinor is null && blankCurrency.PriceMoney.PricingType == GlobalDealPricingTypes.Unconverted,
+    "a price with an unknown currency claims neither USD nor MXN and still emits the block");
+Check(blankCurrency.AllocatedPerGameMoney is null,
+    "a price with an unknown currency has no allocation to read");
+
+// The converted share uses the same away-from-zero rounding as the native equal share: 1001 minor over
+// two games is 500.5, which is 501 in both currencies (banker's rounding would report 500).
+var halfShare = BundleCurrencyProjection.Apply(
+    BundleShare.Allocate(Tier(1001, "USD", false, true, ("A", "game", 1), ("B", "game", 1))),
+    new BundleFxRates(new GlobalDealFxRate(1m, usdMxnDate, "banxico"), null));
+Check(halfShare.AllocatedPerGameMinor == 501 && halfShare.AllocatedPerGameMoney!.UsdMinor == 501,
+    "the native share rounds a half away from zero");
+Check(halfShare.AllocatedPerGameMoney!.MxnMinor == 501,
+    "the converted share rounds a half away from zero with the same rule");
+
+var mxnAllocationWithoutPair = BundleCurrencyProjection.Apply(    BundleShare.Allocate(Tier(900, "MXN", false, true, ("A", "game", 1), ("B", "game", 1), ("C", "game", 1))),
+    new BundleFxRates(usdToMxn, null));
+Check(mxnAllocationWithoutPair.AllocatedPerGameMoney!.MxnMinor == 300 &&
+    mxnAllocationWithoutPair.AllocatedPerGameMoney!.UsdMinor is null,
+    "an MXN share without the explicit pair keeps MXN and claims no USD");
+Check(mxnAllocationWithoutPair.AllocatedPerGameMoney!.FxRate is null &&
+    mxnAllocationWithoutPair.AllocatedPerGameMoney!.PricingType == GlobalDealPricingTypes.Regional,
+    "an MXN share without the explicit pair reports no rate and no estimate");
+
+// Every tier of a page is projected from the same already-loaded pairs: the projection is pure and
+// takes no service, so a page of tiers cannot trigger another FX read.
+var manyTiers = Enumerable.Range(0, 40)
+    .Select(_ => Tier(1000, "USD", false, true, ("A", "game", 1), ("B", "game", 1)))
+    .ToList();
+var allProjected = BundleCurrencyProjection.ApplyAll(manyTiers, fx);
+Check(allProjected.Count == manyTiers.Count, "every tier of a page is projected");
+Check(allProjected.All(tier => tier.PriceMoney?.MxnMinor == 17500),
+    "a page of tiers is projected from the same rate, never re-read per tier");
+Check(allProjected.All(tier => tier.AllocatedPerGameMoney?.MxnMinor == 8750),
+    "a page of tiers keeps the endogenous equal-share rule in both currencies");
+
+// PRESERVE: the catalog's tier projection is still exactly BundleShare.Allocate for every field that
+// existed before this change, for every allocation status (ok, addon, incomplete, no price, choose-N,
+// MXN, unsupported currency).
+var mixedTiers = new List<SteamGameBundleTier>
+{
+    Tier(1000, "USD", false, true, ("A", "game", 1), ("B", "game", 1)),
+    Tier(1000, "USD", true, true, ("A", "game", 1)),
+    Tier(1000, "USD", false, false, ("A", "game", 1)),
+    Tier(null, "USD", false, true, ("A", "game", 1)),
+    Tier(1000, " ", false, true, ("A", "game", 1)),
+    Tier(1000, "EUR", false, true, ("A", "game", 1), ("B", "dlc", 1)),
+    Tier(900, "MXN", false, true, ("A", "game", 1), ("B", "game", 1), ("C", "game", 1)),
+    byoTier
+};
+var projectedMixed = BundleCurrencyProjection.ApplyAll(mixedTiers, fx);
+Check(projectedMixed.Count == mixedTiers.Count, "every tier keeps its place in the page");
+Check(mixedTiers.Select(BundleShare.Allocate).Zip(projectedMixed).All(pair =>
+        pair.First.PriceMinor == pair.Second.PriceMinor &&
+        pair.First.Currency == pair.Second.Currency &&
+        pair.First.Addon == pair.Second.Addon &&
+        pair.First.ItemsComplete == pair.Second.ItemsComplete &&
+        pair.First.ItemCount == pair.Second.ItemCount &&
+        pair.First.EligibleGameCount == pair.Second.EligibleGameCount &&
+        pair.First.AllocatedPerGameMinor == pair.Second.AllocatedPerGameMinor &&
+        pair.First.AllocationStatus == pair.Second.AllocationStatus &&
+        pair.First.RequiresWholeTierPurchase == pair.Second.RequiresWholeTierPurchase &&
+        pair.First.SelectionCount == pair.Second.SelectionCount),
+    "every field the catalog read before this change is produced by the same allocation rule");
+
+// --- FX pair loading: one read per pair, read-only ----------------------------------------------
+var fxStub = new CountingFxRateService(usdToMxn, mxnToUsd);
+var loaded = await BundleCatalogService.LoadFxRatesAsync(fxStub, CancellationToken.None);
+Check(loaded.UsdToMxn is { Rate: 17.5m } && loaded.MxnToUsd is { Rate: 0.055m },
+    "both persisted pairs are loaded into the projection");
+Check(fxStub.CallsFor("USD", "MXN") == 1, "the forward pair is read once per request");
+Check(fxStub.CallsFor("MXN", "USD") == 1, "the explicit inverse pair is read once per request");
+Check(fxStub.TotalCalls == 2, "a catalog read performs exactly two persisted FX reads");
+Check(!fxStub.FetchedAnything, "no catalog read fetches a rate from a provider");
+
+var staleFxStub = new CountingFxRateService(
+    new GlobalDealFxRate(0m, usdMxnDate, "banxico"),
+    new GlobalDealFxRate(-1m, mxnUsdDate, "frankfurter"));
+var unusable = await BundleCatalogService.LoadFxRatesAsync(staleFxStub, CancellationToken.None);
+Check(unusable.UsdToMxn is null && unusable.MxnToUsd is null,
+    "a non-positive persisted row is treated as no rate at all");
+
 if (failures.Count > 0)
 {
     Console.Error.WriteLine($"FAIL: {failures.Count} bundle share checks failed");
@@ -264,3 +517,52 @@ if (failures.Count > 0)
 }
 
 Console.WriteLine("PASS: bundle share allocation checks");
+
+/// <summary>
+/// Counts the persisted rate reads of a catalog request. <see cref="IFxRateService.GetRateAsync"/> is the
+/// provider-fetching member and throws on purpose: a read from the catalog must never reach it.
+/// </summary>
+internal sealed class CountingFxRateService(GlobalDealFxRate? usdToMxn, GlobalDealFxRate? mxnToUsd)
+    : IFxRateService
+{
+    private readonly List<(string Base, string Quote)> _reads = [];
+
+    public bool FetchedAnything { get; private set; }
+
+    public int TotalCalls => _reads.Count;
+
+    public int CallsFor(string baseCurrency, string quoteCurrency) => _reads.Count(read =>
+        string.Equals(read.Base, baseCurrency, StringComparison.Ordinal) &&
+        string.Equals(read.Quote, quoteCurrency, StringComparison.Ordinal));
+
+    public Task<Deals.Models.Entities.FxRate?> GetRateAsync(
+        string baseCurrency,
+        string quoteCurrency,
+        CancellationToken cancellationToken)
+    {
+        FetchedAnything = true;
+        throw new InvalidOperationException("The bundle catalog must never fetch a rate.");
+    }
+
+    public Task<Deals.Models.Entities.FxRate?> GetLatestRateAsync(
+        string baseCurrency,
+        string quoteCurrency,
+        CancellationToken cancellationToken)
+    {
+        _reads.Add((baseCurrency, quoteCurrency));
+        var pair = string.Equals(baseCurrency, "USD", StringComparison.Ordinal)
+            ? usdToMxn
+            : mxnToUsd;
+        Deals.Models.Entities.FxRate? row = pair is null
+            ? null
+            : new Deals.Models.Entities.FxRate
+            {
+                Base = baseCurrency,
+                Quote = quoteCurrency,
+                Rate = pair.Rate,
+                RateDate = pair.RateDate,
+                Source = pair.Source
+            };
+        return Task.FromResult(row);
+    }
+}

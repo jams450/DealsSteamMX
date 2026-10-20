@@ -38,7 +38,7 @@ when it was last observed.
 | `/discover` | `app/discover/{page,discover-client}.tsx`, `app/discover/_lib/discover-api.ts` | Product | Discovery: three read-only lists over persisted `steam_games` rows (discount / historic / recent), capsule cards linking to `/games/[steamAppId]` |
 | `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: FX reference strip above the card, cover + official Steam price + sources historical minimum + local Steam minimum + the page's single refresh control, per-provider best-price cards with each price's observation date, CTA footer, ownership line (`ownership`), Steam source table, multi-store offers grouped by provider, bundles, reviews |
 | `/wishlist` | `app/wishlist/{page,wishlist-client}.tsx`, `app/wishlist/_lib/*` | Product | Steam wishlist: four explicit states, "Sincronizar ahora" with its report, capsule cards (base, historical low, MXN official/keyshop minimums, per-band discount % and a hybrid 0-10 deal score driven by a backend viable-minimum threshold) with a per-row refresh; a multi-game selection (by AppID) with a sticky bar showing the package total under two alternative scenarios (official / keys) |
-| `/bundles` | `app/bundles/{page,bundles-client}.tsx`, `app/bundles/_lib/bundles-api.ts` | Product | Bundle catalog: authenticated, paginated, read-only list of the persisted active ITAD bundles (per-game source `itad` and global sweep `itad_global`, deduplicated by `bundle_key`) with their linked games, the equal-share estimate per tier and the current user's exact wishlist matches marked in accent; never a live provider call, never an offer |
+| `/bundles` | `app/bundles/{page,bundles-client}.tsx`, `app/bundles/_lib/bundles-api.ts` | Product | Bundle catalog: authenticated, paginated, read-only list of the persisted active ITAD bundles (per-game source `itad` and global sweep `itad_global`, deduplicated by `bundle_key`) with their linked games, the equal-share estimate per tier, a USD/MXN reading of each tier (conversions marked ≈) and a clickable ITAD details URL, plus the current user's exact wishlist matches marked in accent; never a live provider call, never an offer |
 | `/library` | `app/library/{page,library-client}.tsx`, `app/library/_lib/*` | Admin | Playnite library import (manual JSON upload of ≤10 MiB) plus the owned/subscription list grouped by store, with the Game Pass tag and the explicit "Sin precios vinculados" state |
 | `/login` | `app/login/page.tsx` | Public | Only public page, plus `/api/auth/{login,refresh,session}` |
 | `/users` | `app/users/*` | Admin | Reference admin slice (`AdminShell` + `DataGrid`), admin role only; consumes the same tokens, cards, badges and `Button` variants as the product surface |
@@ -128,6 +128,32 @@ when it was last observed.
   page is the whole catalog, not only the wishlist. Nothing here is an offer, nothing is written to
   `game_offers`, and the existing aggregate tier savings on the game detail is a separate reading that this
   page does not replace or alter.
+- **Bundle USD/MXN rows and the clickable ITAD link.** The tier keeps the published price in its own
+  currency as the primary figure; the contract adds `priceMoney` and `allocatedPerGameMoney`
+  (`{ usdMinor, mxnMinor, fxRate, fxRateDate, fxSource, pricingType }`) and
+  `app/bundles/_lib/bundle-money.ts` turns them into compact rows. The rule is the same one the rest of
+  the app already follows: **the currency that matches `tier.currency` is the published figure and is
+  never repeated**; the other side is a conversion and carries `≈`. The API only claims USD/MXN for a tier
+  published in USD or MXN (a third currency keeps `pricingType: unconverted` with no figures, and the row
+  stays single-currency), and `bundle-money` treats any non-matching native currency as converted so it can
+  never present an estimate as the published price. There is no exchange-rate arithmetic in the browser —
+  the server converts with the persisted `fx_rates` row — and a side with no rate reads «USD/MXN no
+  disponible», never 0. Every tier
+  that paints a converted figure prints one `≈ Conversión estimada:` line with the rate, the rate date and
+  the source, deduplicated when the price and the equal share share the same row. The rate is the explicit
+  persisted row the server used, so its direction follows the tier's native currency: a USD tier prints
+  `MXN por USD` (18.2) and an MXN tier prints the explicit `USD por MXN` row (0.055), never its inverse; a
+  third native currency makes the direction unknowable, so the number is omitted and the date/source stay.
+  The equal share converts its own block: it is never derived from the tier total. Values are optional on
+  purpose (a payload without them renders exactly as before), `bundle-money` returns `null` instead of a
+  row when a tier has no published price, and the native figure, `allocationStatus` reasons and layout
+  are untouched.
+- **The title is the bundle link for both providers.** It prioritizes `dealUrl`, then `pageUrl`,
+  then the validated `detailsUrl` (for example `https://isthereanydeal.com/bundles/16637/`). The title
+  keeps `target="_blank"`, `rel="noopener noreferrer"` and visible keyboard focus. A URL-only detail
+  is not repeated below the title. The normalizer accepts only complete HTTPS URLs without whitespace,
+  credentials or truncation; other details remain plain text. There is no generic linkify or
+  `dangerouslySetInnerHTML`, and an existing affiliate URL always takes priority.
 - **Library reality:** `/library` is fed by the API's `GET /api/library` (BFF `GET /api/bff/library`) and
   `POST /api/library/import` (BFF `POST /api/bff/library/import`), both `AdminWithId` on the API. The list is
   the `user_library` snapshot imported by hand from a Playnite JSON export: the read answers `{ items: [...] }`
@@ -1232,7 +1258,11 @@ enableColumnVisibility, columnVisibilityStorageKey, initialColumnVisibility, ena
   covered the day a test runner exists. `node --test` now covers these pure modules —
   `app/games/[steamAppId]/_lib/bundle-card.test.ts` (`pickPricedBundleTier`),
   `app/games/[steamAppId]/_lib/bundle-share.test.ts` (`tierShare` / `tierMembership` / `compareShareToStandalone` / `gameTierComparison`),
-  `lib/contracts/bundles.test.ts` (`normalizeBundleCatalog`),
+  `lib/contracts/bundles.test.ts` (`normalizeBundleCatalog`), `app/bundles/_lib/bundle-money.ts`
+  (`tests/bundles-money.test.mjs`: native vs converted side, `≈`, missing rate, FX line) and the
+  `details` link contract (`tests/bundles-details-link.test.mjs`: source-level proof of the anchor, its
+  `target`/`rel`, the plain-text fallback and the absence of browser FX arithmetic — the rendered DOM is
+  not covered by any runner here),
   `lib/contracts/steam.test.ts` (bundle/tier/item normalization incl. `itadGameId`) and the wishlist `_lib` pair —
   and the rest is still uncovered. Run them from inside the `_lib` directory: `node --test bundle-card.test.ts`;
   from the repo root the bracketed path is read as a glob and matches nothing, which reports

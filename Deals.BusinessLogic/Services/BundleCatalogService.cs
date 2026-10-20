@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Bundles;
+using Deals.BusinessLogic.Models.Discovery;
 using Deals.BusinessLogic.Models.Steam;
 using Deals.Models.Entities;
 using Microsoft.EntityFrameworkCore;
@@ -17,8 +18,12 @@ namespace Deals.BusinessLogic.Services;
 /// The catalog is paged honestly and scoped to the authenticated user for the wishlist highlight: the
 /// user id arrives from the controller (never from the query string) and is only used to resolve that
 /// user's wished Steam rows. A bundle without any wishlist game is still returned in full.
+///
+/// Each tier also carries its USD/MXN reading (<see cref="BundleCurrencyProjection"/>). It comes from the
+/// persisted <c>fx_rates</c> rows only — <see cref="IFxRateService.GetLatestRateAsync"/>, never the
+/// provider-fetching member — and each pair is read at most once per request, not once per tier.
 /// </summary>
-public sealed class BundleCatalogService(IRepository repository)
+public sealed class BundleCatalogService(IRepository repository, IFxRateService fxRateService)
 {
     /// <summary>Bound of the linked games listed per bundle.</summary>
     public const int MaxLinkedGamesPerBundle = 20;
@@ -111,6 +116,19 @@ public sealed class BundleCatalogService(IRepository repository)
 
             var byKey = rows.ToDictionary(row => (row.Source, row.BundleKey));
 
+            // The persisted pairs are read once for the whole page, before any tier is projected. Both
+            // reads are read-only (never a provider fetch) and a bundle page without prices needs none.
+            // Only the snapshots this page renders are parsed: a row that lost the deduplication keeps its
+            // tier payload unread.
+            var pageTiers = catalogPage.Items
+                .Where(snapshot => byKey.ContainsKey((snapshot.Source, snapshot.BundleKey)))
+                .ToDictionary(
+                    snapshot => (snapshot.Source, snapshot.BundleKey),
+                    snapshot => DeserializeTiers(byKey[(snapshot.Source, snapshot.BundleKey)].TiersJson));
+            var fxRates = pageTiers.Values.Any(tiers => tiers.Any(tier => tier.PriceMinor is not null))
+                ? await LoadFxRatesAsync(fxRateService, cancellationToken)
+                : BundleFxRates.None;
+
             foreach (var snapshot in catalogPage.Items)
             {
                 if (!byKey.TryGetValue((snapshot.Source, snapshot.BundleKey), out var row))
@@ -123,7 +141,7 @@ public sealed class BundleCatalogService(IRepository repository)
                     .Where(game => game.AppId > 0 && !string.IsNullOrWhiteSpace(game.Name))
                     .Select(game => new BundleCatalogMember(game.AppId, game.Name, SafeHttpsUrl(game.ImageUrl)))
                     .ToList();
-                var tiers = DeserializeTiers(row.TiersJson);
+                var tiers = pageTiers[(row.Source, row.BundleKey)];
 
                 items.Add(new BundleCatalogItem(
                     row.Source,
@@ -138,7 +156,7 @@ public sealed class BundleCatalogService(IRepository repository)
                     row.ExpiresAt,
                     row.ObservedAt,
                     linkedGames,
-                    tiers.Select(BundleShare.Allocate).ToList(),
+                    BundleCurrencyProjection.ApplyAll(tiers, fxRates),
                     BundleWishlist.Match(wishlist, tiers, linkedGames)));
             }
         }
@@ -151,6 +169,36 @@ public sealed class BundleCatalogService(IRepository repository)
             catalogPage.PageSize,
             catalogPage.HasMore);
     }
+
+    /// <summary>
+    /// Loads the two FX pairs a catalog page may need, exactly once each and read-only: the forward
+    /// USD/MXN row prices a USD tier and the explicit MXN/USD row prices an MXN tier. The inverse is never
+    /// derived from the other row — a rate the persistence never saw is a fabricated number. A stored rate
+    /// that is not strictly positive is treated as no rate at all.
+    ///
+    /// Public so <c>checks/BundleCatalog.Checks</c> can count the reads without a database.
+    /// </summary>
+    public static async Task<BundleFxRates> LoadFxRatesAsync(
+        IFxRateService fxRateService,
+        CancellationToken cancellationToken)
+    {
+        var usdToMxn = await fxRateService.GetLatestRateAsync(
+            GlobalDealCurrency.Usd,
+            GlobalDealCurrency.Mxn,
+            cancellationToken);
+        var mxnToUsd = await fxRateService.GetLatestRateAsync(
+            GlobalDealCurrency.Mxn,
+            GlobalDealCurrency.Usd,
+            cancellationToken);
+
+        return new BundleFxRates(Usable(usdToMxn), Usable(mxnToUsd));
+    }
+
+    /// <summary>A pair is usable only with a strictly positive persisted rate.</summary>
+    private static GlobalDealFxRate? Usable(FxRate? row) =>
+        row is { Rate: > 0 }
+            ? new GlobalDealFxRate(row.Rate, row.RateDate, row.Source)
+            : null;
 
     /// <summary>
     /// Resolves the current user's wishlist identity through the catalog, never through the unused

@@ -15,6 +15,32 @@ export const BUNDLE_ALLOCATION_STATUSES = [
 
 export type BundleAllocationStatus = (typeof BUNDLE_ALLOCATION_STATUSES)[number];
 
+// Vocabulario del precio ya derivado en el servidor. `regional` es el precio regional persistido,
+// `fx_estimate` una conversión con la tasa persistida y `unconverted` un precio que no se pudo
+// convertir. La UI nunca convierte: solo valida la forma y etiqueta la cifra recibida.
+export const BUNDLE_PRICING_TYPES = ["regional", "fx_estimate", "unconverted"] as const;
+
+export type BundlePricingType = (typeof BUNDLE_PRICING_TYPES)[number];
+
+// Bloque de dinero dual del servidor: las dos monedas que la página muestra (USD y MXN) y la tasa
+// persistida que respalda la conversión. Es aditivo y opcional: un payload viejo sin el bloque deja
+// los dos importes en null —nunca en 0— y la UI simplemente no pinta filas duales.
+export type BundleMoney = {
+  readonly usdMinor: number | null;
+  readonly mxnMinor: number | null;
+  /**
+   * Tasa de la fila persistida explícita que usó el servidor, en la dirección que fija `currency` del
+   * tier: USD nativo ⇒ MXN por USD (p. ej. 18.2); MXN nativo ⇒ fila MXN/USD (p. ej. 0.055 USD por MXN).
+   * No es siempre «MXN por USD» y el cliente no debe invertirla: el servidor no sintetiza inversas.
+   */
+  readonly fxRate: number | null;
+  readonly fxRateDate: string | null;
+  readonly fxSource: string | null;
+  // `null` cuando el servidor no lo mandó o mandó algo fuera del vocabulario: la UI no afirma entonces
+  // una procedencia que no conoce.
+  readonly pricingType: BundlePricingType | null;
+};
+
 export type BundleCatalogGame = {
   readonly appId: number;
   readonly name: string;
@@ -37,6 +63,10 @@ export type BundleCatalogTier = {
   readonly allocationStatus: BundleAllocationStatus;
   readonly requiresWholeTierPurchase: boolean;
   readonly selectionCount: number | null;
+  // Precio del tier y reparto por juego en USD/MXN. Opcionales (compatibilidad con un payload viejo) y
+  // solo de presentación: no sustituyen a `priceMinor`/`allocatedPerGameMinor` ni entran en el comparador.
+  readonly priceMoney: BundleMoney | null;
+  readonly allocatedPerGameMoney: BundleMoney | null;
 };
 
 export type BundleCatalogItem = {
@@ -47,6 +77,10 @@ export type BundleCatalogItem = {
   readonly pageUrl: string | null;
   readonly dealUrl: string | null;
   readonly details: string | null;
+  // `detailsUrl` solo existe cuando `details` ES una URL https completa e íntegra: es el único valor
+  // que puede llegar a un `href`. Texto libre, otro esquema, espacios o un texto truncado quedan en null
+  // y se pintan como texto.
+  readonly detailsUrl: string | null;
   readonly publishedAt: string | null;
   readonly expiresAt: string | null;
   readonly observedAt: string | null;
@@ -149,6 +183,54 @@ function normalizeWishlistMatch(value: unknown): BundleWishlistMatch | null {
   return { appId, name };
 }
 
+function toPositiveDecimal(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+// `fx_rates.rate_date` es una fecha sin hora. Se valida el calendario ("2026-02-30" se convierte en
+// marzo) para no mostrar una fecha de tasa que no existe.
+function toIsoCalendarDate(value: unknown): string | null {
+  const text = toText(value);
+  if (text === null || !/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const date = new Date(`${text}T00:00:00Z`);
+  return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== text ? null : text;
+}
+
+function toPricingType(value: unknown): BundlePricingType | null {
+  const text = toText(value)?.toLowerCase();
+  return text === "regional" || text === "fx_estimate" || text === "unconverted" ? text : null;
+}
+
+function normalizeMoney(value: unknown): BundleMoney | null {
+  // Un arreglo también es "objeto" para `typeof`: se descarta para no pintar un bloque de puros null.
+  if (!isRecord(value) || Array.isArray(value)) return null;
+  return {
+    usdMinor: toNonNegativeInteger(read(value, "usdMinor")),
+    mxnMinor: toNonNegativeInteger(read(value, "mxnMinor")),
+    fxRate: toPositiveDecimal(read(value, "fxRate")),
+    fxRateDate: toIsoCalendarDate(read(value, "fxRateDate")),
+    fxSource: toBoundedText(read(value, "fxSource"), 32),
+    pricingType: toPricingType(read(value, "pricingType"))
+  };
+}
+
+// Solo una URL https completa e íntegra se expone como ancla: una frase que menciona un enlace, otro
+// esquema (`javascript:`, `data:`), credenciales en la URL o una URL con espacios no se linkifican (el
+// linkificado genérico es una inyección con otro nombre). Una URL truncada por el tope de texto tampoco:
+// el `href` quedaría roto.
+function toDetailsUrl(value: unknown): string | null {
+  const text = toText(value);
+  if (text === null || text.length > MAX_DETAILS_TEXT || /\s/.test(text)) return null;
+  try {
+    const url = new URL(text);
+    if (url.protocol !== "https:" || !url.hostname || url.username || url.password) return null;
+  } catch {
+    return null;
+  }
+  return text;
+}
+
 function normalizeTier(value: unknown): BundleCatalogTier | null {
   if (!isRecord(value)) return null;
   const status = toText(read(value, "allocationStatus"));
@@ -175,7 +257,9 @@ function normalizeTier(value: unknown): BundleCatalogTier | null {
     allocatedPerGameMinor: status === "ok" ? allocated : null,
     allocationStatus: status as BundleAllocationStatus,
     requiresWholeTierPurchase: status === "ok",
-    selectionCount
+    selectionCount,
+    priceMoney: normalizeMoney(read(value, "priceMoney")),
+    allocatedPerGameMoney: normalizeMoney(read(value, "allocatedPerGameMoney"))
   };
 }
 
@@ -232,6 +316,7 @@ function normalizeItem(value: unknown): BundleCatalogItem | null {
     pageUrl: toHttpsUrl(read(value, "pageUrl")),
     dealUrl: toHttpsUrl(read(value, "dealUrl")),
     details: toBoundedText(read(value, "details"), MAX_DETAILS_TEXT),
+    detailsUrl: toDetailsUrl(read(value, "details")),
     publishedAt: toIsoDateTime(read(value, "publishedAt")),
     expiresAt: toIsoDateTime(read(value, "expiresAt")),
     observedAt: toIsoDateTime(read(value, "observedAt")),

@@ -13,6 +13,12 @@ import {
   type BundleCatalogItem,
   type BundleCatalogTier
 } from "@/lib/contracts/bundles";
+import {
+  allocatedPerGameMoneyView,
+  fxDisclosureText,
+  tierMoneyView,
+  type DualMoneyView
+} from "./_lib/bundle-money";
 import { getBundleCatalog } from "./_lib/bundles-api";
 
 const ITAD_ATTRIBUTION_URL = "https://isthereanydeal.com";
@@ -20,6 +26,11 @@ const observedFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium"
 
 function formatMinor(amountMinor: number, currency: string) {
   return formatCurrency(amountMinor / 100, "es-MX", currency);
+}
+
+function currencyColor(currency: string | null) {
+  const code = currency?.toUpperCase();
+  return code === "USD" ? "text-success" : code === "MXN" ? "text-accent" : "text-primary";
 }
 
 function formatObserved(value: string | null) {
@@ -50,10 +61,39 @@ function AllocationLine({
   return (
     <p className="text-xs text-secondary">
       Reparto equitativo estimado:{" "}
-      <span className="font-semibold text-primary">{formatMinor(amountMinor, currency)}</span> por juego ·{" "}
+      <span className={`font-semibold ${currencyColor(currency)}`}>{formatMinor(amountMinor, currency)}</span> por juego ·{" "}
       {eligibleGameCount === 1 ? "1 juego elegible" : `${eligibleGameCount} juegos elegibles`} · requiere
       comprar el tier completo; no es el precio de un juego suelto.
     </p>
+  );
+}
+
+// Filas compactas de la moneda que la línea nativa no muestra. El `≈` lo decide `bundle-money` a partir
+// de la moneda nativa del tier, nunca una multiplicación aquí: el importe es el que mandó el servidor.
+function DualMoneyRows({ view, label }: { readonly view: DualMoneyView; readonly label: string }) {
+  // La etiqueta solo acompaña a una cifra: si no hay ninguna conversión disponible, la fila se explica
+  // sola con «no disponible» y no promete un equivalente que no existe.
+  const hasVisibleAmount = view.displayLegs.some((leg) => leg.amountMinor !== null);
+
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs">
+      {hasVisibleAmount ? <span className="text-muted">{label}</span> : null}
+      {view.displayLegs.map((leg) => (
+        <span key={leg.currency} className="inline-flex items-baseline gap-1">
+          {leg.amountMinor === null ? (
+            <span className="text-muted">{leg.currency} no disponible</span>
+          ) : (
+            <>
+              <span className={`font-semibold ${currencyColor(leg.currency)}`}>
+                {leg.approximate ? "≈ " : ""}
+                {formatMinor(leg.amountMinor, leg.currency)}
+              </span>
+              <span className={`text-xs font-semibold uppercase ${currencyColor(leg.currency)}`}>{leg.currency}</span>
+            </>
+          )}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -66,6 +106,12 @@ function TierRow({ tier, index }: { readonly tier: BundleCatalogTier; readonly i
         : formatMinor(tier.priceMinor, tier.currency);
   const hasPrice = tier.priceMinor !== null && tier.currency !== null;
   const reason = tier.allocationStatus === "ok" ? null : ALLOCATION_REASON_LABELS[tier.allocationStatus];
+  // Filas duales desde el módulo puro: sin precio nativo no hay filas, y la moneda nativa no se repite.
+  const money = tierMoneyView(tier);
+  const allocatedMoney = allocatedPerGameMoneyView(tier);
+  const fxNotes = [money, allocatedMoney]
+    .map((view) => fxDisclosureText(view?.fx ?? null, view?.nativeCurrency ?? null))
+    .filter((note, index, all): note is string => note !== null && all.indexOf(note) === index);
 
   return (
     <li className="space-y-2 rounded-[var(--radius-md)] border border-default p-3">
@@ -78,11 +124,11 @@ function TierRow({ tier, index }: { readonly tier: BundleCatalogTier; readonly i
           ) : null}
         </div>
         <div className="flex items-baseline gap-2">
-          <span className={hasPrice ? "deal-price text-lg text-primary" : "deal-price text-lg text-muted"}>
+          <span className={hasPrice ? `deal-price text-lg ${currencyColor(tier.currency)}` : "deal-price text-lg text-muted"}>
             {priceDisplay}
           </span>
           {tier.currency ? (
-            <span className="text-xs font-semibold uppercase text-secondary">{tier.currency}</span>
+            <span className={`text-xs font-semibold uppercase ${currencyColor(tier.currency)}`}>{tier.currency}</span>
           ) : null}
         </div>
       </div>
@@ -100,6 +146,8 @@ function TierRow({ tier, index }: { readonly tier: BundleCatalogTier; readonly i
         </p>
       ) : null}
 
+      {money ? <DualMoneyRows view={money} label="Equivalente aproximado:" /> : null}
+
       {tier.allocationStatus === "ok" && tier.allocatedPerGameMinor !== null && tier.currency !== null ? (
         <AllocationLine
           amountMinor={tier.allocatedPerGameMinor}
@@ -107,6 +155,12 @@ function TierRow({ tier, index }: { readonly tier: BundleCatalogTier; readonly i
           eligibleGameCount={tier.eligibleGameCount}
         />
       ) : null}
+      {allocatedMoney ? <DualMoneyRows view={allocatedMoney} label="Reparto convertido por juego:" /> : null}
+      {fxNotes.map((note) => (
+        <p key={note} className="text-xs text-muted">
+          ≈ Conversión estimada: {note}
+        </p>
+      ))}
       {reason ? <p className="text-xs text-muted">{reason}</p> : null}
     </li>
   );
@@ -145,8 +199,15 @@ function WishlistHighlight({ item }: { readonly item: BundleCatalogItem }) {
   );
 }
 
+// Las URLs validadas se usan como respaldo del enlace del título, sin repetirlas debajo.
+// Los detalles descriptivos se conservan como texto plano del proveedor.
+function BundleDetails({ item }: { readonly item: BundleCatalogItem }) {
+  if (!item.details || item.detailsUrl) return null;
+  return <p className="text-xs text-secondary">{item.details}</p>;
+}
+
 function BundleCard({ item }: { readonly item: BundleCatalogItem }) {
-  const href = item.dealUrl ?? item.pageUrl;
+  const href = item.dealUrl ?? item.pageUrl ?? item.detailsUrl;
   const published = formatObserved(item.publishedAt);
   const expires = formatObserved(item.expiresAt);
   const observed = formatObserved(item.observedAt);
@@ -192,7 +253,7 @@ function BundleCard({ item }: { readonly item: BundleCatalogItem }) {
 
       <WishlistHighlight item={item} />
 
-      {item.details ? <p className="text-xs text-secondary">{item.details}</p> : null}
+      {item.details ? <BundleDetails item={item} /> : null}
 
       <div className="space-y-1">
         <p className="text-xs font-semibold uppercase tracking-widest text-muted">

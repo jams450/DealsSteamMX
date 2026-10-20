@@ -16,6 +16,24 @@ public sealed record BundleWishlistMatchResponse(
     string Name);
 
 /// <summary>
+/// One amount read in USD and MXN. The side that matches the tier's own currency is the published
+/// figure and the other one is an estimate; a side with no persisted rate is <c>null</c>, never 0, so the
+/// UI can say "no disponible" instead of painting a fabricated number. <c>FxRate</c>,
+/// <c>FxRateDate</c> and <c>FxSource</c> are the exact persisted rate row that produced the converted
+/// side, and all null when nothing was converted. <c>PricingType</c> is <c>fx_estimate</c> when a rate
+/// produced the other side, <c>regional</c> when the amount is already MXN and no rate was available, and
+/// <c>unconverted</c> when no honest MXN reading exists (unknown price, unsupported currency, unusable
+/// rate).
+/// </summary>
+public sealed record BundleMoneyResponse(
+    int? UsdMinor,
+    int? MxnMinor,
+    decimal? FxRate,
+    DateOnly? FxRateDate,
+    string? FxSource,
+    string PricingType);
+
+/// <summary>
 /// Equal-share reading of one tier. <c>AllocatedPerGameMinor</c> is only present when
 /// <c>AllocationStatus</c> is <c>ok</c>, and it is always an estimate that requires buying the whole tier.
 /// </summary>
@@ -33,7 +51,16 @@ public sealed record BundleCatalogTierResponse(
     /// Provider "choose N of M" rule when it published one (gg.deals), else null. It is the denominator
     /// the equal share uses when present and is never the price of any one game.
     /// </summary>
-    int? SelectionCount);
+    int? SelectionCount,
+    /// <summary>
+    /// The tier total in USD and MXN. Additive on purpose: <c>PriceMinor</c>/<c>Currency</c> remain the
+    /// published, native figure and are never rewritten.
+    /// </summary>
+    BundleMoneyResponse? PriceMoney = null,
+    /// <summary>
+    /// The equal share in USD and MXN; null exactly when there is no allocation to read.
+    /// </summary>
+    BundleMoneyResponse? AllocatedPerGameMoney = null);
 
 /// <summary>One active persisted ITAD bundle. Display only: never an offer and never a savings figure.</summary>
 public sealed record BundleCatalogItemResponse(
