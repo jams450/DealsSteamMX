@@ -2,6 +2,7 @@ using Deals.API.HostedServices;
 using Deals.API.Interfaces;
 using Deals.API.Security;
 using Deals.API.Services;
+using Deals.API.Services.Jobs;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Services;
 using Deals.BusinessLogic.Services.Fx;
@@ -402,7 +403,56 @@ public static class ServiceCollectionExtensions
 
         services.AddScoped<IWishlistSyncService, WishlistSyncService>();
         services.AddScoped<JobRunLog>();
-        services.AddScoped<JobRunQueryService>();
+
+        // --- Admin jobs: catalog, history and manual dispatch (spec S2) ---------------------------------
+        // The catalog is a pure value built from the same configuration the hosted services read, so it can
+        // say "this job is disabled and why" without touching DI per request.
+        services.AddScoped<IJobRunLogQueryService, JobRunLogQueryService>();
+        services.AddSingleton(serviceProvider =>
+        {
+            var wishlist = serviceProvider.GetRequiredService<IOptions<WishlistOptions>>().Value;
+            var globalBundles = serviceProvider.GetRequiredService<IOptions<GlobalBundleOptions>>().Value;
+            var ggDealsBundles = serviceProvider.GetRequiredService<IOptions<GgDealsBundleOptions>>().Value;
+            var globalDeals = serviceProvider.GetRequiredService<IOptions<GlobalDealOptions>>().Value;
+            var ntfy = serviceProvider.GetRequiredService<IOptions<NtfyOptions>>().Value;
+            var fx = serviceProvider.GetRequiredService<IOptions<FxOptions>>().Value;
+            var budget = serviceProvider.GetRequiredService<IOptions<JobBudgetOptions>>().Value;
+
+            return new JobCatalogSettings(
+                wishlist.Enabled,
+                wishlist.RunAtHour,
+                wishlist.TimeZoneId,
+                globalBundles.Enabled,
+                globalBundles.RefreshHours,
+                ggDealsBundles.Enabled,
+                ggDealsBundles.RefreshHours,
+                globalDeals.Enabled,
+                globalDeals.RefreshHours,
+                ntfy.Enabled,
+                ntfy.PollSeconds,
+                fx.BaseCurrency,
+                fx.QuoteCurrency,
+                budget.RetentionDays);
+        });
+        services.AddSingleton<JobCatalog>();
+
+        // One queue and one dispatcher per process: the request only records and queues, and the hosted
+        // consumer performs the work with the same lock and the same job_runs row as the scheduled cycle.
+        services.AddSingleton<IJobRunQueue, JobRunQueue>();
+        services.AddScoped<IJobRunTracker, JobRunTracker>();
+        services.AddScoped<JobSubmissionService>();
+        services.AddScoped<JobExecutionRunner>();
+
+        // The work of each job. Both the hosted service and the dispatcher resolve these, so a manual run is
+        // never a second implementation of the same pass.
+        services.AddScoped<IJobExecutor, WishlistSyncJobExecutor>();
+        services.AddScoped<IJobExecutor, FxRateRefreshJobExecutor>();
+        services.AddScoped<IJobExecutor, GlobalBundleSyncJobExecutor>();
+        services.AddScoped<IJobExecutor, GgDealsBundleSyncJobExecutor>();
+        services.AddScoped<IJobExecutor, GlobalDealSyncJobExecutor>();
+        services.AddScoped<IJobExecutor, NtfyDealsJobExecutor>();
+        services.AddScoped<IJobExecutor, JobRunPurgeJobExecutor>();
+        services.AddHostedService<JobRunDispatchService>();
         services.AddOptions<JobBudgetOptions>()
             .Validate(options => options.RetentionDays > 0 && options.PurgeBatchSize > 0, "JobBudgets retention and purge batch must be positive.")
             .Validate(options => options.Itad.RequestsPerFiveMinutes > 0 && options.Itad.MaxBurst > 0 && options.Itad.MinDelayMilliseconds >= 0, "JobBudgets:Itad values are invalid.")

@@ -1,3 +1,4 @@
+using Deals.API.Services.Jobs;
 using Deals.BusinessLogic.Context;
 using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
@@ -146,19 +147,12 @@ public sealed class GgDealsBundleSyncJob(
         try
         {
             using var scope = scopeFactory.CreateAsyncScope();
-            var result = await scope.ServiceProvider.GetRequiredService<GgDealsBundleSyncService>()
-                .SyncAsync(cancellationToken);
-            details = new
-            {
-                result.Completed,
-                Reason = result.IncompleteReason.ToString(),
-                result.Pages,
-                result.Bundles,
-                result.Written,
-                result.Removed
-            };
+            // Same executor the admin dispatcher calls: a manual sweep is this sweep.
+            var result = await scope.ServiceProvider.GetRequiredService<GgDealsBundleSyncJobExecutor>()
+                .ExecuteAsync(JobRunOptions.Empty, cancellationToken);
+            details = result.Details;
 
-            if (!result.Completed)
+            if (!result.Succeeded)
             {
                 // The sweep deliberately preserved the previous snapshot; record it as failed so the
                 // degradation is visible in job_runs without pretending the job crashed.

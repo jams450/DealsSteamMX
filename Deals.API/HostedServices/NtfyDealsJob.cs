@@ -1,26 +1,30 @@
-using Deals.API.Services.Notifications;
+using Deals.API.Services.Jobs;
 using Deals.BusinessLogic.Context;
 using Deals.BusinessLogic.Services;
+using Deals.Models.Entities;
 using Microsoft.Extensions.Options;
 
 namespace Deals.API.HostedServices;
 
 /// <summary>
-/// Bounded polling job for the global ntfy deal alerts. Each cycle runs two read-only-over-providers
-/// phases inside one scope: the producer reads fresh persisted snapshots and fills the outbox, the
-/// dispatcher delivers due rows. It never refreshes a price provider and never calls a provider.
+/// Bounded polling job for the global ntfy deal alerts. Each cycle runs two phases inside one scope: the
+/// producer reads fresh persisted snapshots and fills the outbox, the dispatcher delivers due rows. It never
+/// refreshes a price provider and never calls a provider.
 ///
 /// Concurrency follows <see cref="WishlistSyncJob"/>: a PostgreSQL advisory lock serializes cycles across
-/// processes, so two hosts never enqueue or send the same deal at once. A cycle failure is swallowed and
-/// never takes the host down.
+/// processes, so two hosts never enqueue or send the same deal at once. The admin dispatcher takes the same
+/// key, so a manual cycle cannot overlap a polling one. A cycle failure is swallowed and never takes the
+/// host down.
+///
+/// Every cycle is recorded in <c>job_runs</c> now that the admin page reports this job. Details carry only
+/// counters: an outbox error message could embed the ntfy base URL or the topic.
 /// </summary>
 public sealed class NtfyDealsJob(
     IServiceScopeFactory scopeFactory,
     IOptions<NtfyOptions> options,
     ILogger<NtfyDealsJob> logger) : BackgroundService
 {
-    // Distinct from the wishlist sync lock (7_831_442_091) and the per-user category locks.
-    private const long LockKey = 7_831_442_092L;
+    private const long LockKey = NtfyDealsJobExecutor.AdvisoryLockKey;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -82,22 +86,52 @@ public sealed class NtfyDealsJob(
             return;
         }
 
-        await using var scope = scopeFactory.CreateAsyncScope();
-        var producer = scope.ServiceProvider.GetRequiredService<DealAlertProducer>();
-        var dispatcher = scope.ServiceProvider.GetRequiredService<DealAlertDispatcher>();
+        var jobRunId = 0L;
+        try
+        {
+            jobRunId = await lockScope.ServiceProvider.GetRequiredService<JobRunLog>()
+                .StartAsync(JobKeys.NtfyAlerts, JobRunLog.ScheduledTrigger, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            // Fail open: an unwritable log must never stop the alerts.
+            logger.LogError("[ntfy] could not record the cycle errorType={ErrorType}", exception.GetType().Name);
+        }
 
-        var produce = await producer.ProduceAsync(cancellationToken);
-        var dispatch = await dispatcher.DispatchAsync(cancellationToken);
+        var status = JobRunStatuses.Ok;
+        object? details = null;
+        try
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var result = await scope.ServiceProvider.GetRequiredService<NtfyDealsJobExecutor>()
+                .ExecuteAsync(NtfyDealsJobExecutor.ScheduledOptions, cancellationToken);
+            status = result.Succeeded ? JobRunStatuses.Ok : JobRunStatuses.Failed;
+            details = result.Details;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Shutting down: the row stays 'running', the honest record of an interrupted cycle.
+            return;
+        }
+        catch (Exception exception)
+        {
+            status = JobRunStatuses.Failed;
+            details = new { errorType = exception.GetType().Name };
+            logger.LogError("[ntfy] cycle failed errorType={ErrorType}", exception.GetType().Name);
+        }
 
-        logger.LogInformation(
-            "[ntfy] cycle candidates={Candidates} triggered={Triggered} enqueued={Enqueued} claimed={Claimed} sent={Sent} retried={Retried} failed={Failed} stale={Stale}",
-            produce.Candidates,
-            produce.Triggered,
-            produce.Enqueued,
-            dispatch.Claimed,
-            dispatch.Sent,
-            dispatch.Retried,
-            dispatch.Failed,
-            dispatch.Stale);
+        try
+        {
+            await lockScope.ServiceProvider.GetRequiredService<JobRunLog>()
+                .FinishAsync(jobRunId, status, details, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogError("[ntfy] could not record the cycle outcome errorType={ErrorType}", exception.GetType().Name);
+        }
     }
 }

@@ -1,3 +1,4 @@
+using Deals.API.Services.Jobs;
 using Deals.BusinessLogic.Context;
 using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
@@ -26,6 +27,7 @@ public sealed class GlobalBundleSyncJob(
     /// The sweep's PostgreSQL session advisory lock key, owned by <see cref="GlobalBundleSyncService"/> so
     /// the checks can assert it never collides with the wishlist (<c>7_831_442_091</c>) or ntfy
     /// (<c>7_831_442_092</c>) locks. Sharing a key would make two independent jobs skip each other.
+    /// The admin dispatcher takes the same key from the catalog, so a manual sweep waits for this one.
     /// </summary>
     private const long AdvisoryLockKey = GlobalBundleSyncService.AdvisoryLockKey;
 
@@ -143,19 +145,12 @@ public sealed class GlobalBundleSyncJob(
         try
         {
             using var scope = scopeFactory.CreateAsyncScope();
-            var result = await scope.ServiceProvider.GetRequiredService<GlobalBundleSyncService>()
-                .SyncAsync(cancellationToken);
-            details = new
-            {
-                result.Completed,
-                Reason = result.IncompleteReason.ToString(),
-                result.Pages,
-                result.Bundles,
-                result.Written,
-                result.Removed
-            };
+            // Same executor the admin dispatcher calls: a manual sweep is this sweep.
+            var result = await scope.ServiceProvider.GetRequiredService<GlobalBundleSyncJobExecutor>()
+                .ExecuteAsync(JobRunOptions.Empty, cancellationToken);
+            details = result.Details;
 
-            if (!result.Completed)
+            if (!result.Succeeded)
             {
                 // The sweep deliberately preserved the previous snapshot; record it as failed so the
                 // degradation is visible in job_runs without pretending the job crashed.

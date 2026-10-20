@@ -55,6 +55,18 @@ public static class RateLimitingExtensions
                     QueueLimit = 0
                 }));
 
+            // Una ejecución manual consume presupuesto de proveedor y puede durar minutos: seis por minuto
+            // y por administrador es el techo operativo, no una protección contra ráfagas anónimas (la ruta
+            // ya es AdminWithId). El duplicado real lo corta la cola, no este límite.
+            options.AddPolicy("jobs-dispatch", context => RateLimitPartition.GetFixedWindowLimiter(
+                GetClientKey(context),
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 6,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0
+                }));
+
             options.AddPolicy("steam-refresh", context => RateLimitPartition.GetFixedWindowLimiter(
                 GetClientIp(context),
                 _ => new FixedWindowRateLimiterOptions

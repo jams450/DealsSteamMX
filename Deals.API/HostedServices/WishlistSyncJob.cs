@@ -1,5 +1,5 @@
+using Deals.API.Services.Jobs;
 using Deals.BusinessLogic.Context;
-using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
 using Microsoft.Extensions.Options;
@@ -7,14 +7,17 @@ using Microsoft.Extensions.Options;
 namespace Deals.API.HostedServices;
 
 /// <summary>
-/// Periodic wishlist synchronization. Every cycle is isolated in its own scope, and each of the two
-/// passes swallows its own failure so a list-sync error never cancels the price refresh (and vice versa),
-/// and neither takes the host down.
+/// Periodic wishlist synchronization. Every cycle is isolated in its own scope, and the two passes the
+/// executor runs swallow their own failure so a list-sync error never cancels the price refresh (and vice
+/// versa), and neither takes the host down.
 ///
 /// Each cycle is recorded in <c>job_runs</c>. The recovery pass of a host start is the only gated one:
 /// a deploy, a crash loop or a local debug session must not replay a pass that already ran inside
 /// <see cref="WishlistOptions.MinHoursBetweenRuns"/>. The daily slot is never skipped, so the gate can
 /// never cost the day's run.
+///
+/// The work itself lives in <see cref="WishlistSyncJobExecutor"/>, which the admin dispatcher also calls:
+/// a manual run is this same pass, with the same advisory lock and the same <c>job_runs</c> row.
 /// </summary>
 public sealed class WishlistSyncJob(
     IServiceScopeFactory scopeFactory,
@@ -135,7 +138,7 @@ public sealed class WishlistSyncJob(
         var jobRunId = 0L;
         await using var lockScope = scopeFactory.CreateAsyncScope();
         var lockDb = lockScope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await using var syncLock = new PostgresAdvisoryLock(lockDb, 7_831_442_091L);
+        await using var syncLock = new PostgresAdvisoryLock(lockDb, WishlistSyncJobExecutor.AdvisoryLockKey);
         if (!await syncLock.TryAcquireAsync(cancellationToken))
         {
             logger.LogInformation("[wishlist.sync] another process owns sync lock; cycle skipped");
@@ -159,74 +162,27 @@ public sealed class WishlistSyncJob(
             logger.LogError(exception, "[wishlist.sync] could not record the run; continuing without a log entry");
         }
 
-        var outcome = new Dictionary<string, object?>(StringComparer.Ordinal);
-        var failed = false;
+        var status = JobRunStatuses.Ok;
+        object? details = null;
 
         try
         {
             using var scope = scopeFactory.CreateAsyncScope();
-            var service = scope.ServiceProvider.GetRequiredService<IWishlistSyncService>();
-
-            try
-            {
-                var list = await service.SyncListAsync(cancellationToken);
-                outcome["list"] = new
-                {
-                    list.State,
-                    list.ItemCount,
-                    list.Added,
-                    list.Updated,
-                    list.Removed,
-                    list.FetchedFromSteam,
-                    list.FetchFailed
-                };
-                logger.LogInformation(
-                    "[wishlist.sync] list state={State} items={Items} added={Added} updated={Updated} removed={Removed}",
-                    list.State,
-                    list.ItemCount,
-                    list.Added,
-                    list.Updated,
-                    list.Removed);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                // Shutting down: the run row stays 'running', which is the honest record of an interrupted pass.
-                return;
-            }
-            catch (Exception exception)
-            {
-                failed = true;
-                outcome["listError"] = exception.Message;
-                logger.LogError(exception, "[wishlist.sync] list sync failed");
-            }
-
-            try
-            {
-                var refresh = await service.RefreshWishedGamesAsync(cancellationToken);
-                outcome["refresh"] = new { refresh.Refreshed, refresh.Failed, refresh.Providers };
-                logger.LogInformation(
-                    "[wishlist.sync] refresh refreshed={Refreshed} failed={Failed} providers={@Providers}",
-                    refresh.Refreshed,
-                    refresh.Failed,
-                    refresh.Providers);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                // Shutting down.
-                return;
-            }
-            catch (Exception exception)
-            {
-                failed = true;
-                outcome["refreshError"] = exception.Message;
-                logger.LogError(exception, "[wishlist.sync] price refresh failed");
-            }
+            var result = await scope.ServiceProvider.GetRequiredService<WishlistSyncJobExecutor>()
+                .ExecuteAsync(WishlistSyncJobExecutor.ScheduledOptions, cancellationToken);
+            status = result.Succeeded ? JobRunStatuses.Ok : JobRunStatuses.Failed;
+            details = result.Details;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Shutting down: the run row stays 'running', which is the honest record of an interrupted pass.
+            return;
         }
         catch (Exception exception)
         {
             // Scope creation itself failed; the host stays up and the next cycle retries.
-            failed = true;
-            outcome["error"] = exception.Message;
+            status = JobRunStatuses.Failed;
+            details = new { error = exception.Message };
             logger.LogError(exception, "[wishlist.sync] cycle failed");
         }
 
@@ -235,8 +191,8 @@ public sealed class WishlistSyncJob(
             using var scope = scopeFactory.CreateAsyncScope();
             await scope.ServiceProvider.GetRequiredService<JobRunLog>().FinishAsync(
                 jobRunId,
-                failed ? JobRunStatuses.Failed : JobRunStatuses.Ok,
-                outcome,
+                status,
+                details,
                 cancellationToken);
         }
         catch (Exception exception)
