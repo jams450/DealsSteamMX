@@ -80,6 +80,44 @@ public sealed record WishlistItemCategoriesRequest(IReadOnlyList<long>? Category
 public sealed record WishlistCategoryBatchResponse(int Requested, int Matched, int Changed, int Ignored);
 
 /// <summary>
+/// Request of the wishlist → library acquisition (specs S1/S2/S6). The platform is the library the row belongs
+/// to; <c>acquiredStore</c> is where the copy came from and is a separate fact. <c>acquiredAt</c> is a
+/// date-only value that may be null — the feature never invents a purchase date. <c>removeFromWishlist</c>
+/// removes the wished row locally and remembers the removal so the next Steam sync does not undo it; Steam
+/// itself is never written to.
+///
+/// <para>
+/// <c>removeFromWishlist</c> is nullable here only so an omitted field is detectable: the contract makes it
+/// required, and a missing one is a 400 instead of a silent "false" that leaves the wishlist untouched.
+/// </para>
+///
+/// <para>
+/// <c>acquiredStoreType</c> (<c>official | keyshop | unknown</c>) classifies the shop and
+/// <c>acquisitionProvider</c> (<c>itad | ggdeals | direct | other</c>) says where the offer was found. Both
+/// are <b>optional</b> and additive: absent or null keeps the previous payload working and stores NULL, and
+/// neither is ever inferred from a price. Only a non-null value outside its vocabulary is a 400.
+/// </para>
+/// </summary>
+public sealed record WishlistAcquireRequest(
+    string? Platform,
+    string? AcquiredStore,
+    string? AcquisitionType,
+    DateOnly? AcquiredAt,
+    bool? RemoveFromWishlist,
+    string? AcquiredStoreType = null,
+    string? AcquisitionProvider = null);
+
+/// <summary>
+/// Result of one acquisition. <c>outcome</c> is <c>created</c> or <c>already_owned</c>; <c>dismissed</c> says
+/// whether the wished row was removed locally, and is true on a repeated submit too.
+/// </summary>
+public sealed record WishlistAcquireResponse(
+    string Outcome,
+    long UserLibraryId,
+    long GameId,
+    bool Dismissed);
+
+/// <summary>
 /// Request of the package preview: the appids the user selected in the table. Prices are never accepted
 /// from the client; the server reads its own snapshot again.
 /// </summary>

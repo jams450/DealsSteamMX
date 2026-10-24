@@ -3,6 +3,7 @@ using System.Security.Claims;
 using Deals.API.Models.Wishlist;
 using Deals.BusinessLogic.Context;
 using Deals.BusinessLogic.Interfaces;
+using Deals.BusinessLogic.Models.Library;
 using Deals.BusinessLogic.Models.Steam;
 using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
@@ -44,6 +45,7 @@ public class WishlistController : ControllerBase
 
     private readonly IRepository _repository;
     private readonly IWishlistSyncService _wishlistSyncService;
+    private readonly IWishlistAcquisitionService _wishlistAcquisitionService;
     private readonly JobRunLog _jobRunLog;
     private readonly ILogger<WishlistController> _logger;
     private readonly AppDbContext _db;
@@ -51,12 +53,14 @@ public class WishlistController : ControllerBase
     public WishlistController(
         IRepository repository,
         IWishlistSyncService wishlistSyncService,
+        IWishlistAcquisitionService wishlistAcquisitionService,
         JobRunLog jobRunLog,
         ILogger<WishlistController> logger,
         AppDbContext db)
     {
         _repository = repository;
         _wishlistSyncService = wishlistSyncService;
+        _wishlistAcquisitionService = wishlistAcquisitionService;
         _jobRunLog = jobRunLog;
         _logger = logger;
         _db = db;
@@ -265,6 +269,51 @@ public class WishlistController : ControllerBase
         _repository.GetTrack<WishlistCategoryItem>().AddRange(toAdd);
         await _repository.SaveChangesAsync(cancellationToken);
         return NoContent();
+    }
+
+    /// <summary>
+    /// Wishlist → library acquisition (specs S1/S2/S3/S6). The row is written in the library of the chosen
+    /// platform with the acquisition store, type, optional shop classification and discovery provider, and the
+    /// optional date; the duplicate check and the write are one transaction, so a repeated submit answers
+    /// <c>already_owned</c> with the same row instead of creating a second entry. <c>removeFromWishlist</c> only
+    /// touches the local wishlist: nothing is sent to Steam. The response is unchanged by S6 — the new facts
+    /// describe the write, they are not echoed back.
+    /// </summary>
+    [HttpPost("items/{appId:int}/acquire")]
+    public async Task<IActionResult> Acquire(
+        int appId,
+        [FromBody] WishlistAcquireRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (appId <= 0) throw new ArgumentException("El AppID debe ser positivo", nameof(appId));
+        if (request is null) throw new ArgumentException("El cuerpo de la solicitud es obligatorio", nameof(request));
+
+        var result = await _wishlistAcquisitionService.AcquireAsync(
+            GetUserId(),
+            appId,
+            new WishlistAcquisitionRequest(
+                request.Platform,
+                request.AcquiredStore,
+                request.AcquisitionType,
+                request.AcquiredAt,
+                // Required by the contract: an omitted value is a 400, not a silent "leave the wishlist alone".
+                request.RemoveFromWishlist
+                    ?? throw new ArgumentException("removeFromWishlist es obligatorio", nameof(request)),
+                // Optional by contract: absent/null is "not registered" and stays NULL; a non-null value
+                // outside the vocabulary is rejected by the rules, never stored.
+                request.AcquiredStoreType,
+                request.AcquisitionProvider),
+            cancellationToken);
+
+        // Null means the appid is not in this user's wishlist, has no canonical identity yet, or is a repeated
+        // submit whose dismissal left no row on the chosen platform: nothing was written either way.
+        if (result is null) return NotFound();
+
+        return Ok(new WishlistAcquireResponse(
+            result.Outcome,
+            result.UserLibraryId,
+            result.GameId,
+            result.Dismissed));
     }
 
     private async Task<IActionResult> ChangeCategoryItems(long categoryId, WishlistCategoryAssignmentRequest request, bool add, CancellationToken cancellationToken)

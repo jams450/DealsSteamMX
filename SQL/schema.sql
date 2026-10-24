@@ -41,6 +41,14 @@ CREATE INDEX idx_user_sessions_expires_at ON user_sessions(expires_at);
 -- Store library/wishlist snapshot per user. state tells wishlist from owned library entries; the
 -- unique key makes a re-import an upsert instead of a duplicate. itad_game_id links the entry back to
 -- steam_games.itad_game_id when the store title can be resolved.
+-- acquired_store / acquisition_type / acquisition_date are the wishlist → library acquisition metadata
+-- (odd/tasks/wishlist-library-acquisition.md). They are nullable as a group: NULL means "not registered",
+-- which is every imported row, so the import semantics are untouched. acquired_store is NOT the store of
+-- the row: the row lives in the library of the chosen platform (store), and this says where the copy came
+-- from. A subscription acquisition writes state = 'subscription'; the other four kinds write 'owned'.
+-- acquired_store_type / acquisition_provider (S6/L14) are optional facts of the same acquisition: whether
+-- that shop is the official storefront or a keyshop, and where the offer was discovered. Both are nullable
+-- and are never inferred from a price, so an unclassified acquisition keeps NULL instead of a guess.
 CREATE TABLE user_library (
     user_library_id BIGSERIAL PRIMARY KEY,
     user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -53,11 +61,38 @@ CREATE TABLE user_library (
     priority INT,
     added_at TIMESTAMPTZ,
     imported_at TIMESTAMPTZ NOT NULL,
+    acquired_store VARCHAR(32),
+    acquisition_type VARCHAR(16),
+    acquired_store_type VARCHAR(16),
+    acquisition_provider VARCHAR(16),
+    acquisition_date DATE,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     created_by VARCHAR(100),
     updated_by VARCHAR(100),
-    CONSTRAINT uq_user_library UNIQUE (user_id, store, store_game_id, state)
+    CONSTRAINT uq_user_library UNIQUE (user_id, store, store_game_id, state),
+    -- The vocabulary is closed: an unknown value would be a row nobody can classify later.
+    CONSTRAINT ck_user_library_acquisition_type CHECK (
+        acquisition_type IS NULL
+        OR acquisition_type IN ('purchase', 'gift', 'free', 'bundle', 'subscription')),
+    -- Written together or not at all: a type with no store (or a date with no type) is a partial write.
+    CONSTRAINT ck_user_library_acquisition_metadata CHECK (
+        (acquisition_type IS NULL AND acquired_store IS NULL AND acquisition_date IS NULL)
+        OR (acquisition_type IS NOT NULL AND acquired_store IS NOT NULL)),
+    -- The closed vocabularies of the two optional source facts, mirroring WishlistAcquiredStoreTypes and
+    -- WishlistAcquisitionProviders in C#. An unlisted value would be a row nobody can classify later.
+    CONSTRAINT ck_user_library_acquired_store_type CHECK (
+        acquired_store_type IS NULL
+        OR acquired_store_type IN ('official', 'keyshop', 'unknown')),
+    CONSTRAINT ck_user_library_acquisition_provider CHECK (
+        acquisition_provider IS NULL
+        OR acquisition_provider IN ('itad', 'ggdeals', 'direct', 'other')),
+    -- Both describe the acquisition's shop, so they cannot exist without it. Separate from
+    -- ck_user_library_acquisition_metadata on purpose: that constraint is already applied in some databases
+    -- and the source facts arrived in a later dated migration.
+    CONSTRAINT ck_user_library_acquisition_source CHECK (
+        (acquired_store_type IS NULL AND acquisition_provider IS NULL)
+        OR (acquisition_type IS NOT NULL AND acquired_store IS NOT NULL))
 );
 
 CREATE INDEX idx_user_library_user_itad ON user_library(user_id, itad_game_id);
@@ -97,6 +132,29 @@ CREATE TABLE wishlist_category_items (
 );
 CREATE INDEX idx_wishlist_category_items_user_category ON wishlist_category_items(user_id, wishlist_category_id, user_library_id);
 CREATE INDEX idx_wishlist_category_items_user_library ON wishlist_category_items(user_id, user_library_id, wishlist_category_id);
+
+-- Local wishlist removals (odd/tasks/wishlist-library-acquisition.md S3). One row per suppressed
+-- (user, store, store_game_id); the row IS the suppression, so clearing it is a delete and there is no
+-- boolean to keep in sync. The wishlist sync reads this table before writing a row, so a game the person
+-- acquired and dropped does not come back on the next Steam sync. Deliberately not a user_library.state:
+-- the sync deletes rows Steam no longer returns and would recreate a "dismissed" state on every run.
+-- No game_id on purpose: the store id is the identity (a merge cannot strand it) and nothing here takes
+-- part in canonical identity.
+CREATE TABLE wishlist_exclusions (
+    wishlist_exclusion_id BIGSERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    store VARCHAR(32) NOT NULL,
+    store_game_id VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100),
+    updated_by VARCHAR(100),
+    CONSTRAINT uq_wishlist_exclusions UNIQUE (user_id, store, store_game_id),
+    CONSTRAINT ck_wishlist_exclusions_store_nonblank CHECK (length(btrim(store)) > 0),
+    CONSTRAINT ck_wishlist_exclusions_store_game_id_nonblank CHECK (length(btrim(store_game_id)) > 0)
+);
+-- No separate index on user_id: the unique constraint's index already leads with it, so every per-user
+-- lookup is served by it and a second index would only add write cost.
 
 CREATE TABLE steam_games (
     steam_game_id SERIAL PRIMARY KEY,

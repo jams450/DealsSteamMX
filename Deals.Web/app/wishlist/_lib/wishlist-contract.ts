@@ -418,3 +418,65 @@ export function normalizeWishlistPackagePreview(input: unknown): WishlistPackage
     pricedAt: toIsoDateTime(read(input, "pricedAt"))
   };
 }
+
+// Alta desde la wishlist (L4). El tipo de adquisición es vocabulario cerrado: el backend decide con él el
+// estado de la fila (`subscription` frente a `owned`), así que un valor fuera de la lista se rechaza en el
+// cliente y en el BFF en vez de viajar y volver convertido en otra cosa.
+export const ACQUISITION_TYPES = ["purchase", "gift", "free", "bundle", "subscription"] as const;
+export type AcquisitionType = (typeof ACQUISITION_TYPES)[number];
+
+// El alta es idempotente: `already_owned` significa que la fila ya existía y solo se completó su
+// metadata. Un outcome que no esté aquí se descarta: "creado" y "ya lo tenías" no son intercambiables.
+export const ACQUISITION_OUTCOMES = ["created", "already_owned"] as const;
+export type AcquisitionOutcome = (typeof ACQUISITION_OUTCOMES)[number];
+
+// S6/L14: dos hechos manuales del alta, independientes entre sí y del precio. La primera es la clasificación de
+// la tienda (¿vende con licencia del editor o es mercado gris?); la segunda es dónde se encontró la oferta. Un
+// keyshop puede aparecer en ITAD y una tienda oficial en gg.deals, así que **nunca** se deriva una de la otra:
+// «lo vi en ITAD» no dice nada sobre la tienda. El usuario las elige y el backend las guarda tal cual.
+export const ACQUIRED_STORE_TYPES = ["official", "keyshop", "unknown"] as const;
+export type AcquiredStoreType = (typeof ACQUIRED_STORE_TYPES)[number];
+
+export const ACQUISITION_PROVIDERS = ["itad", "ggdeals", "direct", "other"] as const;
+export type AcquisitionProvider = (typeof ACQUISITION_PROVIDERS)[number];
+
+// Cuerpo exacto del contrato. `platform` (dónde se juega) y `acquiredStore` (dónde se compró) son campos
+// distintos a propósito: una clave de Amazon para Steam es una fila de Steam comprada en Amazon.
+//
+// `acquiredStoreType` y `acquisitionProvider` son aditivos y opcionales: un cliente viejo que no los manda (o que
+// manda `null`) sigue siendo válido y el servidor los guarda en null en vez de adivinar. No se rellenan aquí con
+// los defaults de la UI, porque eso afirmaría un hecho que el usuario nunca eligió.
+export type WishlistAcquireBody = {
+  readonly platform: string;
+  readonly acquiredStore: string;
+  readonly acquisitionType: AcquisitionType;
+  readonly acquiredAt: string | null;
+  readonly removeFromWishlist: boolean;
+  readonly acquiredStoreType?: AcquiredStoreType | null;
+  readonly acquisitionProvider?: AcquisitionProvider | null;
+};
+
+export type WishlistAcquireResult = {
+  readonly outcome: AcquisitionOutcome;
+  readonly userLibraryId: number;
+  readonly gameId: number;
+  readonly dismissed: boolean;
+};
+
+// La respuesta se valida campo por campo y sin coerciones: `dismissed` tiene que ser booleano de verdad
+// (el string "true" mentiría sobre lo que el servidor guardó) y los ids enteros positivos.
+export function normalizeWishlistAcquireResponse(input: unknown): WishlistAcquireResult | null {
+  if (!isRecord(input)) return null;
+
+  const outcomeText = toText(read(input, "outcome"))?.toLowerCase();
+  const outcome = ACQUISITION_OUTCOMES.find((candidate) => candidate === outcomeText) ?? null;
+  const userLibraryId = toPositiveInteger(read(input, "userLibraryId"));
+  const gameId = toPositiveInteger(read(input, "gameId"));
+  const dismissed = read(input, "dismissed");
+
+  if (outcome === null || userLibraryId === null || gameId === null || typeof dismissed !== "boolean") {
+    return null;
+  }
+
+  return { outcome, userLibraryId, gameId, dismissed };
+}

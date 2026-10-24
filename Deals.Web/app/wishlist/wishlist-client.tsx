@@ -25,12 +25,14 @@ import {
 } from "./_lib/wishlist-package";
 import { SYNC_STORES, syncStamp } from "./_lib/wishlist-sync";
 import type {
+  WishlistAcquireResult,
   WishlistItem,
   WishlistPackagePreview,
   WishlistResponse,
   WishlistState,
   WishlistSyncResponse
 } from "./_lib/wishlist-contract";
+import { AcquireDialog } from "./_components/acquire-dialog";
 
 const dateFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
 const shortDateFormatter = new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short" });
@@ -917,6 +919,7 @@ interface WishlistCardProps {
   readonly minViableDiscountPercent: number;
   readonly onRefresh: (item: WishlistItem) => void;
   readonly onEditCategories: (item: WishlistItem, trigger: HTMLButtonElement) => void;
+  readonly onAcquire: (item: WishlistItem, trigger: HTMLButtonElement) => void;
 }
 
 // Resumen siempre visible: la portada arriba y, debajo, el precio a la izquierda con sus propiedades a la
@@ -929,7 +932,8 @@ function WishlistCard({
   rowErrors,
   minViableDiscountPercent,
   onRefresh,
-  onEditCategories
+  onEditCategories,
+  onAcquire
 }: WishlistCardProps) {
   const refreshed = formatDateTime(item.refreshedAt);
   const winner = wishlistWinner(item);
@@ -996,6 +1000,9 @@ function WishlistCard({
           <Button type="button" variant="secondary" className="h-8 px-3 text-xs" onClick={(event) => onEditCategories(item, event.currentTarget)}>
             Editar categorías
           </Button>
+          <Button type="button" variant="primary" className="h-8 px-3 text-xs" onClick={(event) => onAcquire(item, event.currentTarget)}>
+            Pasar a biblioteca
+          </Button>
           <RowRefreshButton item={item} refreshing={refreshingAppId === item.appId} blocked={refreshingAppId !== null && refreshingAppId !== item.appId} onRefresh={onRefresh} />
         </div>
         <details className="w-full border-t border-default">
@@ -1025,6 +1032,7 @@ interface WishlistItemsProps {
   readonly categories: readonly import("./_lib/wishlist-contract").WishlistCategory[];
   readonly onCategoriesChanged: (created?: import("./_lib/wishlist-contract").WishlistCategory) => void | Promise<void>;
   readonly onItemCategoriesChanged: (appId: number, categoryIds: readonly number[]) => void;
+  readonly onAcquired: (item: WishlistItem, result: WishlistAcquireResult) => void;
   readonly onBatchCategoriesChanged: (categoryId: number, appIds: readonly number[], remove: boolean) => void;
   readonly onToast: (message: string, variant: "success" | "error") => void;
   readonly refreshingAppId: number | null;
@@ -1056,6 +1064,7 @@ function WishlistItems({
   categories,
   onCategoriesChanged,
   onItemCategoriesChanged,
+  onAcquired,
   onBatchCategoriesChanged,
   onToast,
   refreshingAppId,
@@ -1093,6 +1102,20 @@ function WishlistItems({
   const closeCategoryModal = useCallback(() => {
     setCategoryItem(null);
     requestAnimationFrame(() => categoryTriggerRef.current?.focus());
+  }, []);
+  // Alta desde la wishlist: el mismo patrón de foco que el modal de categorías, con la tarjeta como
+  // disparador. Si el alta quitó el juego de la wishlist, el disparador ya no está en el DOM, así que el
+  // foco vuelve a la sección de juegos en vez de perderse en el <body>.
+  const [acquireItem, setAcquireItem] = useState<WishlistItem | null>(null);
+  const acquireTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const itemsSectionRef = useRef<HTMLElement | null>(null);
+  const closeAcquireDialog = useCallback(() => {
+    setAcquireItem(null);
+    requestAnimationFrame(() => {
+      const trigger = acquireTriggerRef.current;
+      if (trigger?.isConnected) trigger.focus();
+      else itemsSectionRef.current?.focus();
+    });
   }, []);
   const [preview, setPreview] = useState<WishlistPackagePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -1226,7 +1249,7 @@ function WishlistItems({
   const pageCount = Math.max(1, Math.ceil(totalItems / pagination.pageSize));
 
   return (
-    <section className="app-card space-y-4 p-5" aria-labelledby="wishlist-items-heading">
+    <section ref={itemsSectionRef} tabIndex={-1} className="app-card space-y-4 p-5 outline-none" aria-labelledby="wishlist-items-heading">
       <div className="space-y-1">
         <p className="text-xs font-semibold uppercase tracking-widest text-muted">Juegos seguidos</p>
         <h2 id="wishlist-items-heading" className="text-xl font-semibold tracking-tight text-primary">En tu wishlist</h2>
@@ -1342,6 +1365,10 @@ function WishlistItems({
                   categoryTriggerRef.current = trigger;
                   setCategoryItem(cardItem);
                 }}
+                onAcquire={(cardItem, trigger) => {
+                  acquireTriggerRef.current = trigger;
+                  setAcquireItem(cardItem);
+                }}
               />
             ))}
           </ul>
@@ -1352,6 +1379,13 @@ function WishlistItems({
         </>
       )}
       <CategoryModal item={categoryItem} categories={categories} disabled={categoryBusy} onClose={closeCategoryModal} onSaved={onCategoriesChanged} onItemCategoriesChanged={onItemCategoriesChanged} onError={(message) => { setCategoryFeedback(message); onToast(message, "error"); }} />
+      {acquireItem ? (
+        <AcquireDialog
+          item={acquireItem}
+          onClose={closeAcquireDialog}
+          onAcquired={(result) => onAcquired(acquireItem, result)}
+        />
+      ) : null}
       {selectedAppIds.size > 0 ? (
         <div className="sticky bottom-2 z-10">
           <PackageSummaryBar
@@ -1608,6 +1642,17 @@ export function WishlistClient() {
     }
   }
 
+  // Alta desde la wishlist: el diálogo ya muestra el feedback que devolvió el servidor (alta o «ya estaba»).
+  // Aquí solo se recarga con los mismos filtros, orden y página: es un refresco, no una navegación, así que
+  // el scroll se queda donde estaba.
+  async function reloadAfterAcquire() {
+    try {
+      setWishlist(await getWishlist(wishlistQuery));
+    } catch {
+      setSyncError("El juego se añadió a tu biblioteca, pero no se pudo recargar la wishlist. Recarga la página para verlo.");
+    }
+  }
+
   // El umbral es del backend: se guarda con el PUT y el estado local solo se actualiza con el valor
   // confirmado. Si falla, el error lo muestra el control y el valor vigente no cambia.
   const updateItemCategories = useCallback((appId: number, categoryIds: readonly number[]) => {
@@ -1735,6 +1780,7 @@ export function WishlistClient() {
           items={items}
           categories={wishlist.categories}
           onToast={(message, variant) => (variant === "success" ? success(message) : toastError(message))}
+          onAcquired={() => void reloadAfterAcquire()}
           onItemCategoriesChanged={updateItemCategories}
           onBatchCategoriesChanged={updateBatchCategories}
           onCategoriesChanged={(created) => {

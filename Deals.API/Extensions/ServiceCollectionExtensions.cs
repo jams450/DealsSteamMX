@@ -402,6 +402,9 @@ public static class ServiceCollectionExtensions
         });
 
         services.AddScoped<IWishlistSyncService, WishlistSyncService>();
+        // The acquisition writes a library row, an exclusion and the canonical mapping in one transaction, so
+        // it is a scoped service with the shared identity resolver, not a controller helper.
+        services.AddScoped<IWishlistAcquisitionService, WishlistAcquisitionService>();
         services.AddScoped<JobRunLog>();
 
         // --- Admin jobs: catalog, history and manual dispatch (spec S2) ---------------------------------

@@ -1,11 +1,14 @@
 import { parseApiError } from "@/lib/bff/client-session";
 import { csrfFetch } from "@/lib/security/csrf-client";
 import {
+  normalizeWishlistAcquireResponse,
   normalizeWishlistCategory,
   normalizeWishlistPackagePreview,
   normalizeWishlistPreferencesResponse,
   normalizeWishlistResponse,
   normalizeWishlistSyncResponse,
+  type WishlistAcquireBody,
+  type WishlistAcquireResult,
   type WishlistPackagePreview,
   type WishlistResponse,
   type WishlistSyncResponse,
@@ -35,6 +38,23 @@ export async function deleteWishlistCategory(categoryId: number): Promise<void> 
 export async function replaceWishlistItemCategories(appId: number, categoryIds: readonly number[]): Promise<void> {
   const response = await csrfFetch(`/api/bff/wishlist/items/${appId}/categories`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ categoryIds }), cache: "no-store" });
   if (!response.ok) throw await parseApiError(response, "No se pudieron guardar las categorías");
+}
+
+// Alta desde la wishlist (L4). El cuerpo sale ya validado por `validateAcquisitionForm`; aquí solo se
+// envía y se normaliza la respuesta. El servidor decide el outcome y si la fila quedó descartada, y eso
+// es lo que se devuelve: el cliente nunca deduce el resultado del `removeFromWishlist` que mandó.
+export async function acquireWishlistItem(appId: number, body: WishlistAcquireBody): Promise<WishlistAcquireResult> {
+  const response = await csrfFetch(`/api/bff/wishlist/items/${appId}/acquire`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store"
+  });
+  if (!response.ok) throw await parseApiError(response, "No se pudo añadir el juego a la biblioteca");
+
+  const result = normalizeWishlistAcquireResponse(await response.json());
+  if (result === null) throw new Error("El servidor devolvió un resultado de alta inválido");
+  return result;
 }
 
 export async function assignWishlistCategory(categoryId: number, appIds: readonly number[], replace = false): Promise<void> {

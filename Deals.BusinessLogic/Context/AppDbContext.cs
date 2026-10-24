@@ -22,6 +22,7 @@ public class AppDbContext : DbContext
     public DbSet<UserLibrary> UserLibrary { get; set; } = null!;
     public DbSet<WishlistCategory> WishlistCategories { get; set; } = null!;
     public DbSet<WishlistCategoryItem> WishlistCategoryItems { get; set; } = null!;
+    public DbSet<WishlistExclusion> WishlistExclusions { get; set; } = null!;
     public DbSet<GameReview> GameReviews { get; set; } = null!;
     public DbSet<UserGameTier> UserGameTiers => Set<UserGameTier>();
     public DbSet<SteamGame> SteamGames { get; set; } = null!;
@@ -127,6 +128,15 @@ public class AppDbContext : DbContext
             entity.HasIndex(e => new { e.UserId, e.UserLibraryId, e.WishlistCategoryId });
             entity.HasOne(e => e.Category).WithMany(e => e.Items).HasForeignKey(e => new { e.UserId, e.WishlistCategoryId }).HasPrincipalKey(e => new { e.UserId, e.WishlistCategoryId }).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(e => e.UserLibrary).WithMany().HasForeignKey(e => new { e.UserId, e.UserLibraryId }).HasPrincipalKey(e => new { e.UserId, e.UserLibraryId }).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<WishlistExclusion>(entity =>
+        {
+            // The row is the suppression: one per (user, store, store_game_id), so the wishlist sync can
+            // answer "is this appid excluded?" with one indexed lookup per user.
+            entity.HasIndex(e => new { e.UserId, e.Store, e.StoreGameId }).IsUnique();
+            entity.HasIndex(e => e.UserId);
+            entity.HasOne(e => e.User).WithMany().HasForeignKey(e => e.UserId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<GameReview>(entity =>
