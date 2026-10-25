@@ -1,5 +1,6 @@
 import { parseApiError } from "@/lib/bff/client-session";
 import { csrfFetch } from "@/lib/security/csrf-client";
+import type { HeroicLibraryExport } from "@/lib/contracts/heroic-library-export";
 import {
   normalizeCoverSyncReport,
   normalizeCoverUrl,
@@ -36,6 +37,25 @@ export async function importLibrary(entries: readonly unknown[]): Promise<Librar
     cache: "no-store"
   });
   if (!response.ok) throw await parseApiError(response, "No se pudo importar la biblioteca");
+
+  const report = normalizeLibraryImportResponse(await response.json());
+  if (report === null) throw new Error("El servidor devolvió un reporte de importación inválido");
+  return report;
+}
+
+/**
+ * Sube un export de Heroic (Epic y GOG) ya validado. Es otra puerta de entrada al mismo escrito que
+ * `importLibrary`: el sobre viaja tal cual y el backend vuelve a validar cada fila antes de abrir la
+ * transacción. El reporte es exactamente el de Playnite, por eso se declara igual.
+ */
+export async function importHeroicLibrary(envelope: HeroicLibraryExport): Promise<LibraryImportReport> {
+  const response = await csrfFetch("/api/bff/library/provider-export", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(envelope),
+    cache: "no-store"
+  });
+  if (!response.ok) throw await parseApiError(response, "No se pudo importar la biblioteca de Heroic");
 
   const report = normalizeLibraryImportResponse(await response.json());
   if (report === null) throw new Error("El servidor devolvió un reporte de importación inválido");

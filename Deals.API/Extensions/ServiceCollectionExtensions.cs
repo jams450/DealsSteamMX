@@ -6,6 +6,7 @@ using Deals.API.Services.Jobs;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Services;
 using Deals.BusinessLogic.Services.Fx;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using IPasswordService = Deals.BusinessLogic.Interfaces.IPasswordService;
 using PasswordService = Deals.BusinessLogic.Services.PasswordService;
@@ -74,6 +75,12 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IGlobalDealSnapshotWriter, EfGlobalDealSnapshotWriter>();
         services.AddScoped<GlobalDealSyncService>();
         services.AddScoped<GlobalDealCatalogService>();
+        // Persisted discover catalog (spec S1/S2/S3/S6). Read-only over the same snapshots the notifier reads;
+        // the caller passes the freshness/scoring context, so the service owns no clock and no configuration.
+        // Its endpoint reads the clock through `TimeProvider`, registered here idempotently so this slice does
+        // not depend on the notification extension being composed first.
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddScoped<CatalogDealService>();
         services.AddHostedService<GlobalDealSyncJob>();
         services.AddScoped<IGameIdentityResolver, GameIdentityResolver>();
         services.AddScoped<IGameMergeService, GameMergeService>();
@@ -448,13 +455,22 @@ public static class ServiceCollectionExtensions
 
         // The work of each job. Both the hosted service and the dispatcher resolve these, so a manual run is
         // never a second implementation of the same pass.
-        services.AddScoped<IJobExecutor, WishlistSyncJobExecutor>();
-        services.AddScoped<IJobExecutor, FxRateRefreshJobExecutor>();
-        services.AddScoped<IJobExecutor, GlobalBundleSyncJobExecutor>();
-        services.AddScoped<IJobExecutor, GgDealsBundleSyncJobExecutor>();
-        services.AddScoped<IJobExecutor, GlobalDealSyncJobExecutor>();
-        services.AddScoped<IJobExecutor, NtfyDealsJobExecutor>();
-        services.AddScoped<IJobExecutor, JobRunPurgeJobExecutor>();
+        // Scheduled jobs request concrete types; manual dispatch enumerates IJobExecutor. Register both
+        // paths against the same scoped instance, otherwise scheduled runs fail before contacting providers.
+        services.AddScoped<WishlistSyncJobExecutor>();
+        services.AddScoped<IJobExecutor>(sp => sp.GetRequiredService<WishlistSyncJobExecutor>());
+        services.AddScoped<FxRateRefreshJobExecutor>();
+        services.AddScoped<IJobExecutor>(sp => sp.GetRequiredService<FxRateRefreshJobExecutor>());
+        services.AddScoped<GlobalBundleSyncJobExecutor>();
+        services.AddScoped<IJobExecutor>(sp => sp.GetRequiredService<GlobalBundleSyncJobExecutor>());
+        services.AddScoped<GgDealsBundleSyncJobExecutor>();
+        services.AddScoped<IJobExecutor>(sp => sp.GetRequiredService<GgDealsBundleSyncJobExecutor>());
+        services.AddScoped<GlobalDealSyncJobExecutor>();
+        services.AddScoped<IJobExecutor>(sp => sp.GetRequiredService<GlobalDealSyncJobExecutor>());
+        services.AddScoped<NtfyDealsJobExecutor>();
+        services.AddScoped<IJobExecutor>(sp => sp.GetRequiredService<NtfyDealsJobExecutor>());
+        services.AddScoped<JobRunPurgeJobExecutor>();
+        services.AddScoped<IJobExecutor>(sp => sp.GetRequiredService<JobRunPurgeJobExecutor>());
         services.AddHostedService<JobRunDispatchService>();
         services.AddOptions<JobBudgetOptions>()
             .Validate(options => options.RetentionDays > 0 && options.PurgeBatchSize > 0, "JobBudgets retention and purge batch must be positive.")

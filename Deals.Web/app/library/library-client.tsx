@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import Link from "next/link";
 import type { PaginationState, SortingState, VisibilityState } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ChevronDown, Columns3, FileJson, Gamepad2, GitMerge, HardDriveDownload, Search, Star, Trophy, Upload, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown, Columns3, Gamepad2, GitMerge, HardDriveDownload, Search, Star, Trophy, Upload, X } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
@@ -11,13 +11,20 @@ import { cn } from "@/lib/ui/cn";
 import { normalizeStore, storeLabel } from "@/lib/contracts/stores";
 import { REVIEW_STATUSES, reviewStatusLabel, type Review, type ReviewStatus } from "@/lib/contracts/reviews";
 import { setFavorite } from "@/lib/api/favorites";
-import { getLibrary, importLibrary, syncLibraryCovers } from "./_lib/library-api";
+import { getLibrary, importHeroicLibrary, importLibrary, syncLibraryCovers } from "./_lib/library-api";
 import { defaultReviewPlatform, ReviewDrawer, stateLabel } from "./_components/review-drawer";
 import { ManualAddDialog } from "./_components/manual-add-dialog";
 import { ConsoleImportDialog } from "./_components/console-import-dialog";
 import { CoverPicker } from "./_components/cover-picker";
 import { TitleEditor } from "./_components/title-editor";
+import { LibraryImportPanel, type LibraryImportProvider } from "./_components/library-import-panel";
+import { ImportReloadWarning, ImportSummaryDialog } from "./_components/import-summary-dialog";
 import type { LibraryCoverSyncReport } from "@/lib/contracts/library-covers";
+import {
+  HEROIC_LIBRARY_EXPORT_MAX_BYTES,
+  parseHeroicLibraryExport,
+  type HeroicLibraryExport
+} from "@/lib/contracts/heroic-library-export";
 import {
   filterLibraryGames,
   groupLibraryItems,
@@ -29,23 +36,28 @@ import {
   type LibraryStoreCount
 } from "./_lib/library-contract";
 
-function readImportFile(file: File): Promise<unknown[]> {
-  if (file.size > LIBRARY_IMPORT_MAX_BYTES) {
+// Lee un archivo JSON con el tope de bytes de su puerta: se comprueba el tamaño declarado y los bytes
+// reales, porque el tamaño del archivo puede quedarse corto si el texto trae multibyte.
+function readJsonFile(file: File, maxBytes: number): Promise<unknown> {
+  if (file.size > maxBytes) {
     return Promise.reject(new Error("El archivo supera el límite de 10 MiB."));
   }
 
   return file.text().then((text) => {
-    if (new TextEncoder().encode(text).length > LIBRARY_IMPORT_MAX_BYTES) {
+    if (new TextEncoder().encode(text).length > maxBytes) {
       throw new Error("El archivo supera el límite de 10 MiB.");
     }
 
-    let parsed: unknown;
     try {
-      parsed = JSON.parse(text);
+      return JSON.parse(text) as unknown;
     } catch {
       throw new Error("El archivo no es JSON válido.");
     }
+  });
+}
 
+function readImportFile(file: File): Promise<unknown[]> {
+  return readJsonFile(file, LIBRARY_IMPORT_MAX_BYTES).then((parsed) => {
     if (!Array.isArray(parsed)) {
       throw new Error("El JSON debe tener un arreglo en la raíz, como el export de Playnite.");
     }
@@ -54,6 +66,22 @@ function readImportFile(file: File): Promise<unknown[]> {
     }
 
     return parsed;
+  });
+}
+
+// El export de Heroic es un sobre versionado, no un arreglo: se valida entero aquí para no enviar al BFF un
+// archivo que la API va a rechazar. El mensaje dice qué revisar, porque el script no siempre falla de forma
+// obvia (una caché ausente produce un archivo, solo que sin esa tienda).
+function readHeroicExportFile(file: File): Promise<HeroicLibraryExport> {
+  return readJsonFile(file, HEROIC_LIBRARY_EXPORT_MAX_BYTES).then((parsed) => {
+    const envelope = parseHeroicLibraryExport(parsed);
+    if (envelope === null) {
+      throw new Error(
+        "El archivo no es un export de Heroic válido: revisa format \"dealext-library\", version 1, source \"heroic\", una fecha UTC y que cada juego traiga store (epic o gog), storeGameId, title e isInstalled."
+      );
+    }
+
+    return envelope;
   });
 }
 
@@ -179,38 +207,6 @@ function ReviewAction({ game, onReview }: { readonly game: LibraryGame; readonly
     >
       {label}
     </Button>
-  );
-}
-
-function ImportReport({ report }: { readonly report: LibraryImportReport }) {
-  return (
-    <div className="space-y-2" aria-live="polite">
-      <p className="text-sm font-semibold text-primary">Resultado de la importación</p>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="tabler-badge tabler-badge-info">Importados {report.imported}</span>
-        <span className="tabler-badge tabler-badge-info">Actualizados {report.updated}</span>
-        <span className={cn("tabler-badge", report.unresolved > 0 ? "tabler-badge-warning" : "tabler-badge-muted")}>
-          Sin resolver {report.unresolved}
-        </span>
-        <span className={cn("tabler-badge", report.unsupportedSource > 0 ? "tabler-badge-danger" : "tabler-badge-muted")}>
-          Fuente no soportada {report.unsupportedSource}
-        </span>
-      </div>
-      {report.byStore.length > 0 ? (
-        <ul className="flex flex-wrap items-center gap-2">
-          {report.byStore.map((entry) => (
-            <li key={entry.store} className="tabler-badge tabler-badge-muted">
-              {storeLabel(entry.store)} {entry.count}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      <p className="text-xs text-muted">
-        «Importados» y «Actualizados» cuentan las filas escritas. «Sin resolver» son entradas guardadas a las
-        que todavía no se les asignó identidad en el catálogo del comparador. «Fuente no soportada» son filas
-        con una tienda fuera del contrato del export. Reimportar no duplica ni borra nada.
-      </p>
-    </div>
   );
 }
 
@@ -966,13 +962,44 @@ export function LibraryClient() {
   const [fileError, setFileError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
-  const [report, setReport] = useState<LibraryImportReport | null>(null);
   // La ficha de reseña se abre con el juego agrupado completo: el juego (no la fila) es lo que se
   // reseña, y dentro el usuario elige la plataforma si hay más de una.
   const [drawerGame, setDrawerGame] = useState<LibraryGame | null>(null);
   const [manualAddOpen, setManualAddOpen] = useState(false);
   const [consoleImportOpen, setConsoleImportOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Encabezados de cada panel: destino del foco cuando se cierra el modal de resultado. No pueden apuntar al
+  // botón: queda deshabilitado al enviar y vuelve a estarlo al limpiarse el archivo después del éxito (y el
+  // encabezado, además, nombra la puerta que se acaba de usar).
+  const playniteHeadingRef = useRef<HTMLHeadingElement>(null);
+  // Exportación de Heroic: sobre ya validado en el navegador (`HeroicLibraryExport`), no el archivo crudo, así
+  // que el botón solo puede enviar algo que cumple el contrato. Estado aparte del de Playnite porque son dos
+  // puertas distintas: un error de una nunca borra el reporte de la otra.
+  const [heroicEntries, setHeroicEntries] = useState<HeroicLibraryExport | null>(null);
+  const [heroicFileError, setHeroicFileError] = useState<string | null>(null);
+  const [heroicImporting, setHeroicImporting] = useState(false);
+  const [heroicImportError, setHeroicImportError] = useState<string | null>(null);
+  const heroicInputRef = useRef<HTMLInputElement>(null);
+  const heroicHeadingRef = useRef<HTMLHeadingElement>(null);
+  // Aviso persistente cuando el usuario cierra el modal ANTES de que falle la recarga: no se reabre el modal
+  // (diría que la importación falló) y el fallo no se pierde. Se limpia al empezar otra importación.
+  const [importReloadFailed, setImportReloadFailed] = useState(false);
+  // Resultado de la última importación, sea de Playnite o de Heroic: las dos puertas escriben lo mismo y
+  // comparten el modal. `reloadFailed` es un aviso sobre la lista en pantalla, no un fallo de la importación.
+  const [importCompletion, setImportCompletion] = useState<{
+    readonly provider: LibraryImportProvider;
+    readonly report: LibraryImportReport;
+    readonly reloadFailed: boolean;
+  } | null>(null);
+
+  // Una importación a la vez: dos peticiones simultáneas abrirían dos resultados y dejarían la lista a medio
+  // refrescar. Mientras una corre, las dos puertas quedan deshabilitadas (archivo y botón).
+  const importProcessing = importing || heroicImporting;
+
+  // El modal es la única salida de un resultado: al cerrarlo, el foco vuelve al botón que lo abrió.
+  function closeImportSummary() {
+    setImportCompletion(null);
+  }
 
   async function loadLibrary() {
     setLoading(true);
@@ -1263,7 +1290,6 @@ export function LibraryClient() {
     const file = input.files?.[0] ?? null;
     setFileError(null);
     setImportError(null);
-    setReport(null);
     setPendingEntries(null);
     if (file === null) return;
 
@@ -1276,27 +1302,75 @@ export function LibraryClient() {
   }
 
   // Todo lo que se sube pasa otra vez por el BFF (límite real y validación de arreglo): la revisión del
-  // navegador solo evita un viaje inútil. Al terminar, la lista se recarga en el sitio, sin navegar.
+  // navegador solo evita un viaje inútil. Con el servidor OK se abre el modal compartido y después se recarga
+  // la lista en el sitio, sin navegar. Si la recarga falla, el modal sigue abierto y suma el aviso: la
+  // importación sí terminó, así que nunca se cuenta como fallo.
   async function runImport() {
-    if (pendingEntries === null || importing) return;
+    if (pendingEntries === null || importProcessing) return;
     setImporting(true);
     setImportError(null);
-    setReport(null);
+    setImportReloadFailed(false);
 
     try {
-      setReport(await importLibrary(pendingEntries));
+      const report = await importLibrary(pendingEntries);
       setPendingEntries(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
+      setImportCompletion({ provider: "playnite", report, reloadFailed: false });
 
       try {
         setLibrary(await getLibrary());
       } catch {
-        setImportError("La importación terminó, pero no se pudo recargar la lista. Recarga la página para verla.");
+        // Si el modal sigue abierto, el aviso vive dentro; si el usuario ya lo cerró, queda el persistente.
+        setImportReloadFailed(true);
+        setImportCompletion((current) => (current === null ? current : { ...current, reloadFailed: true }));
       }
     } catch (cause) {
       setImportError(cause instanceof Error ? cause.message : "No se pudo importar la biblioteca.");
     } finally {
       setImporting(false);
+    }
+  }
+
+  async function onHeroicFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0] ?? null;
+    setHeroicFileError(null);
+    setHeroicImportError(null);
+    setHeroicEntries(null);
+    if (file === null) return;
+
+    try {
+      setHeroicEntries(await readHeroicExportFile(file));
+    } catch (cause) {
+      setHeroicFileError(cause instanceof Error ? cause.message : "No se pudo leer el archivo.");
+      input.value = "";
+    }
+  }
+
+  // Misma secuencia que la importación de Playnite: enviar, abrir el modal compartido y recargar la lista en el
+  // sitio sin navegar. El sobre ya viene normalizado, así que el BFF reenvía exactamente los campos del contrato.
+  async function runHeroicImport() {
+    if (heroicEntries === null || importProcessing) return;
+    setHeroicImporting(true);
+    setHeroicImportError(null);
+    setImportReloadFailed(false);
+
+    try {
+      const report = await importHeroicLibrary(heroicEntries);
+      setHeroicEntries(null);
+      if (heroicInputRef.current) heroicInputRef.current.value = "";
+      setImportCompletion({ provider: "heroic", report, reloadFailed: false });
+
+      try {
+        setLibrary(await getLibrary());
+      } catch {
+        setImportReloadFailed(true);
+        setImportCompletion((current) => (current === null ? current : { ...current, reloadFailed: true }));
+      }
+    } catch (cause) {
+      setHeroicImportError(cause instanceof Error ? cause.message : "No se pudo importar la biblioteca de Heroic.");
+    } finally {
+      setHeroicImporting(false);
     }
   }
 
@@ -1309,61 +1383,68 @@ export function LibraryClient() {
               <span className="space-y-1">
                 <span className="block text-xs font-semibold uppercase tracking-widest text-muted">Importación</span>
                 <h2 id="library-import-heading" className="text-xl font-semibold tracking-tight text-primary">
-                  Tu biblioteca de Playnite
+                  Importa tu biblioteca
                 </h2>
                 <span className="block text-xs text-muted">
-                  Sube el archivo JSON que exporta Playnite: cada juego se guarda con su tienda, su fecha de alta y si
-                  está instalado. La importación es manual, actualiza lo que ya existe y no borra nada; el archivo no
-                  se guarda en el servidor. Expande esta sección solo si necesitas importar.
+                  Dos puertas al mismo escrito: el export de Playnite trae todas tus tiendas y el de Heroic solo Epic
+                  y GOG. En los dos casos cada juego se guarda con su tienda, su fecha de alta cuando el archivo la
+                  trae y si está instalado. Ninguna importación borra juegos ni duplica filas: lo que ya existe se
+                  actualiza, y el archivo no se guarda en el servidor. Expande esta sección solo si necesitas
+                  importar.
                 </span>
               </span>
               <ChevronDown className="mt-1 h-4 w-4 shrink-0 text-muted transition-transform group-open:rotate-180" aria-hidden="true" />
             </span>
           </summary>
 
-          <div className="space-y-3 rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4">
-          <div className="flex items-center gap-2">
-            <FileJson className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
-            <label htmlFor="library-import-file" className="text-sm font-semibold text-primary">
-              Archivo JSON del export
-            </label>
+          {/* Dos paneles del mismo peso: mismo encabezado, mismo aviso, misma fila de archivo y mismo botón.
+              Solo cambia qué tienda cubre cada archivo. */}
+          <div className="grid gap-3 md:grid-cols-2">
+            <LibraryImportPanel
+              provider="playnite"
+              inputId="library-import-file"
+              inputRef={fileInputRef}
+              headingRef={playniteHeadingRef}
+              fileError={fileError}
+              requestError={importError}
+              processing={importProcessing}
+              importing={importing}
+              ready={pendingEntries !== null}
+              status={importing ? "Enviando el archivo..." : pendingEntries ? "Archivo listo para importar." : ""}
+              onFileChange={(event) => void onFileChange(event)}
+              onImport={() => void runImport()}
+            />
+            <LibraryImportPanel
+              provider="heroic"
+              inputId="library-heroic-file"
+              inputRef={heroicInputRef}
+              headingRef={heroicHeadingRef}
+              fileError={heroicFileError}
+              requestError={heroicImportError}
+              processing={importProcessing}
+              importing={heroicImporting}
+              ready={heroicEntries !== null}
+              status={
+                heroicImporting
+                  ? "Enviando el archivo..."
+                  : heroicEntries
+                    ? `${heroicEntries.games.length} juegos listos para importar.`
+                    : ""
+              }
+              onFileChange={(event) => void onHeroicFileChange(event)}
+              onImport={() => void runHeroicImport()}
+            />
           </div>
-          <input
-            id="library-import-file"
-            ref={fileInputRef}
-            type="file"
-            accept=".json,application/json"
-            onChange={(event) => void onFileChange(event)}
-            disabled={importing}
-            aria-describedby="library-import-hint"
-            className="input-semantic block min-h-10 w-full cursor-pointer px-3 py-1.5 text-sm file:mr-3 file:cursor-pointer file:rounded-[var(--radius-sm)] file:border-0 file:bg-[var(--color-surface-3)] file:px-3 file:py-1 file:text-sm file:font-semibold file:text-primary"
-          />
-          <p id="library-import-hint" className="text-xs text-muted">
-            Solo <code>.json</code>, máximo 10 MiB y con un arreglo en la raíz, tal como lo produce Playnite. Se
-            revisa en tu navegador antes de enviarlo.
-          </p>
-          <div className="flex flex-wrap items-center gap-3">
-            <Button
-              type="button"
-              variant="secondary"
-              loading={importing}
-              loadingText="Importando..."
-              disabled={pendingEntries === null}
-              onClick={() => void runImport()}
-            >
-              <Upload className="h-4 w-4" aria-hidden="true" />
-              Importar
-            </Button>
-            <span className="text-xs text-muted" aria-live="polite">
-              {importing ? "Enviando el archivo..." : pendingEntries ? "Archivo listo para importar." : ""}
-            </span>
-          </div>
-          {fileError ? <Alert variant="danger">{fileError}</Alert> : null}
-        </div>
-
-        {importError ? <Alert variant="danger">{importError}</Alert> : null}
-        {report ? <ImportReport report={report} /> : null}
         </details>
+
+        {/* Cierre temprano del modal + fallo de recarga: el aviso no puede vivir en un modal cerrado ni
+            reabrirse, así que queda visible fuera del `<details>` (una sección colapsada no puede esconder un
+            aviso operativo) hasta la próxima importación. */}
+        {importReloadFailed && importCompletion === null ? (
+          <div className="mt-4">
+            <ImportReloadWarning />
+          </div>
+        ) : null}
       </section>
 
       <section className="app-card space-y-4 p-5" aria-labelledby="library-items-heading">
@@ -1455,6 +1536,17 @@ export function LibraryClient() {
           />
         ) : null}
 
+        {/* Modal compartido de Playnite y Heroic: se abre con la respuesta del servidor, no con la recarga. */}
+        {importCompletion !== null ? (
+          <ImportSummaryDialog
+            provider={importCompletion.provider}
+            report={importCompletion.report}
+            reloadFailed={importCompletion.reloadFailed}
+            returnFocusRef={importCompletion.provider === "heroic" ? heroicHeadingRef : playniteHeadingRef}
+            onClose={closeImportSummary}
+          />
+        ) : null}
+
         {loading ? (
           <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
             Cargando...
@@ -1468,7 +1560,8 @@ export function LibraryClient() {
           </div>
         ) : items.length === 0 ? (
           <p className="rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)] p-4 text-sm text-muted">
-            Tu biblioteca está vacía. Sube el JSON del export de Playnite para llenarla.
+            Tu biblioteca está vacía. Sube el JSON del export de Playnite, o el de Heroic si solo usas Epic y GOG,
+            para llenarla.
           </p>
         ) : (
           <div className="space-y-4">

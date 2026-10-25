@@ -12,6 +12,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 // and the run log, the executors and the clock are fakes. A thrown Exception or a non-zero exit marks the
 // suite failed.
 
+JobRegistrationChecks.Run();
 JobCatalogChecks.Run();
 JobOptionChecks.Run();
 JobQueueChecks.Run();
@@ -631,5 +632,38 @@ internal static class JobCompatibilityChecks
     private static void Check(bool value, string name)
     {
         if (!value) throw new Exception(name);
+    }
+}
+
+
+internal static class JobRegistrationChecks
+{
+    public static void Run()
+    {
+        Microsoft.Extensions.DependencyInjection.IServiceCollection services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        Deals.API.Extensions.ServiceCollectionExtensions.AddApiApplicationServices(services);
+        Type[] types = [typeof(WishlistSyncJobExecutor), typeof(FxRateRefreshJobExecutor),
+            typeof(GlobalBundleSyncJobExecutor), typeof(GgDealsBundleSyncJobExecutor),
+            typeof(GlobalDealSyncJobExecutor), typeof(NtfyDealsJobExecutor), typeof(JobRunPurgeJobExecutor)];
+        foreach (var type in types)
+        {
+            var registration = services.SingleOrDefault(item => item.ServiceType == type);
+            if (registration is null || registration.Lifetime != Microsoft.Extensions.DependencyInjection.ServiceLifetime.Scoped)
+                throw new Exception($"Scheduled executor {type.Name} must be registered as scoped concrete service");
+            // Replace dependencies with inert instances: test registration/alias identity, never execute jobs.
+            services.Remove(registration);
+            services.Add(Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Scoped(type,
+                _ => System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(type)));
+        }
+        using var provider = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services);
+        using var scope = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.CreateScope(provider);
+        var manual = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetServices<IJobExecutor>(scope.ServiceProvider).ToList();
+        if (manual.Count != types.Length) throw new Exception("Manual executor count must remain seven");
+        foreach (var type in types)
+        {
+            var scheduled = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService(scope.ServiceProvider, type);
+            if (!ReferenceEquals(scheduled, manual.Single(item => item.GetType() == type)))
+                throw new Exception($"Manual and scheduled paths must share scoped {type.Name}");
+        }
     }
 }

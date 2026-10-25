@@ -107,7 +107,12 @@ internal static class NtfyDispatcherChecks
                 DispatchBatchSize = 20,
             }),
             new FixedTimeProvider(Now),
-            NullLogger<DealAlertDispatcher>.Instance);
+            NullLogger<DealAlertDispatcher>.Instance,
+            // The operator is a required dependency now: a valid account that owns the fixture's game (100/42).
+            new FakeRecipientScope { Recipient = Recipient() });
+
+    private static DealAlertRecipient Recipient() =>
+        new(7, new HashSet<long> { 100 }, new HashSet<int> { 42 });
 
     private static async Task DeliveredAsync()
     {

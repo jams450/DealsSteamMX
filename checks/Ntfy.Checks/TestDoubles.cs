@@ -18,14 +18,50 @@ internal sealed class FakeCandidateReader : IDealAlertCandidateReader
     public List<DealAlertCandidate> Candidates { get; } = [];
     public DealAlertCandidate? Current { get; set; }
 
+    /// <summary>The operator scope the producer handed over for the payload pre-filter.</summary>
+    public DealAlertRecipient? LastRecipient { get; private set; }
+
     public Task<IReadOnlyList<DealAlertCandidate>> LoadFreshAsync(
         DateTime nowUtc,
         TimeSpan maxSnapshotAge,
         CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<DealAlertCandidate>>(Candidates);
 
+    // Deliberately unfiltered: the producer's own in-memory interest filter must hold even if a reader
+    // returns more than the scope asked for. The SQL pre-filter of the real reader is not exercised here.
+    public Task<IReadOnlyList<DealAlertCandidate>> LoadFreshForRecipientAsync(
+        DateTime nowUtc,
+        TimeSpan maxSnapshotAge,
+        DealAlertRecipient recipient,
+        CancellationToken cancellationToken)
+    {
+        LastRecipient = recipient;
+        return Task.FromResult<IReadOnlyList<DealAlertCandidate>>(Candidates);
+    }
+
     public Task<DealAlertCandidate?> FindCurrentAsync(DealAlertEvent alert, CancellationToken cancellationToken) =>
         Task.FromResult(Current);
+}
+
+/// <summary>
+/// Scripted operator scope. A null recipient is the fail-closed answer: missing id, missing account or an
+/// inactive account all look the same to the pipeline. <see cref="Script"/> scripts one answer per read, so a
+/// check can prove that the dispatcher re-reads the scope before a send instead of trusting the cycle snapshot.
+/// </summary>
+internal sealed class FakeRecipientScope : IDealAlertRecipientScope
+{
+    public DealAlertRecipient? Recipient { get; set; }
+
+    /// <summary>Answers consumed in order; once empty, <see cref="Recipient"/> is returned.</summary>
+    public Queue<DealAlertRecipient?> Script { get; } = new();
+
+    public int LoadCalls { get; private set; }
+
+    public Task<DealAlertRecipient?> LoadAsync(CancellationToken cancellationToken)
+    {
+        LoadCalls++;
+        return Task.FromResult(Script.Count > 0 ? Script.Dequeue() : Recipient);
+    }
 }
 
 /// <summary>In-memory outbox with the same dedup/transition semantics as the EF implementation.</summary>
@@ -33,6 +69,7 @@ internal sealed class FakeOutbox : IDealAlertOutbox
 {
     public List<DealAlertEvent> Rows { get; } = [];
     public int EnqueueCalls { get; private set; }
+    public int ClaimCalls { get; private set; }
     public IReadOnlyList<DealAlertDecision> LastDecisions { get; private set; } = [];
 
     public Task<int> TryEnqueueAsync(
@@ -72,13 +109,16 @@ internal sealed class FakeOutbox : IDealAlertOutbox
     public Task<IReadOnlyList<DealAlertEvent>> ClaimDueAsync(
         int batchSize,
         DateTime nowUtc,
-        CancellationToken cancellationToken) =>
-        Task.FromResult<IReadOnlyList<DealAlertEvent>>(
+        CancellationToken cancellationToken)
+    {
+        ClaimCalls++;
+        return Task.FromResult<IReadOnlyList<DealAlertEvent>>(
             Rows.Where(row => row.Status == DealAlertStatuses.Pending && row.NextAttemptAt <= nowUtc)
                 .OrderBy(row => row.NextAttemptAt)
                 .ThenBy(row => row.DealAlertEventId)
                 .Take(batchSize)
                 .ToList());
+    }
 
     public Task MarkSentAsync(DealAlertEvent alert, DateTime nowUtc, CancellationToken cancellationToken)
     {

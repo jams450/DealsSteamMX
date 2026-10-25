@@ -11,8 +11,8 @@ export default async function DiscoverPage() {
   return (
     <ProductShell
       title="Descubrir"
-      subtitle="Descuentos, mínimos y novedades de Steam México con datos ya observados."
-      meta={<span className="tabler-badge tabler-badge-info">Steam · México</span>}
+      subtitle="Menos de $50 MXN, mínimos verificados y mejores ofertas del catálogo conocido."
+      meta={<span className="tabler-badge tabler-badge-info">Multitienda · MXN</span>}
     >
       <Suspense fallback={<p className="app-card p-5 text-sm text-muted">Cargando...</p>}>
         <DiscoverClient />

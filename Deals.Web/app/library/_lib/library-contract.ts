@@ -234,12 +234,51 @@ export type LibraryStoreCount = {
   readonly count: number;
 };
 
+// Un nombre del detalle aditivo del reporte: título y tienda/plataforma tal como los guardó el servidor.
+// No lleva id ni precio: la lista sirve para reconocer el juego, nunca para volver a importarlo.
+export type LibraryImportNamedItem = {
+  readonly title: string;
+  readonly platform: string;
+};
+
+/**
+ * Tope de nombres del detalle. Con 50 o menos se pintan los títulos; con 51 o más queda solo el número.
+ * Un corte a medias se leería como "estos son todos" y por eso no se pinta ninguna lista parcial.
+ */
+export const LIBRARY_IMPORT_DETAIL_LIMIT = 50;
+
 export type LibraryImportReport = {
   readonly imported: number;
   readonly updated: number;
   readonly unresolved: number;
   readonly unsupportedSource: number;
   readonly byStore: readonly LibraryStoreCount[];
+  // Detalle aditivo (odd/tasks/library-import-summary.md L2). `null` significa "este servidor no lo mandó",
+  // que es distinto de 0: un payload viejo no puede leerse como "0 modificados".
+  readonly modified: number | null;
+  readonly deleted: number | null;
+  // `null` cuando la lista no llegó (o llegó malformada); con un número mayor al tope, el servidor manda `[]`.
+  readonly addedItems: readonly LibraryImportNamedItem[] | null;
+  readonly deletedItems: readonly LibraryImportNamedItem[] | null;
+};
+
+/** Lo que el modal necesita para pintar el resultado sin volver a decidir reglas. */
+export type LibraryImportSummary = {
+  /** `false` = payload viejo o detalle malformado: el resumen con nombres no está disponible. */
+  readonly detailed: boolean;
+  readonly imported: number;
+  readonly updated: number;
+  /** Cambios reales escritos por el servidor; `null` cuando el detalle no está disponible. */
+  readonly modified: number | null;
+  /** Eliminados reales; `null` cuando el detalle no está disponible. La importación nunca borra. */
+  readonly deleted: number | null;
+  readonly unresolved: number;
+  readonly unsupportedSource: number;
+  readonly byStore: readonly LibraryStoreCount[];
+  /** Títulos agregados, solo si son 1..50 y la lista llegó completa. */
+  readonly addedNames: readonly LibraryImportNamedItem[];
+  /** Títulos eliminados, con la misma regla de tope; con `deleted === 0` siempre queda vacío. */
+  readonly deletedNames: readonly LibraryImportNamedItem[];
 };
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -436,23 +475,68 @@ export function normalizeLibraryResponse(input: unknown): LibraryResponse | null
   return { items };
 }
 
+// Desglose por tienda. Acepta las dos formas que existen en el camino real: el mapa `{ "GOG": 2 }` que
+// manda la API y el arreglo `[{ store, count }]` que devuelve el propio BFF ya normalizado. Sin la segunda
+// forma, el reporte perdía el desglose al pasar por el BFF (`NextResponse.json(report)`), que es justo lo que
+// el modal pinta. Un valor raro se descarta: se pierde el desglose, nunca el reporte.
 function normalizeByStore(value: unknown): LibraryStoreCount[] {
-  if (!isRecord(value)) return [];
+  const counts = new Map<string, number>();
 
-  const counts: LibraryStoreCount[] = [];
-  for (const [key, rawCount] of Object.entries(value)) {
-    const store = toStore(key);
+  function add(store: string | null, rawCount: unknown) {
     const count = toNonNegativeInteger(rawCount);
-    if (store === null || count === null) continue;
-    counts.push({ store, count });
-    if (counts.length === MAX_BY_STORE_ENTRIES) break;
+    if (store === null || count === null) return;
+    counts.set(store, (counts.get(store) ?? 0) + count);
   }
 
-  return counts.sort((left, right) => right.count - left.count || left.store.localeCompare(right.store, "es-MX"));
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (!isRecord(entry)) continue;
+      add(toStore(read(entry, "store")), read(entry, "count"));
+    }
+  } else if (isRecord(value)) {
+    for (const [key, rawCount] of Object.entries(value)) add(toStore(key), rawCount);
+  }
+
+  return [...counts]
+    .map(([store, count]) => ({ store, count }))
+    .sort((left, right) => right.count - left.count || left.store.localeCompare(right.store, "es-MX"))
+    .slice(0, MAX_BY_STORE_ENTRIES);
 }
 
-// Los cuatro contadores son parte del contrato: si falta uno, el reporte entero se rechaza en vez de
+// Contador del detalle aditivo. A diferencia de `toNonNegativeInteger`, un `null` NO se convierte en 0
+// (`Number(null)` es 0): eso fabricaría "0 modificados" sobre un payload que no mandó el dato.
+function toDetailCount(value: unknown): number | null {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  }
+  return null;
+}
+
+// Lista de nombres del detalle. Devuelve `null` cuando no es un arreglo o cuando una sola fila no se puede
+// pintar: una lista con filas descartadas dejaría menos títulos que el conteo y se leería como si fueran
+// todos. Con más de 50 filas también es `null`: por encima del tope nunca se muestran nombres.
+function normalizeNamedItems(value: unknown): readonly LibraryImportNamedItem[] | null {
+  if (!Array.isArray(value)) return null;
+  if (value.length > LIBRARY_IMPORT_DETAIL_LIMIT) return null;
+
+  const items: LibraryImportNamedItem[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) return null;
+    const title = toBoundedText(read(entry, "title"), MAX_TITLE_LENGTH);
+    const platform = toStore(read(entry, "platform"));
+    if (title === null || platform === null) return null;
+    items.push({ title, platform });
+  }
+
+  return items;
+}
+
+// Los cuatro contadores legacy son parte del contrato: si falta uno, el reporte entero se rechaza en vez de
 // mostrar un 0 inventado. `byStore` es el desglose: si llega raro se pierde el desglose, no el reporte.
+// El detalle aditivo es todo o nada: si `modified` o `deleted` no son válidos, el resumen se declara no
+// disponible (nunca se mezcla un número real con un 0 supuesto).
 export function normalizeLibraryImportResponse(input: unknown): LibraryImportReport | null {
   if (!isRecord(input)) return null;
 
@@ -462,11 +546,52 @@ export function normalizeLibraryImportResponse(input: unknown): LibraryImportRep
   const unsupportedSource = toNonNegativeInteger(read(input, "unsupportedSource"));
   if (imported === null || updated === null || unresolved === null || unsupportedSource === null) return null;
 
+  const modified = toDetailCount(read(input, "modified"));
+  const deleted = toDetailCount(read(input, "deleted"));
+  const detailed = modified !== null && deleted !== null;
+
   return {
     imported,
     updated,
     unresolved,
     unsupportedSource,
-    byStore: normalizeByStore(read(input, "byStore"))
+    byStore: normalizeByStore(read(input, "byStore")),
+    modified: detailed ? modified : null,
+    deleted: detailed ? deleted : null,
+    addedItems: detailed ? normalizeNamedItems(read(input, "addedItems")) : null,
+    deletedItems: detailed ? normalizeNamedItems(read(input, "deletedItems")) : null
+  };
+}
+
+// Nombres que el modal puede pintar: la lista completa y del tamaño exacto del conteo, y solo dentro del
+// tope. Cualquier otra combinación (payload viejo, lista parcial, fila inválida, 51 o más, 0) queda en
+// "solo el número", que es lo que el usuario ve como conteo sin títulos.
+function visibleNames(
+  count: number | null,
+  items: readonly LibraryImportNamedItem[] | null
+): readonly LibraryImportNamedItem[] {
+  if (count === null || count === 0 || count > LIBRARY_IMPORT_DETAIL_LIMIT) return [];
+  if (items === null || items.length !== count) return [];
+  return items;
+}
+
+/**
+ * Proyección del reporte para el modal compartido. Es pura y no decide copy: solo dice qué se puede
+ * afirmar. `detailed === false` obliga a decir "detalle no disponible", no a pintar ceros.
+ */
+export function libraryImportSummary(report: LibraryImportReport): LibraryImportSummary {
+  const detailed = report.modified !== null && report.deleted !== null;
+
+  return {
+    detailed,
+    imported: report.imported,
+    updated: report.updated,
+    modified: detailed ? report.modified : null,
+    deleted: detailed ? report.deleted : null,
+    unresolved: report.unresolved,
+    unsupportedSource: report.unsupportedSource,
+    byStore: report.byStore,
+    addedNames: visibleNames(report.imported, report.addedItems),
+    deletedNames: visibleNames(report.deleted, report.deletedItems)
   };
 }

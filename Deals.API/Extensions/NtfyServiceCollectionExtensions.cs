@@ -7,9 +7,13 @@ using Microsoft.Extensions.Options;
 namespace Deals.API.Extensions;
 
 /// <summary>
-/// Registration for the global ntfy deal alerts. Kept in one extension so the composition root only adds
+/// Registration for the ntfy deal alerts. Kept in one extension so the composition root only adds
 /// one call: <c>builder.Services.AddApiNtfyNotifications()</c>, after
 /// <c>builder.Services.Configure&lt;NtfyOptions&gt;(builder.Configuration.GetSection(NtfyOptions.SectionName))</c>.
+///
+/// The notifier is personal: <see cref="IDealAlertRecipientScope"/> resolves the explicitly configured operator
+/// (<see cref="NtfyOptions.UserId"/>) and its favorites + wishlist interests. Producer and dispatcher receive it
+/// through the container, so both phases of a cycle fail closed when the id is missing or the account is inactive.
 ///
 /// Nothing here runs when <see cref="NtfyOptions.Enabled"/> is false: the options validation is
 /// conditional, and the hosted job returns without touching the outbox.
@@ -25,6 +29,9 @@ public static class NtfyServiceCollectionExtensions
             .Validate(
                 options => !options.Enabled || IsValidTopic(options.Topic),
                 "Ntfy:Topic must be a non-empty single path segment of at most 64 characters.")
+            .Validate(
+                options => !options.Enabled || options.UserId > 0,
+                "Ntfy:UserId must be a positive user id when notifications are enabled.")
             .Validate(
                 options => !options.Enabled || !SecretPlaceholder.IsPlaceholder(options.AuthToken),
                 "Ntfy:AuthToken must be configured with a non-placeholder value.")
@@ -61,6 +68,11 @@ public static class NtfyServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
 
         services.AddScoped<IDealAlertOutbox, EfDealAlertOutbox>();
+
+        // The notification operator and its frozen interests. Scoped like the rest of the cycle: the producer
+        // and the dispatcher of one cycle must agree on the same account, and the gate is re-evaluated every
+        // cycle instead of being cached across a wishlist or favorite change.
+        services.AddScoped<IDealAlertRecipientScope, DealAlertRecipientScope>();
 
         // One scoped reader behind both read-only interfaces, so a cycle shares a single snapshot view.
         services.AddScoped<DealAlertCandidateReader>();

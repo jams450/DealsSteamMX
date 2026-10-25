@@ -20,7 +20,9 @@ public class LibraryController : ControllerBase
     // Hard cap enforced before model binding (endpoint level, no global server config). A body that
     // exceeds it is rejected with 413 by Kestrel.
     private const int MaxBodyBytes = 10 * 1024 * 1024;
-    private const int MaxEntries = 10_000;
+    // Both import gates share one entry cap. The Heroic upload is an additional input, never a wider door
+    // than the frozen Playnite one, so the number lives in one place (asserted by the checks suite).
+    private const int MaxEntries = HeroicLibraryExportLimits.MaxEntries;
 
     // Frozen contract: the only accepted (PluginId, Source) pairs and the canonical store/state they map
     // to. A pair that is not here is reported as unsupportedSource and skipped, never guessed.
@@ -125,8 +127,80 @@ public class LibraryController : ControllerBase
             byStore[rule.Store] = byStore.GetValueOrDefault(rule.Store) + 1;
         }
 
+        var result = await ApplyLibraryEntriesAsync(accepted, cancellationToken);
+        if (!result.Found)
+        {
+            return NotFound();
+        }
+
+        return Ok(LibraryImportResponse.From(result.Summary, unsupported, byStore));
+    }
+
+    /// <summary>
+    /// Manual Heroic upload: the same library write as <c>POST /api/library/import</c>, fed by a Heroic JSON
+    /// export instead of a Playnite one (<c>odd/tasks/heroic-library-export.md</c>, S3/S4/S5). The envelope is
+    /// frozen (<see cref="HeroicLibraryExportLimits"/>) and the two stores it may name are <c>epic</c> and
+    /// <c>gog</c>; there is no plugin id and no date, so a Heroic row can never spoof a Playnite row — the
+    /// Playnite gate is untouched. The whole payload is validated before the shared transaction opens: one
+    /// malformed row rejects the file with a 400 and writes nothing. State is forced to <c>owned</c>, the
+    /// report is built by the same loop as the Playnite one, and like that import there is no prune: a
+    /// reimport only upserts, so <c>deleted</c> is always 0.
+    /// </summary>
+    [HttpPost("provider-export")]
+    [RequestSizeLimit(MaxBodyBytes)]
+    public async Task<IActionResult> ImportProviderExport(
+        [FromBody] HeroicLibraryExportEnvelope? export,
+        CancellationToken cancellationToken)
+    {
+        var validation = HeroicLibraryExportRules.Validate(
+            export?.Format,
+            export?.Version,
+            export?.Source,
+            export?.ExportedAt,
+            export?.Games
+                ?.Select(entry => entry is null
+                    ? null
+                    : new HeroicLibraryEntryInput(entry.Store, entry.StoreGameId, entry.Title, entry.IsInstalled))
+                .ToList());
+
+        // The envelope carries no date: `AddedAt` stays null here and the shared loop keeps whatever the row
+        // already stored, so a Heroic reupload never erases the date a Playnite import wrote.
+        var accepted = validation.Rows
+            .Select(row => new AcceptedEntry(row.Store, row.StoreGameId, row.Title, row.State, row.IsInstalled, null))
+            .ToList();
+
+        var result = await ApplyLibraryEntriesAsync(accepted, cancellationToken);
+        if (!result.Found)
+        {
+            return NotFound();
+        }
+
+        // Same report shape as the Playnite import, from the same accumulator: nothing is ever skipped here
+        // (one bad row rejected the whole payload above), so `unresolved` and `unsupportedSource` are always
+        // zero and the modified count and added list come out of the shared loop.
+        return Ok(LibraryImportResponse.From(result.Summary, 0, validation.ByStore));
+    }
+
+    /// <summary>
+    /// The one write path both library imports share: a single transaction that takes the global identity
+    /// lock, upserts every accepted row in place and never prunes. Their differences stay in their own gates
+    /// (plugin ids vs stores, required vs absent date); what they must agree on — identity from the exact
+    /// <c>(store, store_game_id)</c> pair, duplicates keeping the first, no row deleted — lives here once.
+    /// <para>
+    /// The returned <see cref="LibraryImportSummary"/> is accumulated in this loop, before the write: a match
+    /// always counts as legacy <c>updated</c>, and as <c>modified</c> only when the state about to be assigned
+    /// differs from the stored one in a business column (<see cref="LibraryImportChanges"/>), so a reimport
+    /// that changes nothing reports 0 even though <c>imported_at</c> is rewritten. No row is ever removed, so
+    /// the summary's deleted count is a constant 0 and not the result of a prune.
+    /// </para>
+    /// Returns <c>Found: false</c> when the caller no longer exists, which both endpoints answer with 404.
+    /// </summary>
+    private async Task<(bool Found, LibraryImportSummary Summary)> ApplyLibraryEntriesAsync(
+        IReadOnlyList<AcceptedEntry> accepted,
+        CancellationToken cancellationToken)
+    {
         var userId = GetUserId();
-        var result = await _repository.ExecuteInTransactionAsync(async () =>
+        return await _repository.ExecuteInTransactionAsync(async () =>
         {
             // Serializa la creación/reasignación de identidad canónica contra la fusión manual de juegos:
             // el resolver inserta game_external_ids y borra filas games huérfanas, así que una fusión
@@ -134,11 +208,12 @@ public class LibraryController : ControllerBase
             // concurrentes multi-usuario, fragmentar por usuario (la creación de identidad seguiría necesitando el global).
             await GameIdentityLock.AcquireAsync(_repository);
 
+            var summary = new LibraryImportSummary();
             var userExists = await _repository.Get<User>()
                 .AnyAsync(candidate => candidate.UserId == userId, cancellationToken);
             if (!userExists)
             {
-                return (Found: false, Imported: 0, Updated: 0);
+                return (Found: false, Summary: summary);
             }
 
             // Tracked: every matching row is upserted in place. No prune: entries missing from the import
@@ -149,16 +224,14 @@ public class LibraryController : ControllerBase
             var byKey = existing.ToDictionary(
                 row => (row.Store, row.StoreGameId, row.State));
 
-            var imported = 0;
-            var updated = 0;
             var now = DateTime.UtcNow;
-            var seen = new HashSet<(string Store, string StoreGameId, string State)>();
 
             foreach (var item in accepted)
             {
                 var key = (item.Store, item.StoreGameId, item.State);
-                // Duplicated entries inside one payload keep the first one.
-                if (!seen.Add(key))
+                // Duplicated entries inside one payload keep the first one, and the report counts that key
+                // once because the accumulator owns the seen set.
+                if (!summary.TryBegin(item.Store, item.StoreGameId, item.State))
                 {
                     continue;
                 }
@@ -174,13 +247,25 @@ public class LibraryController : ControllerBase
                 if (byKey.TryGetValue(key, out var row))
                 {
                     // ItadGameId and Priority are preserved on purpose: they belong to other passes.
-                    row.Title = item.Title;
-                    row.IsInstalled = item.IsInstalled;
-                    row.AddedAt = item.AddedAt;
+                    // The merged state is both classified and written, so the report cannot describe a write
+                    // that did not happen: a Heroic payload without a date keeps the stored AddedAt instead
+                    // of erasing it, and ImportedAt is refreshed without ever counting as a modification
+                    // (the merge rule and the excluded column both live in LibraryImportChanges, not here).
+                    var stored = new LibraryImportRowState(row.Title, row.IsInstalled, row.AddedAt, row.GameId);
+                    var merged = LibraryImportChanges.Merge(
+                        stored,
+                        item.Title,
+                        item.IsInstalled,
+                        item.AddedAt,
+                        game.GameId);
+
+                    row.Title = merged.Title;
+                    row.IsInstalled = merged.IsInstalled;
+                    row.AddedAt = merged.AddedAt;
                     row.ImportedAt = now;
                     // A re-import (entries imported before the canonical catalog) still gets its game id.
-                    row.GameId = game.GameId;
-                    updated++;
+                    row.GameId = merged.GameId;
+                    summary.CountUpdated(stored, merged);
                     continue;
                 }
 
@@ -196,19 +281,12 @@ public class LibraryController : ControllerBase
                     ImportedAt = now,
                     GameId = game.GameId
                 });
-                imported++;
+                summary.CountAdded(item.Title, item.Store);
             }
 
             await _repository.SaveChangesAsync();
-            return (Found: true, Imported: imported, Updated: updated);
+            return (Found: true, Summary: summary);
         });
-
-        if (!result.Found)
-        {
-            return NotFound();
-        }
-
-        return Ok(new LibraryImportResponse(result.Imported, result.Updated, 0, unsupported, byStore));
     }
 
     /// <summary>

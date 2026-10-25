@@ -15,13 +15,17 @@ independientes es cierta:
 | Regla | Condición exacta | Constante |
 |---|---|---|
 | Nota | `score > 7` (estricto; 7.0 **no** dispara) | `DealAlertPolicy.ScoreTriggerThreshold` |
-| Precio | `mxn_current_price_minor < 2000` (estricto; 2000 = MX$20.00 **no** dispara) | `DealAlertPolicy.CheapPriceThresholdMinor` |
+| Precio | `mxn_current_price_minor < 5000` (estricto; 5000 = MX$50.00 **no** dispara) | `DealAlertPolicy.CheapPriceThresholdMinor` |
 | Mínimo histórico | mínimo de proveedor verificado (ver §2) | `DealAlertPolicy.HasVerifiedHistoryLow` |
 
 El `score` es el puerto exacto de la fórmula 0-10 de la wishlist
 (`Deals.Web/app/wishlist/_lib/wishlist-metrics.ts`): 7 puntos por la escala de descuento contra el umbral
 viable y 3 por cercanía al mínimo histórico. El umbral viable por defecto es 50 y es configurable
 (`Ntfy__MinViableDiscountPercent`). La comprobación de consistencia vive en `checks/Ntfy.Checks`.
+
+Las tres reglas son también las tres pestañas de `/discover` (`under50`, `historic`, `score`), leídas de
+los mismos snapshots: un aviso y una tarjeta no pueden discrepar sobre qué es «menos de 50», qué es un
+mínimo verificado ni qué nota supera el umbral.
 
 La nota **no** es calidad del juego: es calidad del precio.
 
@@ -45,6 +49,7 @@ Nunca cuenta como evidencia:
 
 No son comparables y no disparan:
 
+- región distinta de `mx` exacto en minúsculas, ausente o con espacios: convertir el importe a MXN no convierte una oferta extranjera en una oferta de México;
 - precio MXN nulo, cero, negativo o por encima de `MaxPriceMinor` (dato corrupto);
 - `pricing_type = 'unconverted'` (un monto sin convertir no es un precio MXN);
 - filas de **Epic** gratis o con precio original dudoso (`S5: epic pendiente`);
@@ -107,7 +112,7 @@ dotnet run --project checks/Ntfy.Checks
 dotnet build Deals.sln
 ```
 
-`checks/Ntfy.Checks` cubre: la fórmula previa de la wishlist, los límites estrictos 2000/7, las tres reglas
+`checks/Ntfy.Checks` cubre: la fórmula previa de la wishlist, los límites estrictos 5000/7, las tres reglas
 OR, evidencia de mínimo histórico (moneda/fuente), entradas inválidas/stale/Epic, identidad de dedup, el
 contrato de "rechazado no toca el outbox" y el sender HTTP con handler falso. **No envía mensajes reales.**
 
@@ -128,5 +133,5 @@ contrato de "rechazado no toca el outbox" y el sender HTTP con handler falso. **
 |---|---|
 | S2 | Reglas de nota/precio/mínimo + job + sender |
 | S3 | `https://ntfy.amitzi.xyz/`, topic `Deals`, `Bearer` por configuración |
-| S4 | Fórmula exacta 0-10 + combinación OR `nota o 20 o mínimo` |
+| S4 | Fórmula exacta 0-10 + combinación OR `nota o 50 o mínimo` |
 | S5 | Epic gratis/dudoso excluido |

@@ -19,6 +19,7 @@ internal static class NtfyPolicyChecks
         OrRules();
         HistoryLowEvidence();
         InvalidStaleAndCurrency();
+        RegionGate();
         DedupIdentity();
         MessagesAndBatch();
         ProducerRejectsBeforeEnqueue();
@@ -54,7 +55,8 @@ internal static class NtfyPolicyChecks
         string? mxnLowCurrency = null,
         string? dealUrl = null,
         int? steamGameId = 42,
-        long? gameId = 100) =>
+        long? gameId = 100,
+        string region = "mx") =>
         new(
             gameId,
             steamGameId,
@@ -64,7 +66,7 @@ internal static class NtfyPolicyChecks
             shop,
             classification,
             pricing,
-            "mx",
+            region,
             originalCurrency,
             originalPrice ?? price,
             price,
@@ -103,26 +105,28 @@ internal static class NtfyPolicyChecks
         Check(DealAlertPolicy.DealScore(10_000, "MXN", null, null, null, 50) is null, "score missing best null");
     }
 
-    /// <summary>Strict &lt; 2000 minor and strict &gt; 7 boundaries.</summary>
+    /// <summary>Strict &lt; 5000 minor (the shared "under 50" rule) and strict &gt; 7 boundaries.</summary>
     private static void ThresholdBoundaries()
     {
-        // 98% discount gives exactly 7.0, so price is the only possible reason. 2000 does not fire.
-        var atBoundary = DealAlertPolicy.Evaluate(Candidate(price: 2_000, basePrice: 100_000), Context);
-        Check(!atBoundary.Triggered, "price exactly 2000 does not fire");
+        CheckEqual(5_000, DealAlertPolicy.CheapPriceThresholdMinor, "cheap threshold is the shared 5000 minor");
+
+        // 95% discount gives exactly 7.0, so a 5000 price is the only possible reason. 5000 does not fire.
+        var atBoundary = DealAlertPolicy.Evaluate(Candidate(price: 5_000, basePrice: 100_000), Context);
+        Check(!atBoundary.Triggered, "price exactly 5000 does not fire");
         CheckEqual(7d, atBoundary.Score, "price boundary score is 7.0");
 
-        var belowBoundary = DealAlertPolicy.Evaluate(Candidate(price: 1_999, basePrice: 100_000), Context);
-        Check(belowBoundary.Triggered, "price 1999 fires");
-        Check(belowBoundary.Reasons.SequenceEqual(new[] { DealAlertReasons.Price }), "price 1999 fires by price only");
+        var belowBoundary = DealAlertPolicy.Evaluate(Candidate(price: 4_999, basePrice: 100_000), Context);
+        Check(belowBoundary.Triggered, "price 4999 fires");
+        Check(belowBoundary.Reasons.SequenceEqual(new[] { DealAlertReasons.Price }), "price 4999 fires by price only");
 
-        // 90% discount == 7.0 exactly; a history bonus lifts it over 7.
-        var scoreAtBoundary = DealAlertPolicy.Evaluate(Candidate(price: 2_000, basePrice: 20_000), Context);
-        Check(!scoreAtBoundary.Triggered, "score exactly 7.0 does not fire");
-        CheckEqual(7d, scoreAtBoundary.Score, "score boundary is 7.0");
+        // 75% discount -> 4.4; nothing fires.
+        var scoreAtBoundary = DealAlertPolicy.Evaluate(Candidate(price: 5_000, basePrice: 20_000), Context);
+        Check(!scoreAtBoundary.Triggered, "score 4.4 does not fire");
+        CheckEqual(4.4d, scoreAtBoundary.Score, "score below the boundary");
 
-        // Same price, history low 1000 -> lowFactor 0.5 -> 8.5.
+        // Same 5000 price, a 95% discount plus a history low of 2500 -> 7 + 1.5 = 8.5.
         var scoreAbove = DealAlertPolicy.Evaluate(
-            Candidate(price: 2_000, basePrice: 20_000, mxnLow: 1_000, mxnLowCurrency: "MXN"), Context);
+            Candidate(price: 5_000, basePrice: 100_000, mxnLow: 2_500, mxnLowCurrency: "MXN"), Context);
         Check(scoreAbove.Triggered, "score 8.5 fires");
         Check(scoreAbove.Score > 7d, "score strictly greater than 7");
         Check(scoreAbove.Reasons.Contains(DealAlertReasons.Score), "score reason present");
@@ -133,13 +137,15 @@ internal static class NtfyPolicyChecks
         var priceOnly = DealAlertPolicy.Evaluate(Candidate(price: 1_999, basePrice: 100_000), Context);
         Check(priceOnly.Reasons.SequenceEqual(new[] { DealAlertReasons.Price }), "OR: cheap price alone");
 
+        // 5000 is the cheap boundary, so this fires on the score alone (95% discount + half of the low).
         var scoreOnly = DealAlertPolicy.Evaluate(
-            Candidate(price: 2_000, basePrice: 20_000, mxnLow: 1_000, mxnLowCurrency: "MXN"), Context);
+            Candidate(price: 5_000, basePrice: 100_000, mxnLow: 2_500, mxnLowCurrency: "MXN"), Context);
         Check(scoreOnly.Reasons.Contains(DealAlertReasons.Score) && scoreOnly.Reasons.Count == 1, "OR: score alone");
 
+        // 60.00 MXN is not cheap, so only the verified history low can fire the third rule.
         var historyOnly = DealAlertPolicy.Evaluate(
-            Candidate(price: 3_000, basePrice: 10_000, historyLow: 3_000, historyCurrency: "MXN",
-                mxnLow: 3_000, mxnLowCurrency: "MXN"),
+            Candidate(price: 6_000, basePrice: 20_000, historyLow: 6_000, historyCurrency: "MXN",
+                mxnLow: 6_000, mxnLowCurrency: "MXN"),
             Context);
         Check(historyOnly.Triggered, "OR: history low alone fires");
         CheckEqual(6.5d, historyOnly.Score, "OR: history-only score stays under 7");
@@ -206,6 +212,67 @@ internal static class NtfyPolicyChecks
             "non-MXN base with no other rule does not fire");
     }
 
+    /// <summary>
+    /// The MX region gate: the notifier accepts exactly the rows the catalog's SQL accepts — <c>region = 'mx'</c>,
+    /// lowercase and exact (spec S2/S3 parity). The catalog is MX-only, so a foreign row that an FX pass
+    /// converted under 50 MXN, that reports a verified provider history low, or that would score above 7 is not
+    /// this user's deal: the discover tab would never show it, so the notifier must never push it.
+    ///
+    /// Every rejection below is preceded by the same row with <c>mx</c>, which fires: the negative controls are
+    /// not false negatives of an unrelated rule.
+    /// </summary>
+    private static void RegionGate()
+    {
+        // Positive controls (mx): the three rules each fire on their own.
+        var mxCheap = DealAlertPolicy.Evaluate(Candidate(price: 1_999), Context);
+        Check(mxCheap.Triggered && mxCheap.Reasons.Contains(DealAlertReasons.Price), "region mx: cheap row fires");
+
+        var mxHistory = DealAlertPolicy.Evaluate(
+            Candidate(price: 6_000, originalPrice: 6_000, historyLow: 6_000, historyCurrency: "MXN"), Context);
+        Check(mxHistory.Triggered && mxHistory.Reasons.Contains(DealAlertReasons.HistoryLow),
+            "region mx: verified history-low row fires");
+
+        var mxScored = DealAlertPolicy.Evaluate(
+            Candidate(price: 5_000, basePrice: 100_000, mxnLow: 2_500, mxnLowCurrency: "MXN"), Context);
+        Check(mxScored.Triggered && mxScored.Reasons.Contains(DealAlertReasons.Score), "region mx: scored row fires");
+
+        Check(DealAlertPolicy.IsComparable(Candidate(price: 1_999), Context), "region mx: comparable");
+
+        // The region convention is the catalog's: exact and lowercase. Nothing is trimmed or case-folded.
+        foreach (var region in new[] { "us", "MX", "Mx", "mexico", "m", " mx", "mx ", "", " " })
+        {
+            Check(!DealAlertPolicy.IsComparable(Candidate(price: 1_999, region: region), Context),
+                $"region '{region}': not comparable");
+
+            // A converted (FX estimate) amount under 50 MXN is still not an MX price when the row is foreign.
+            var cheapForeign = DealAlertPolicy.Evaluate(
+                Candidate(price: 1_999, region: region, pricing: "fx_estimate", originalCurrency: "USD",
+                    originalPrice: 99),
+                Context);
+            Check(!cheapForeign.Triggered, $"region '{region}': converted MXN < 50 never fires");
+            Check(cheapForeign.Reasons.Count == 0, $"region '{region}': converted MXN < 50 carries no reason");
+            Check(cheapForeign.Message is null, $"region '{region}': converted MXN < 50 has no message");
+
+            // Neither can a verified provider history low resurrect it.
+            var historyForeign = DealAlertPolicy.Evaluate(
+                Candidate(price: 6_000, region: region, originalPrice: 6_000, historyLow: 6_000,
+                    historyCurrency: "MXN"),
+                Context);
+            Check(!historyForeign.Triggered, $"region '{region}': history low never fires on a foreign row");
+
+            // Nor a score above 7 (95% off the base plus half of the provider low = 8.5).
+            var scoredForeign = DealAlertPolicy.Evaluate(
+                Candidate(price: 5_000, region: region, basePrice: 100_000, mxnLow: 2_500, mxnLowCurrency: "MXN"),
+                Context);
+            Check(!scoredForeign.Triggered, $"region '{region}': score 8.5 never fires on a foreign row");
+            Check(scoredForeign.Score is null, $"region '{region}': a rejected row is not even scored");
+        }
+
+        // A missing region is corrupt data, not an implicit MX price.
+        Check(!DealAlertPolicy.IsComparable(Candidate(price: 1_999) with { Region = null! }, Context),
+            "missing region rejected");
+    }
+
     private static void DedupIdentity()
     {
         var a = Candidate(price: 1_500, offerKey: "abc");
@@ -229,6 +296,7 @@ internal static class NtfyPolicyChecks
         Check(decision.Message!.Title.Contains("Floppy Knights", StringComparison.Ordinal), "title has game name");
         Check(decision.Message.Title.Contains("MX$15.00", StringComparison.Ordinal), "title has price");
         Check(decision.Message.Body.Contains("Steam", StringComparison.Ordinal), "body has shop");
+        Check(decision.Message.Body.Contains("< MX$50", StringComparison.Ordinal), "body states the shared 50 threshold");
         CheckEqual("https://store.steampowered.com/app/1/", decision.Message.ClickUrl, "click url preserved");
 
         var rejected = DealAlertPolicy.Evaluate(Candidate(price: 5_000), Context);
@@ -255,7 +323,7 @@ internal static class NtfyPolicyChecks
         };
         var outbox = new FakeOutbox();
         var clock = new FixedTimeProvider(Now);
-        var producer = new DealAlertProducer(reader, outbox, Options(50), clock);
+        var producer = new DealAlertProducer(reader, outbox, Options(50), clock, RecipientScope());
 
         var report = producer.ProduceAsync(CancellationToken.None).GetAwaiter().GetResult();
 
@@ -269,12 +337,19 @@ internal static class NtfyPolicyChecks
         // All-rejected batch must still not mutate anything: TryEnqueueAsync receives an empty list.
         var readerEmpty = new FakeCandidateReader { Candidates = { Candidate(price: 9_999) } };
         var outboxEmpty = new FakeOutbox();
-        var producerEmpty = new DealAlertProducer(readerEmpty, outboxEmpty, Options(50), new FixedTimeProvider(Now));
+        var producerEmpty = new DealAlertProducer(readerEmpty, outboxEmpty, Options(50), new FixedTimeProvider(Now), RecipientScope());
         var emptyReport = producerEmpty.ProduceAsync(CancellationToken.None).GetAwaiter().GetResult();
         CheckEqual(0, emptyReport.Triggered, "all-rejected batch triggers nothing");
         CheckEqual(0, outboxEmpty.LastDecisions.Count, "all-rejected batch enqueues nothing");
         CheckEqual(0, outboxEmpty.Rows.Count, "all-rejected batch leaves the outbox untouched");
     }
+
+    /// <summary>The operator the producer requires; every fixture candidate belongs to game 100 / appid 42.</summary>
+    private static FakeRecipientScope RecipientScope() =>
+        new()
+        {
+            Recipient = new DealAlertRecipient(7, new HashSet<long> { 100 }, new HashSet<int> { 42 }),
+        };
 
     private static Microsoft.Extensions.Options.IOptions<Deals.API.NtfyOptions> Options(int threshold) =>
         Microsoft.Extensions.Options.Options.Create(new Deals.API.NtfyOptions

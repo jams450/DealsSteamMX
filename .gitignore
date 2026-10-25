@@ -92,6 +92,9 @@ skills-lock.json
 
 # Personal Playnite library export: titles and store ownership, not a shared fixture.
 docs/dealext-library.json
+# Personal Heroic (Epic/GOG) export: same reason, produced by scripts/export-heroic-library.mjs.
+dealext-heroic-library.json
+dealext-heroic-diagnostic.json
 
 Deals.API/appsettings.json
 Templates/1777396645352.pdf

@@ -35,7 +35,7 @@ when it was last observed.
 |---|---|---|---|
 | `/` | `app/page.tsx` | Product | Home: search as the central CTA, how-it-works, price source note |
 | `/search` | `app/search/page.tsx`, `app/search/search-client.tsx` | Product | Text search; `?q=` pre-runs the query; local suggestions while typing (≥2 chars) |
-| `/discover` | `app/discover/{page,discover-client}.tsx`, `app/discover/_lib/discover-api.ts` | Product | Discovery: three read-only lists over persisted `steam_games` rows (discount / historic / recent), capsule cards linking to `/games/[steamAppId]` |
+| `/discover` | `app/discover/{page,discover-client}.tsx`, `app/discover/_components/deal-card.tsx`, `app/discover/_lib/discover-api.ts` | Product | Discovery: the known catalog under three independent rules as accessible tabs with counters (`under50` / `historic` / `score`), one qualifying offer per game card, bounded paging; Steam-less games link to the offer's own external URL |
 | `/games/[steamAppId]` | `app/games/[steamAppId]/{page,game-client}.tsx` | Product | Offer detail: FX reference strip above the card, cover + official Steam price + sources historical minimum + local Steam minimum + the page's single refresh control, per-provider best-price cards with each price's observation date, CTA footer, ownership line (`ownership`), Steam source table, multi-store offers grouped by provider, bundles, reviews |
 | `/wishlist` | `app/wishlist/{page,wishlist-client}.tsx`, `app/wishlist/_lib/*` | Product | Steam wishlist: four explicit states, "Sincronizar ahora" with its report, capsule cards (base, historical low, MXN official/keyshop minimums, per-band discount % and a hybrid 0-10 deal score driven by a backend viable-minimum threshold) with a per-row refresh; a multi-game selection (by AppID) with a sticky bar showing the package total under two alternative scenarios (official / keys) |
 | `/bundles` | `app/bundles/{page,bundles-client}.tsx`, `app/bundles/_lib/bundles-api.ts` | Product | Bundle catalog: authenticated, paginated, read-only list of the persisted active ITAD bundles (per-game source `itad` and global sweep `itad_global`, deduplicated by `bundle_key`) with their linked games, the equal-share estimate per tier, a USD/MXN reading of each tier (conversions marked ≈) and a clickable ITAD details URL, plus the current user's exact wishlist matches marked in accent; never a live provider call, never an offer |
@@ -60,15 +60,22 @@ when it was last observed.
   offers **by provider** (`source` → ITAD / gg.deals), never by store type, so ITAD's official stores
   and gg.deals' retail + keyshop aggregate are two independent comparisons. gg.deals' free tier returns
   a single aggregate price per bucket and never a seller identity, so copy never names a keyshop and
-  never claims "all stores". `/discover` reads the same persisted rows through
-  `GET /api/steam/discover` (BFF `GET /api/bff/steam/discover`): three read-only lists
-  (`discount | historic | recent`) projected to card fields only, never a live store call.
-  Discover cards select the lowest persisted comparable offer through canonical `game_id`
-  (`mxnCurrentPriceMinor` plus `pricingType != unconverted`), including keyshop aggregates. If no
-  such offer exists, the card explicitly falls back to Steam. `Mejor precio` is primary and
-  `Precio base Steam` is the list/base reference; a percentage renders only when that base is MXN
-  and supports an honest comparison. `historic` keeps its narrower Steam-local-low definition and
-  `recent` remains ordered only by Steam's observation timestamp.
+  never claims "all stores". `/discover` reads the persisted catalog through `GET /api/catalogdeals`
+  (BFF `GET /api/bff/discover`): one page of ONE category plus the three tab counters in the same
+  envelope, projected to card fields only, never a live store call and never a provider sweep.
+  The categories are the three independent rules of the notification policy — `under50` (strictly
+  below MX$50.00), `historic` (the provider reported, in the offer's own currency, a low that the
+  current original price matches) and `score` (the existing wishlist deal score strictly above 7).
+  They are not a funnel: `historic` and `score` are not capped by the cheap threshold, and the old
+  `discount` / `recent` lists — and the Steam-local minimum that stood in for history — no longer
+  exist on this page. Each card shows the ONE offer that qualified in that category, with its own
+  shop label, price, classification and URL (never Steam's price under another store's name), and
+  the lowest price is not claimed as "the best": the tab's rule is the only claim. `steamAppId` is
+  nullable, so a game Steam does not sell (Epic, Microsoft, keyshop-only) links to the offer's own
+  https URL and never to an invented `/games/<appId>` route or to the Steam front page.
+  Prices in MXN come from the same FX pass as everywhere else: a `fx_estimate` renders with `≈` and
+  an «Estimado» badge, while a regional price is exact. A converted figure competes on equal terms
+  with a regional one — the label, not the tone, says where it came from.
   Each provider returns offers in its own currency (`original*` fields, the source of truth); the
   MXN columns (`mxn*`) are derived from the day's FX rate (Banxico FIX, Frankfurter fallback),
   nullable, and always presented as approximate. `historyLowAllMinor`/`historyLowCurrency` normalize
@@ -157,7 +164,12 @@ when it was last observed.
 - **Library reality:** `/library` is fed by the API's `GET /api/library` (BFF `GET /api/bff/library`) and
   `POST /api/library/import` (BFF `POST /api/bff/library/import`), both `AdminWithId` on the API. The list is
   the `user_library` snapshot imported by hand from a Playnite JSON export: the read answers `{ items: [...] }`
-  and the import answers `imported`, `updated`, `unresolved`, `unsupportedSource` and `byStore`. It is not a
+  and the import answers `imported`, `updated`, `unresolved`, `unsupportedSource` and `byStore`, plus the
+  **additive** detail `modified`, `deleted`, `addedItems: [{ title, platform }]` and `deletedItems`
+  (odd/tasks/library-import-summary.md L2). The extras are optional on the wire: `modified` counts only rows
+  whose title, install flag, merged `AddedAt` or `GameId` actually changed (`updated` still counts every
+  existing row that was rewritten, so the two are not interchangeable), `deleted` is always `0` because
+  imports never prune, and the name lists carry nothing above 50. It is not a
   per-store integration and it never reads the user's machine. Each item also carries the backend-computed
   price binding: `priceState` (`exact | title_candidate | none | subscription`), `bindingSource`
   (`steam | itad | title | null`), `steamAppId`, `bestOfficialMinor`/`bestKeyshopMinor` (already MXN minor
@@ -594,25 +606,56 @@ Both shells share one implementation; only their surface-specific content differ
 
 ### Discovery (`/discover`)
 
-- Rendered inside `ProductShell` (`title="Descubrir"`, meta badge `Steam · México`). The page is a
-  server component that redirects to `/login` without a session and delegates every state to
-  `discover-client.tsx`; the route is protected by the global matcher in `middleware.ts`
-  (`lib/security/route-policy.ts` is untouched). Nav entry «Descubrir» in `navGroups` → `Explorar`.
-- One loading state (`app-card p-5 text-sm text-muted` "Cargando..."), one failure state
-  (`Alert variant="danger"` + `Button variant="secondary"` "Reintentar"), then three sections fed by
-  one parallel fetch each (`discount | historic | recent`, `pageSize` default server-side).
-- Each section carries the shared kicker + `h2` + muted note shape: «Mayores descuentos» (by discount
-  desc, price + `-N%` success badge), «En su mínimo histórico» (current price at the local low, price +
-  `En su mínimo` success badge), «Recién observados» (by observation desc, price only, never green).
-  Green follows the standing semantics: discount and at-low only; recency is not cheapness.
-- Cards use an `app-card` shell and a horizontally centered decorative 16:9 `tiny_image` at two-thirds of
-  the card width, preserving its ratio while reducing its visual area. They sit in a `grid gap-3
-  md:grid-cols-2 xl:grid-cols-4` (one column on mobile, two on `md`, four on `xl`) and link to
-  `/games/<appId>`. The compact card keeps
-  every fact (name clamped to two lines, AppID/type, price, source, Steam base, discount badge,
-  observed date, link) without becoming a banner. `Mejor precio` uses success only for a positive
-  comparable saving; `Precio base Steam` remains secondary. Per-section Spanish empty states; no fake
-  data, no new tokens, no hardcoded colors.
+- Rendered inside `ProductShell` (`title="Descubrir"`). The page is a server component that redirects to
+  `/login` without a session and delegates every state to `discover-client.tsx`; the route is protected by
+  the global matcher in `middleware.ts` (`lib/security/route-policy.ts` is untouched). Nav entry «Descubrir»
+  in `navGroups` → `Explorar`. The `ProductShell` subtitle and meta badge come from `page.tsx`, which is not
+  part of this change: it still reads «Steam · México» and mentions «novedades», a list this page no longer
+  has — pending copy fix, documented rather than silently kept.
+- One `app-card` header section (kicker «Descubrimiento», `text-xl` heading, muted note naming the three
+  independent rules, and the visible attribution line «Datos de precios: IsThereAnyDeal · GG.deals»),
+  then the tab strip, then the active panel. No second summary card: the page is one catalog, not a feed
+  of feeds.
+- **Tabs with counters.** `role=tablist` labelled «Categorías de descubrimiento»; each tab is `role=tab`
+  with `aria-selected`, `aria-controls`, a roving `tabIndex` (only the active tab is reachable with `Tab`),
+  ArrowLeft / ArrowRight / Home / End keyboard navigation with focus moved to the newly selected tab,
+  `focus-visible` rings, and a Spanish `aria-label` that includes the count («Menos de MX$50: 12 juegos»).
+  The visible number rides in a `tabler-badge` (`tabler-badge-primary` active, `tabler-badge-muted`
+  otherwise) and shows `—` until the first envelope arrives. Tab labels are the three rules, in policy
+  order: «Menos de MX$50», «Mínimo histórico», «Mejores ofertas».
+- **One request per tab and page.** The envelope carries the selected page plus all three totals, so the
+  three counters are painted from a single response and switching tabs never fires three requests. Paging
+  is bounded to «Anterior» / «Siguiente» plus exactly one «Actualizar» that re-reads the current
+  tab/page; there is no unbounded "load more" and no page-size control.
+- **Race and failure.** The in-flight request is cancelling (`AbortController`) and numbered (generation),
+  so a fast tab or page change cannot let the older response win. Only a page whose `category` AND `page`
+  match the active tab is rendered, which is what stops a late response from labelling one rule's games
+  with another tab's badge. On failure the list already on screen stays (and the error offers
+  «Reintentar» + «Volver a la primera página»), and the three counters survive because they come from the
+  last valid envelope: the error is scoped to one tab, never to the section. One loading state
+  (`app-card p-5 text-sm text-muted` «Cargando...»), one failure state (`Alert variant="danger"`), one
+  empty state per tab.
+- **Cards.** `deal-card.tsx`: `app-card` shell, horizontally centered decorative 16:9 cover at two-thirds
+  of the width (ratio preserved, `alt=""`, `Gamepad2` fallback on missing or failed URL), title clamped to
+  two lines, then one row with the shop name and two word-carrying badges — classification (`official` /
+  `authorized` → success, `keyshop` → warning, unknown → muted «Sin clasificar») and the score
+  (`Nota N.N/10`, success only above 7). They sit in `grid gap-3 md:grid-cols-2 xl:grid-cols-3` (one, two,
+  three columns).
+- **Price block.** The MXN price is the hero (`deal-price`): a regional price reads exact, an
+  `fx_estimate` reads `≈ MX$N` plus a `tabler-badge-warning` «Estimado» and the original amount with its
+  currency, never a regional claim. Under it, an optional «Mínimo del proveedor <monto> <moneda>» line (the
+  provider's own figure, in the offer's currency) and «Observado <fecha>» (guarded `es-MX` date). A
+  converted price is never marked «Más barato»: the green of this page stays on discount/score semantics,
+  not on a currency trick.
+- **Links.** The title (and a «Ver ficha» footer link) points to the internal `/games/<appId>` only when the
+  item has a `steamAppId`; the offer itself is «Ver oferta en <tienda>» → the row's own https URL with
+  `target="_blank"`, `rel="noopener noreferrer"` and an `sr-only` new-tab note. A Steam-less game therefore
+  links outward and never to a fabricated appid; an item with neither id nor URL is a non-clickable card
+  that says «Sin enlace de la tienda» / «Sin ficha en Steam» instead of inventing one.
+- **Copy rules.** No «récord», no «nuevo mínimo» and no claim that the card is the cheapest offer of the
+  game: the page states which rule the offer satisfies («Cumple: precio bajo · mínimo verificado»), because
+  a 150.00 MXN score card and a 16.00 MXN price card are the same catalog read through different rules.
+  No fake data, no new tokens, no hardcoded colors, no rate or review of the game itself.
 
 ### Shared line with the game detail
 
@@ -761,13 +804,26 @@ Both shells share one implementation; only their surface-specific content differ
 - Rendered inside `ProductShell` (`wide`, `title="Biblioteca de juegos"`). The server page calls
   `requireAdminSession()`, so the route is admin-only like `/users`; the global matcher already protects it.
 - Two zones: an `app-card-accent` import card (kicker "Importación", collapsed by default behind a
-  native `<details>/<summary>` with no JS state — the user expands it only to import — holding the file
-  input plus "Importar", and the report) and one `app-card` items card (counts, store filter, list).
-  Both BFF routes are `AdminWithId`.
+  native `<details>/<summary>` with no JS state — the user expands it only to import — holding **two paired
+  panels** and nothing else) and one `app-card` items card (counts, store filter, list). Both BFF routes are
+  `AdminWithId`.
+- **Two doors, one written result.** The expanded area is a single `grid gap-3 md:grid-cols-2` of equal-weight
+  panels (`_components/library-import-panel.tsx`): **Playnite** (every store the export carries — Steam, Epic,
+  GOG, Xbox, Amazon and the rest) and **Heroic** (Epic and GOG only, from Heroic's local cache, with no account
+  connection and no login). Both panels are the same component, so they cannot drift: same kicker, heading,
+  description, file label, byte/format hint, `Importar <puerta>` button and `aria-live` status line, and each
+  states which stores its file covers. The two CTAs are bottom-aligned (`mt-auto`) so the pair reads as a pair
+  even when the descriptions differ in length; on mobile the panels stack. Copy never claims an official
+  integration or shows a brand logo: Heroic is described as a local script, Playnite as a file export.
+- **One import at a time.** While either request is in flight (`importing || heroicImporting`) **both** file
+  inputs and both buttons are disabled, so no second file change and no second request can start. Both doors
+  answer the same contract and open the **same** completion modal (`_components/import-summary-dialog.tsx`);
+  there is no per-provider copy of the counter rules.
 - **Import:** `<input type="file" accept=".json,application/json">` capped at 10 MiB
-  (`LIBRARY_IMPORT_MAX_BYTES`) and checked in the browser first (valid JSON, non-empty array at the root)
-  before the `POST`. The BFF re-checks the declared length and the real byte length, re-validates the root
-  shape, and forwards the array untouched. The file is never stored and never re-read.
+  (`LIBRARY_IMPORT_MAX_BYTES` / `HEROIC_LIBRARY_EXPORT_MAX_BYTES`) and checked in the browser first (Playnite:
+  valid JSON, non-empty array at the root; Heroic: the whole `format`/`version`/`source` envelope) before the
+  `POST`. The BFF re-checks the declared length and the real byte length, re-validates the shape, and forwards
+  the payload untouched. The file is never stored and never re-read.
 - **Filter and list:** one native labelled `<select>` for the store (`Todas las tiendas (N)`, then each store
   with its count) and a second one for the played year (`Todos los años`, each year, and `Sin año` only when
   something has no dated review), plus a button group `Filtro de estado de juego` with `Todos | Por jugar |
@@ -826,9 +882,28 @@ Both shells share one implementation; only their surface-specific content differ
   identifica por id y nombre y la portada se resuelve al elegirla. Después de elegir, la URL nueva se pinta en
   todas las filas del mismo juego sin recargar; después de una pasada, la lista se recarga porque quien
   escribió fue el servidor.
-- **Report:** the four counters as badges plus one muted badge per store. «Sin resolver» and «Fuente no
-  soportada» only leave the muted tone when greater than zero, and the note states that a reimport neither
-  duplicates nor deletes rows.
+- **Report (one shared modal).** A successful `POST` from either door opens `ImportSummaryDialog`
+  (`role="dialog"`, `aria-modal`, `aria-labelledby`+`aria-describedby`, `nextFocusIndex` focus trap, Escape and
+  a close button). **Focus returns to the heading of the panel that opened it** (`<h3 tabIndex={-1}>`, with the
+  app focus ring), never to the import button: that button is `loading`/disabled while the request runs *and*
+  goes back to disabled on success (the pending file is cleared, so `ready` is false again), so focusing it is a
+  no-op that strands focus on `<body>`. A disabled control is never a valid return target: the heading is always
+  enabled, names the door, and is independent of `processing`. `document.activeElement` is only the last-resort
+  fallback. The body scrolls inside `max-h-[90dvh]` and titles `break-words`, so 50 long names never push the
+  footer off a phone. Sections:
+  **Cambios escritos** (`Agregados`, plus `Modificados` and `Eliminados` **only when the server sent the
+  detail**), **Juegos agregados**, **Juegos eliminados** and **Resto del reporte** (`Actualizados`, `Sin
+  resolver`, `Fuente no soportada` and one muted badge per store).
+- **Names only when they are complete and few.** `libraryImportSummary` (pure, `node --test` coverage in
+  `_lib/import-summary.test.ts`) prints titles only when the count is **1–50 inclusive** *and* the list length
+  matches the count *and* every entry normalized (title + `storeLabel(platform)`); a partial list, one invalid
+  entry, or 51+ rows renders the number alone — never a truncated preview that reads as the whole list. The
+  added and deleted limits are independent. `deleted === 0` always renders the no-prune sentence ("importar
+  nunca borra juegos"), and 0 added renders the "la biblioteca ya tenía todo" line instead of an empty box.
+- **A legacy payload is not zero.** If `modified`/`deleted` are missing or malformed the modal says the
+  detail is unavailable and shows the legacy counters only; it never prints `0 modificados` and never uses
+  `updated` as `modified`. The normalizer treats the detail as all-or-nothing (`null`, not 0) and does not
+  turn a `null` into 0 the way `Number(null)` would.
 
 **Price/binding states.** The backend computes the binding; the UI only mirrors the four `priceState` values.
 
@@ -853,7 +928,7 @@ Both shells share one implementation; only their surface-specific content differ
 | `addedAt` missing/invalid | "Sin fecha de alta"; the row stays |
 | `store` | normalized to lowercase (the filter and the counts group by it) and shown through a label map; an unknown store prints its own text |
 | store filter with no rows | "No hay juegos de <tienda> en la biblioteca." |
-| 0 items | "Tu biblioteca está vacía. Sube el JSON del export de Playnite para llenarla."; the filter is not rendered |
+| 0 items | "Tu biblioteca está vacía. Sube el JSON del export de Playnite, o el de Heroic si solo usas Epic y GOG, para llenarla."; the filter is not rendered |
 | `playStatus === "backlog"` | `tabler-badge-neutral` "Por jugar"; es el estado de todo juego sin reseña y el único valor que no se puede guardar |
 | `playStatus` desconocido | cae a `backlog` por el mismo camino que una reseña ausente: nunca se inventa un estado |
 | `playedYears` con un año repetido o fuera de rango | el normalizador conserva solo años de cuatro dígitos, sin repetidos y ordenados del más nuevo al más viejo |
@@ -865,11 +940,14 @@ Both shells share one implementation; only their surface-specific content differ
 | portada de Steam remota | se pinta con `<img>` sin optimizador de Next, igual que el resto de la app: la URL es de un CDN ajeno |
 | first load in flight | bordered "Cargando..." block at the resolved size |
 | fetch failure | `Alert variant="danger"` plus "Reintentar"; the import card stays usable |
-| file rejected before upload | `Alert variant="danger"` with the reason (over 10 MiB, not JSON, root is not an array, empty array); the input is cleared |
-| import succeeded | the report renders and the list is re-fetched in place, with no navigation |
-| import succeeded but the reload failed | the report stays and an `Alert variant="danger"` asks for a page reload |
+| file rejected before upload | `Alert variant="danger"` with the reason (over 10 MiB, not JSON, root is not an array, empty array, or a Heroic envelope outside `format`/`version`/`source`); the input is cleared |
+| import succeeded | the shared completion modal opens with the server report and the list is re-fetched in place, with no navigation |
+| import succeeded but the reload failed | the modal **stays** open and gains `ImportReloadWarning` (`--color-warning` tokens, `role="alert"`) saying the import was saved and the page needs a reload; it never reads as an import failure. If the user closed the modal before the refetch failed, the same warning renders persistently in the import section instead of reopening the modal (a modal says "result of an import you just ran"); it clears on the next import |
+| import succeeded, user closed the modal, refetch still running | closing is allowed; focus has already returned to the panel heading. A later refetch failure shows the persistent warning above, a later success just re-renders the list |
 | a report counter missing or invalid | the BFF answers 502; no counter is defaulted to 0 |
-| `byStore` unusable | the breakdown is omitted; the four counters and the import result still render |
+| `modified`/`deleted` absent or malformed (older server) | the modal omits those badges and states that the change detail is unavailable; `updated` is never shown as `modified` |
+| `addedItems`/`deletedItems` empty, partial or longer than the count | the count renders alone; names appear only for 1–50 complete lists |
+| `byStore` unusable | the breakdown is omitted; the counters and the import result still render |
 | always | never rendered: raw JSON, the uploaded file, `storeGameId`, BFF routes or credentials |
 
 ### Duplicados del catálogo (`/library/duplicates`)

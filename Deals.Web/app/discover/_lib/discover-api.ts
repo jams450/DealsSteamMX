@@ -1,10 +1,24 @@
 import { parseApiError } from "@/lib/bff/client-session";
-import { normalizeSteamDiscover, type SteamDiscoverItem } from "@/lib/contracts/steam";
+import {
+  DISCOVER_PAGE_SIZE_DEFAULT,
+  normalizeDiscoverPage,
+  type DiscoverCategory,
+  type DiscoverPage
+} from "@/lib/contracts/discover";
 
-export type DiscoverList = "discount" | "historic" | "recent";
-
-export async function getDiscover(list: DiscoverList): Promise<readonly SteamDiscoverItem[]> {
-  const response = await fetch(`/api/bff/steam/discover?list=${list}`, { cache: "no-store" });
+// Una sola llamada por pestaña y página: el sobre trae la lista seleccionada y los tres contadores, así que
+// cambiar de pestaña no dispara tres pedidos. La señal permite abortar el pedido anterior cuando el usuario
+// cambia de pestaña o de página antes de que llegue la respuesta.
+export async function getDiscoverPage(
+  category: DiscoverCategory,
+  page = 1,
+  pageSize = DISCOVER_PAGE_SIZE_DEFAULT,
+  signal?: AbortSignal
+): Promise<DiscoverPage> {
+  const params = new URLSearchParams({ category, page: String(page), pageSize: String(pageSize) });
+  const response = await fetch(`/api/bff/discover?${params.toString()}`, { cache: "no-store", signal });
   if (!response.ok) throw await parseApiError(response, "No se pudo cargar el descubrimiento");
-  return normalizeSteamDiscover(await response.json());
+  // La categoría pedida es la única fuente de la etiqueta: una respuesta atrasada no puede renombrar la
+  // pestaña activa.
+  return normalizeDiscoverPage(await response.json(), category);
 }

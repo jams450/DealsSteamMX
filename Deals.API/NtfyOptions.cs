@@ -20,6 +20,21 @@ public sealed class NtfyOptions
     /// <summary>ntfy topic the alerts are published to. One topic, one segment: no slashes.</summary>
     public string Topic { get; set; } = "Deals";
 
+    /// <summary>
+    /// Personal operator of the notifier: the only account whose favorites + wishlist are alerted. The id is
+    /// explicit configuration, never inferred from an admin or from the current caller (spec S4, L3/L15).
+    ///
+    /// <b>Default 1 is the single-user deployment's account</b>: the app is personal, so no manual setting is
+    /// needed and the notifier works as soon as it is enabled. An explicit override (&gt; 0) is optional; a
+    /// non-positive override is a configuration error and refuses to start when <see cref="Enabled"/> is true
+    /// (<c>0</c> still means "unset" for the pipeline, so an explicit 0 fails closed instead of alerting).
+    ///
+    /// The default is not a bypass: <see cref="Services.Notifications.DealAlertRecipientScope.LoadAsync"/> reads
+    /// the account row and returns null when it does not exist or is inactive, so a deployment without account 1
+    /// produces and sends nothing even though the id is positive.
+    /// </summary>
+    public int UserId { get; set; } = 1;
+
     /// <summary>Bearer token for the protected topic. Placeholder <c>SET_*</c> values are rejected when enabled.</summary>
     public string AuthToken { get; set; } = string.Empty;
 

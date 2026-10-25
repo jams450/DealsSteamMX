@@ -4,7 +4,9 @@
 // a fake too. A non-zero exit or a thrown Exception marks the check suite failed.
 
 NtfyPolicyChecks.Run();
+await NtfyOptionsChecks.RunAsync();
 await NtfySenderChecks.RunAsync();
 await NtfyDispatcherChecks.RunAsync();
+await NtfyPipelineChecks.RunAsync();
 
 Console.WriteLine("PASS: all ntfy checks");

@@ -22,13 +22,59 @@ public sealed class PlayniteLibraryEntry
 /// <summary>
 /// Result of a Playnite import. <see cref="Unresolved"/> is always 0 in this phase (the canonical
 /// catalog does not exist yet); <see cref="ByStore"/> counts accepted entries per canonical store.
+///
+/// <para>
+/// The last four fields are the completion summary both imports share
+/// (<c>odd/tasks/library-import-summary.md</c>, S2/S3) and are optional so a consumer written against the
+/// five-field shape keeps compiling: <see cref="Updated"/> keeps counting every matched row, and
+/// <see cref="Modified"/> is the subset where a business column actually changed before the write
+/// (<c>title</c>, <c>is_installed</c>, the merged <c>added_at</c> and <c>game_id</c>; never
+/// <c>imported_at</c>). <see cref="Deleted"/> is a constant 0 and <see cref="DeletedItems"/> always empty:
+/// neither import prunes. <see cref="AddedItems"/> names the inserted rows as <c>{title, platform}</c>
+/// (platform is the canonical store key) up to <c>LibraryImportSummary.MaxListedItems</c> rows inclusive,
+/// and is empty beyond that bound rather than a truncated preview. Both endpoints fill these fields with
+/// <see cref="From"/>, so a null or empty <see cref="AddedItems"/> only ever means "not reported by an
+/// older shape" or "more than the bound", never "nothing was added".
+/// </para>
 /// </summary>
 public sealed record LibraryImportResponse(
     int Imported,
     int Updated,
     int Unresolved,
     int UnsupportedSource,
-    IReadOnlyDictionary<string, int> ByStore);
+    IReadOnlyDictionary<string, int> ByStore,
+    int Modified = 0,
+    int Deleted = 0,
+    IReadOnlyList<LibraryImportItemResponse>? AddedItems = null,
+    IReadOnlyList<LibraryImportItemResponse>? DeletedItems = null)
+{
+    /// <summary>
+    /// The one mapping both import endpoints use, so the Playnite upload and the Heroic upload cannot report
+    /// different summaries for the same loop.
+    /// </summary>
+    public static LibraryImportResponse From(
+        LibraryImportSummary summary,
+        int unsupportedSource,
+        IReadOnlyDictionary<string, int> byStore) => new(
+        summary.Imported,
+        summary.Updated,
+        0,
+        unsupportedSource,
+        byStore,
+        summary.Modified,
+        summary.Deleted,
+        summary.AddedItems.Select(LibraryImportItemResponse.From).ToList(),
+        summary.DeletedItems.Select(LibraryImportItemResponse.From).ToList());
+}
+
+/// <summary>
+/// One row of the import summary's item lists: the title as imported and the platform it was accepted
+/// under, which is the canonical store key (<c>steam</c>, <c>epic</c>, ...), not an OS.
+/// </summary>
+public sealed record LibraryImportItemResponse(string Title, string Platform)
+{
+    public static LibraryImportItemResponse From(LibraryImportItem item) => new(item.Title, item.Platform);
+}
 
 /// <summary>
 /// One accepted library row. PluginId is never exposed. The trailing fields are the read-only price

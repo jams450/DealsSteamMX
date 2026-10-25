@@ -7,12 +7,17 @@ namespace Deals.BusinessLogic.Services;
 /// Pure, deterministic policy for the global ntfy deal alerts. No DB, no HTTP, no clock of its own:
 /// the caller supplies the snapshot and the evaluation instant. That is what makes every rule testable.
 ///
-/// A candidate is a single fresh <c>game_offers</c> row (see <see cref="DealAlertCandidate"/>). It fires
-/// when ANY of three independent rules is true (spec S2/S4):
+/// A candidate is a single fresh, MX-region <c>game_offers</c> row (see <see cref="DealAlertCandidate"/>) or the
+/// game's MX Steam direct snapshot. It fires when ANY of three independent rules is true (spec S2/S4):
 ///   1. the wishlist deal score is strictly greater than 7, using the exact 0-10 formula of
 ///      <c>Deals.Web/app/wishlist/_lib/wishlist-metrics.ts</c> (<see cref="DealScore"/>);
-///   2. the MXN price is strictly below <see cref="CheapPriceThresholdMinor"/> (20.00 MXN);
+///   2. the MXN price is strictly below <see cref="CheapPriceThresholdMinor"/> (50.00 MXN);
 ///   3. the offer is at a verified provider history low (see <see cref="HasVerifiedHistoryLow"/>).
+///
+/// The three rules are independent OR conditions and none is a ceiling for another: a 150.00 MXN offer can
+/// fire rule 1, and a 60.00 MXN offer can fire rule 3. That is also why the discover catalog exposes them as
+/// three separate categories (`under50`, `historic`, `score`) instead of one "good deal" bucket: the same
+/// policy, the same three reasons, read from persisted snapshots.
 ///
 /// The history-low rule is intentionally narrow. "Verified" means the low and the current price are
 /// quoted by the same provider row in the same currency, so no FX conversion and no cross-source
@@ -29,11 +34,25 @@ public static class DealAlertPolicy
     /// <summary>Rule 1: the score must exceed this value. 7.0 does NOT fire; 7.1 does.</summary>
     public const double ScoreTriggerThreshold = 7d;
 
-    /// <summary>Rule 2: the MXN price must be strictly below this many minor units (20.00 MXN).</summary>
-    public const int CheapPriceThresholdMinor = 2_000;
+    /// <summary>
+    /// Rule 2: the MXN price must be strictly below this many minor units (50.00 MXN). 4999 fires, 5000 does
+    /// not. Shared verbatim with the discover catalog's <c>under50</c> category, so a notification and a tab
+    /// can never disagree about what "under 50" means.
+    /// </summary>
+    public const int CheapPriceThresholdMinor = 5_000;
 
     /// <summary>Above this the amount is corrupt data, not a price (5,000,000.00 MXN).</summary>
     public const int MaxPriceMinor = 500_000_000;
+
+    /// <summary>
+    /// The one region this product compares and alerts on, and the case convention that goes with it: the value
+    /// is lowercase <c>mx</c> and the comparison is ordinal, exactly like the catalog's SQL
+    /// (<c>CatalogDealQuery.CanonicalOffer</c> renders <c>region = 'mx'</c>) and like every ingestion client that
+    /// writes <c>game_offers.region</c>/<c>steam_games.region</c>. So <c>MX</c>, <c> mx</c> and <c>mexico</c> are
+    /// not MX here, and a row stored that way has to be fixed at the source instead of being silently matched by
+    /// a case-insensitive policy the catalog would contradict.
+    /// </summary>
+    public const string Region = "mx";
 
     private const string MxnCurrency = "MXN";
     private const string SteamSource = "steam";
@@ -107,11 +126,24 @@ public static class DealAlertPolicy
     }
 
     /// <summary>
-    /// Freshness and comparability gate. A stale snapshot, a zero/negative/absurd price, an
-    /// unconverted amount or Epic's deferred free rows never reach the OR rules.
+    /// Freshness, region and comparability gate. A stale snapshot, a row of another region, a zero/negative/
+    /// absurd price, an unconverted amount or Epic's deferred free rows never reach the OR rules.
+    ///
+    /// The region gate is what keeps the notifier and the discover catalog on the same evidence (spec S2/S3):
+    /// the catalog is MX-only, and it is MX-only by an exact SQL comparison, so an offer another region's store
+    /// quoted — even one an FX pass converted under 50 MXN, even one at a verified provider low, even one that
+    /// would score above 7 — is not a deal this person can act on. It is refused here rather than after the
+    /// rules fire, so no reason, no score and no message is ever built for it.
     /// </summary>
     public static bool IsComparable(DealAlertCandidate candidate, DealAlertContext context)
     {
+        // Ordinal and untrimmed on purpose: the catalog's SQL is `region = 'mx'`, and a policy that folded case
+        // or whitespace here would push rows the catalog can never show.
+        if (!string.Equals(candidate.Region, Region, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
         if (candidate.MxnCurrentPriceMinor <= 0 || candidate.MxnCurrentPriceMinor > MaxPriceMinor)
         {
             return false;
@@ -255,7 +287,7 @@ public static class DealAlertPolicy
 
         if (reasons.Contains(DealAlertReasons.Price))
         {
-            parts.Add("< MX$20");
+            parts.Add("< MX$50");
         }
 
         if (reasons.Contains(DealAlertReasons.Score) && score is { } value)
