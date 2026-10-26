@@ -37,6 +37,11 @@ export type WishlistItem = {
   readonly bestKeyshopLabel?: string | null;
   readonly bestKeyshopClassification?: string | null;
   readonly bestKeyshopPricingType?: string | null;
+  // Cuándo se leyó el precio de cada banda, del mismo ganador que el importe (Steam cuando gana y tienda
+  // externa cuando gana). Aditivos y opcionales: ni `steamSyncedAt` ni `refreshedAt` los sustituyen, porque
+  // esos sellos dicen cuándo corrió un proveedor, no cuándo se observó ESE precio.
+  readonly bestOfficialObservedAt?: string | null;
+  readonly bestKeyshopObservedAt?: string | null;
   readonly ownedStores: readonly string[];
   readonly categories: readonly WishlistCategory[];
 };
@@ -236,6 +241,10 @@ function normalizeWishlistItem(value: unknown): WishlistItem | null {
     bestKeyshopLabel: toBoundedText(read(value, "bestKeyshopLabel"), 128),
     bestKeyshopClassification: toBoundedText(read(value, "bestKeyshopClassification"), 16),
     bestKeyshopPricingType: toBoundedText(read(value, "bestKeyshopPricingType"), 24),
+    // Mismo validador que los sellos de proveedor: ISO-8601 con hora y zona, o null. El offset se conserva
+    // tal cual llega (el instante es el que manda) y el distintivo lo normaliza a UTC al pintarlo.
+    bestOfficialObservedAt: toIsoDateTime(read(value, "bestOfficialObservedAt")),
+    bestKeyshopObservedAt: toIsoDateTime(read(value, "bestKeyshopObservedAt")),
     ownedStores: toStoreList(read(value, "ownedStores")),
     categories: toCategoryList(read(value, "categories"))
   };

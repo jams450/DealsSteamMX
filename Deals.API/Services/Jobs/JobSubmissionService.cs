@@ -12,6 +12,12 @@ public enum JobSubmitStatus
     Disabled,
     Invalid,
     ConfirmationRequired,
+
+    /// <summary>
+    /// The job only acts on one person's data and no authenticated requester was supplied. It is a refusal, not a
+    /// degradation: nothing was written and no provider budget was spent.
+    /// </summary>
+    RequesterRequired,
     Duplicate
 }
 
@@ -37,6 +43,8 @@ public sealed record JobSubmitOutcome(
 /// The order of the checks is the contract:
 /// <list type="number">
 /// <item>unknown job, disabled job and invalid options are refused before anything is written;</item>
+/// <item>a job that acts on one person's data is refused when the request carries no authenticated requester
+/// (the id comes from the access token, never from the payload), so it can never fall back to a wider scope;</item>
 /// <item>a live run of the same job — in this process or recorded by another instance — is a conflict;</item>
 /// <item>the job is reserved in the queue <em>before</em> the row is created, so two simultaneous requests
 /// cannot both reach the insert;</item>
@@ -54,7 +62,8 @@ public sealed class JobSubmissionService(
         string? job,
         JsonElement? options,
         bool confirm,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? requestedByUserId = null)
     {
         var definition = catalog.Find(job);
         if (definition is null)
@@ -84,6 +93,18 @@ public sealed class JobSubmissionService(
                 parsed.Error);
         }
 
+        // A job that only acts on one person's data needs that person, and the id must come from the access
+        // token the controller already validated — never from the payload. Without it the run is refused here,
+        // before a row or a queue reservation exists, so it cannot fall back to a catalogue-wide pass.
+        if (definition.RequiresRequester && requestedByUserId is not > 0)
+        {
+            return new JobSubmitOutcome(
+                JobSubmitStatus.RequesterRequired,
+                definition,
+                "Este job solo puede ejecutarse desde una sesión autenticada: no hay un usuario solicitante " +
+                "al que limitar el lote.");
+        }
+
         if (await tracker.HasRunningAsync(definition.Job, cancellationToken))
         {
             return new JobSubmitOutcome(
@@ -103,7 +124,14 @@ public sealed class JobSubmissionService(
         long jobRunId;
         try
         {
-            jobRunId = await tracker.StartAsync(definition.Job, cancellationToken);
+            // The requester is recorded with the row before the work starts, so an interrupted run still says
+            // whose list it was going to refresh.
+            jobRunId = await tracker.StartAsync(
+                definition.Job,
+                cancellationToken,
+                definition.RequiresRequester && requestedByUserId is { } requester
+                    ? new { requestedBy = requester }
+                    : null);
         }
         catch
         {
@@ -113,7 +141,11 @@ public sealed class JobSubmissionService(
         }
 
         var requestedAt = DateTime.UtcNow;
-        if (!queue.TryPublish(new JobQueueItem(definition.Job, jobRunId, parsed.Options)))
+        if (!queue.TryPublish(new JobQueueItem(
+                definition.Job,
+                jobRunId,
+                parsed.Options,
+                definition.RequiresRequester ? requestedByUserId : null)))
         {
             queue.Release(definition.Job);
             await TryFinishAsync(
@@ -128,9 +160,10 @@ public sealed class JobSubmissionService(
         }
 
         logger.LogInformation(
-            "[jobs.manual] queued job={Job} jobRunId={JobRunId} options={Options}",
+            "[jobs.manual] queued job={Job} jobRunId={JobRunId} requestedBy={RequestedBy} options={Options}",
             definition.Job,
             jobRunId,
+            requestedByUserId,
             string.Join(',', parsed.Options.ToDetails().Select(pair => $"{pair.Key}={pair.Value}")));
 
         return new JobSubmitOutcome(JobSubmitStatus.Submitted, definition, null, jobRunId, requestedAt);

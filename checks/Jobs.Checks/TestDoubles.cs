@@ -48,9 +48,13 @@ internal sealed class RecordingTracker : IJobRunTracker
     public bool Busy { get; set; }
     public bool Throwing { get; set; }
     public List<string> Started { get; } = [];
+
+    /// <summary>Provenance recorded with each started run, so "was the requester persisted?" is observable.</summary>
+    public List<string?> StartedDetails { get; } = [];
+
     public List<(long JobRunId, string Status, string? Details)> Finished { get; } = [];
 
-    public Task<long> StartAsync(string job, CancellationToken cancellationToken)
+    public Task<long> StartAsync(string job, CancellationToken cancellationToken, object? details = null)
     {
         if (Throwing)
         {
@@ -58,6 +62,7 @@ internal sealed class RecordingTracker : IJobRunTracker
         }
 
         Started.Add(job);
+        StartedDetails.Add(details is null ? null : JsonSerializer.Serialize(details));
         return Task.FromResult(NextRunId++);
     }
 

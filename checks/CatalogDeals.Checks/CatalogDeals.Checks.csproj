@@ -10,6 +10,9 @@
          with the notifier's own private mapping, so both projects are referenced. Npgsql/EF Core arrive
          transitively from Deals.BusinessLogic. -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <!-- The wishlist-scope checks run the real Repository and the real services over an in-memory database:
+         no connection is opened, and "no provider call outside the requester's wishlist" stays observable. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="9.0.3" />
     <ProjectReference Include="../../Deals.API/Deals.API.csproj" />
     <ProjectReference Include="../../Deals.BusinessLogic/Deals.BusinessLogic.csproj" />
   </ItemGroup>

@@ -4,7 +4,16 @@ using System.Threading.Channels;
 namespace Deals.API.Services.Jobs;
 
 /// <summary>One accepted manual request, waiting for the dispatcher.</summary>
-public sealed record JobQueueItem(string Job, long JobRunId, JobRunOptions Options);
+/// <param name="RequestedByUserId">
+/// The authenticated person who asked for the run, taken from the access token when the request was accepted
+/// and never from the payload. It is the only owner a wishlist-scoped job may act on, so a job that needs it
+/// is refused — before any provider call — when it is absent.
+/// </param>
+public sealed record JobQueueItem(
+    string Job,
+    long JobRunId,
+    JobRunOptions Options,
+    int? RequestedByUserId = null);
 
 /// <summary>
 /// In-process hand-off between the HTTP request that asks for a run and the hosted dispatcher that performs

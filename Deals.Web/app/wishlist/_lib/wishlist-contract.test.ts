@@ -103,6 +103,63 @@ test("un proveedor sin sincronizar es null y no rompe al resto de la fila", () =
   assert.equal(parsed.items[0].microsoftSyncedAt, "2026-10-05T10:00:00Z");
 });
 
+// La fecha observada de cada banda es aditiva: un payload anterior (o uno que no la manda) sigue valiendo y
+// el importe se conserva. Nunca se rellena con el sello del proveedor ni con `refreshedAt`, porque eso
+// afirmaría cuándo se leyó ESE precio.
+const observedFields = ["bestOfficialObservedAt", "bestKeyshopObservedAt"] as const;
+
+test("las fechas observadas de cada banda son opcionales y conservan su banda", () => {
+  const parsed = normalizeWishlistResponse(envelope({
+    bestOfficialMinor: 1700, bestOfficialObservedAt: "2026-10-15T11:00:00Z",
+    bestKeyshopMinor: 900, bestKeyshopObservedAt: "2026-10-18T09:30:00+02:00"
+  }));
+  assert.ok(parsed);
+  assert.equal(parsed.items[0].bestOfficialObservedAt, "2026-10-15T11:00:00Z");
+  // El offset se conserva tal cual llega; el instante es el que manda y el distintivo lo normaliza a UTC.
+  assert.equal(parsed.items[0].bestKeyshopObservedAt, "2026-10-18T09:30:00+02:00");
+  assert.equal(parsed.items[0].bestOfficialMinor, 1700);
+  assert.equal(parsed.items[0].bestKeyshopMinor, 900);
+});
+
+test("un payload anterior a las fechas observadas las deja en null sin tocar precios ni sellos", () => {
+  for (const missing of [{}, Object.fromEntries(observedFields.map((field) => [field, null]))]) {
+    const parsed = normalizeWishlistResponse(envelope({ ...missing, ...stamps, bestOfficialMinor: 100 }));
+    assert.ok(parsed);
+    for (const field of observedFields) assert.equal(parsed.items[0][field], null);
+    assert.equal(parsed.items[0].bestOfficialMinor, 100);
+    assert.equal(parsed.items[0].steamSyncedAt, "2026-10-01T10:00:00Z");
+  }
+});
+
+test("una fecha observada inválida queda en null en vez de llegar al render", () => {
+  for (const value of ["ayer", "2026-10-18", "", 1729000000, true, "2026-02-30T00:00:00Z"]) {
+    const parsed = normalizeWishlistResponse(envelope({
+      bestOfficialObservedAt: value, bestKeyshopObservedAt: value, bestOfficialMinor: 500, bestKeyshopMinor: 400
+    }));
+    assert.ok(parsed);
+    for (const field of observedFields) assert.equal(parsed.items[0][field], null, `valor ${String(value)}`);
+    assert.equal(parsed.items[0].bestOfficialMinor, 500);
+    assert.equal(parsed.items[0].bestKeyshopMinor, 400);
+  }
+});
+
+test("una fecha observada futura se acepta: el contrato no adivina, el distintivo dice desconocida", () => {
+  const parsed = normalizeWishlistResponse(envelope({
+    bestOfficialObservedAt: "2099-01-01T00:00:00Z", bestOfficialMinor: 500
+  }));
+  assert.ok(parsed);
+  assert.equal(parsed.items[0].bestOfficialObservedAt, "2099-01-01T00:00:00Z");
+});
+
+test("las fechas observadas también se leen en PascalCase como el resto del DTO", () => {
+  const parsed = normalizeWishlistResponse(envelope({
+    BestOfficialObservedAt: " 2026-10-15T11:00:00Z ", BestKeyshopObservedAt: "2026-10-16T11:00:00Z"
+  }));
+  assert.ok(parsed);
+  assert.equal(parsed.items[0].bestOfficialObservedAt, "2026-10-15T11:00:00Z");
+  assert.equal(parsed.items[0].bestKeyshopObservedAt, "2026-10-16T11:00:00Z");
+});
+
 test("un sello ausente o inválido queda en null en vez de propagar basura", () => {
   const parsed = normalizeWishlistResponse(envelope({ steamSyncedAt: "no es fecha" }));
   assert.ok(parsed);

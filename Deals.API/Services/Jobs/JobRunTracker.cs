@@ -11,8 +11,13 @@ namespace Deals.API.Services.Jobs;
 /// </summary>
 public interface IJobRunTracker
 {
-    /// <summary>Opens the run in <c>running</c> with the manual trigger and returns its id.</summary>
-    Task<long> StartAsync(string job, CancellationToken cancellationToken);
+    /// <summary>Opens the run in <c>running</c> and returns its id for <see cref="FinishAsync"/>.</summary>
+    /// <param name="details">
+    /// Optional provenance of the request (for a manual run, the authenticated requester). It is written with
+    /// the row before the work starts, so an interrupted run still shows who asked for it; the closing write
+    /// replaces it with the outcome and repeats the provenance.
+    /// </param>
+    Task<long> StartAsync(string job, CancellationToken cancellationToken, object? details = null);
 
     Task FinishAsync(long jobRunId, string status, object? details, CancellationToken cancellationToken);
 
@@ -34,8 +39,8 @@ public sealed class JobRunTracker(JobRunLog log, IJobRunLogQueryService query) :
     /// </summary>
     public static readonly TimeSpan AbandonedAfter = TimeSpan.FromHours(6);
 
-    public Task<long> StartAsync(string job, CancellationToken cancellationToken) =>
-        log.StartAsync(job, JobRunLog.ManualTrigger, cancellationToken);
+    public Task<long> StartAsync(string job, CancellationToken cancellationToken, object? details = null) =>
+        log.StartAsync(job, JobRunLog.ManualTrigger, cancellationToken, details);
 
     public Task FinishAsync(long jobRunId, string status, object? details, CancellationToken cancellationToken) =>
         log.FinishAsync(jobRunId, status, details, cancellationToken);

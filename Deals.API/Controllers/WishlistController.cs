@@ -533,6 +533,73 @@ public class WishlistController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// The one grouped query behind the wishlist rows: per Steam snapshot, its persisted history low and the two
+    /// winning offers. It lives here as a named, renderable query rather than inline so
+    /// <c>checks/CatalogDeals.Checks</c> can compile it with the production provider without a database — the
+    /// projection is the part that silently stops translating when a column is added.
+    ///
+    /// <para>
+    /// The selection rules are the previous ones, byte for byte: cheapest MXN price, then shop id, source, offer
+    /// key and row id as deterministic tie-breakers; <c>unconverted</c> amounts never compete; keyshop and
+    /// legitimate shop are the two bands. The direct Steam snapshot is not a row here, so it still joins the
+    /// official minimum in <see cref="LoadItemsAsync"/>.
+    /// </para>
+    /// </summary>
+    public static IQueryable<WishlistPriceWinnerRow> PriceWinnerRows(
+        IRepository repository,
+        IReadOnlyCollection<int> steamGameIds) =>
+        repository.Get<GameOffer>()
+            // A row with no Steam snapshot (source='microsoft') is not part of this aggregate, which is keyed
+            // by the Steam snapshot the wishlist rows carry.
+            .Where(offer => offer.SteamGameId != null && steamGameIds.Contains(offer.SteamGameId.Value))
+            .GroupBy(offer => offer.SteamGameId)
+            .Select(group => new WishlistPriceWinnerRow
+            {
+                SteamGameId = group.Key!.Value,
+                HistoryLowMinor = group.Min(offer =>
+                    offer.HistoryLowCurrency == MxnCurrency ? offer.HistoryLowAllMinor : null),
+                BestOfficial = group
+                    .Where(offer => offer.Classification != KeyshopClassification &&
+                        offer.PricingType != UnconvertedPricing && offer.MxnCurrentPriceMinor != null)
+                    .OrderBy(offer => offer.MxnCurrentPriceMinor)
+                    .ThenBy(offer => offer.ShopId)
+                    .ThenBy(offer => offer.Source)
+                    .ThenBy(offer => offer.OfferKey)
+                    .ThenBy(offer => offer.GameOfferId)
+                    // ObservedAt is projected from the SAME row: the price, the shop metadata and the date
+                    // must describe one offer, or the ≤72h/+72h label dates a price with another row's clock.
+                    .Select(offer => new WishlistOfferWinner
+                    {
+                        Price = offer.MxnCurrentPriceMinor,
+                        Source = offer.Source,
+                        Label = offer.ShopName,
+                        Classification = offer.Classification,
+                        PricingType = offer.PricingType,
+                        ObservedAt = offer.ObservedAt
+                    })
+                    .FirstOrDefault(),
+                // Same rule for the keyshop band: its own winner, its own date.
+                BestKeyshop = group
+                    .Where(offer => offer.Classification == KeyshopClassification &&
+                        offer.PricingType != UnconvertedPricing && offer.MxnCurrentPriceMinor != null)
+                    .OrderBy(offer => offer.MxnCurrentPriceMinor)
+                    .ThenBy(offer => offer.ShopId)
+                    .ThenBy(offer => offer.Source)
+                    .ThenBy(offer => offer.OfferKey)
+                    .ThenBy(offer => offer.GameOfferId)
+                    .Select(offer => new WishlistOfferWinner
+                    {
+                        Price = offer.MxnCurrentPriceMinor,
+                        Source = offer.Source,
+                        Label = offer.ShopName,
+                        Classification = offer.Classification,
+                        PricingType = offer.PricingType,
+                        ObservedAt = offer.ObservedAt
+                    })
+                    .FirstOrDefault()
+            });
+
     private async Task<IReadOnlyList<WishlistItemResponse>> LoadItemsAsync(
         int userId,
         IReadOnlyCollection<int>? appIds,
@@ -599,38 +666,8 @@ public class WishlistController : ControllerBase
         // Rows with pricing_type "unconverted" are excluded: an unconverted amount is not a comparable MXN
         // price. Nulls are ignored by the minima and 0 stays a real price (free games exist).
         var steamGameIds = games.Select(game => game.SteamGameId).Distinct().ToList();
-        var aggregatesByGameId = await _repository.Get<GameOffer>()
-            // A row with no Steam snapshot (source='microsoft') is not part of this aggregate, which is keyed
-            // by the Steam snapshot the wishlist rows carry.
-            .Where(offer => offer.SteamGameId != null && steamGameIds.Contains(offer.SteamGameId.Value))
-            .GroupBy(offer => offer.SteamGameId)
-            .Select(group => new
-            {
-                SteamGameId = group.Key,
-                HistoryLowMinor = group.Min(offer =>
-                    offer.HistoryLowCurrency == MxnCurrency ? offer.HistoryLowAllMinor : null),
-                BestOfficial = group
-                    .Where(offer => offer.Classification != KeyshopClassification &&
-                        offer.PricingType != UnconvertedPricing && offer.MxnCurrentPriceMinor != null)
-                    .OrderBy(offer => offer.MxnCurrentPriceMinor)
-                    .ThenBy(offer => offer.ShopId)
-                    .ThenBy(offer => offer.Source)
-                    .ThenBy(offer => offer.OfferKey)
-                    .ThenBy(offer => offer.GameOfferId)
-                    .Select(offer => new { Price = offer.MxnCurrentPriceMinor, offer.Source, Label = offer.ShopName, offer.Classification, offer.PricingType })
-                    .FirstOrDefault(),
-                BestKeyshop = group
-                    .Where(offer => offer.Classification == KeyshopClassification &&
-                        offer.PricingType != UnconvertedPricing && offer.MxnCurrentPriceMinor != null)
-                    .OrderBy(offer => offer.MxnCurrentPriceMinor)
-                    .ThenBy(offer => offer.ShopId)
-                    .ThenBy(offer => offer.Source)
-                    .ThenBy(offer => offer.OfferKey)
-                    .ThenBy(offer => offer.GameOfferId)
-                    .Select(offer => new { Price = offer.MxnCurrentPriceMinor, offer.Source, Label = offer.ShopName, offer.Classification, offer.PricingType })
-                    .FirstOrDefault()
-            })
-            .ToDictionaryAsync(aggregate => aggregate.SteamGameId!.Value, cancellationToken);
+        var aggregatesByGameId = await PriceWinnerRows(_repository, steamGameIds)
+            .ToDictionaryAsync(row => row.SteamGameId, cancellationToken);
 
         var libraryIdsForRows = rows.Select(row => row.UserLibraryId).ToList();
         var categoryAssignments = await _repository.Get<WishlistCategoryItem>()
@@ -661,15 +698,26 @@ public class WishlistController : ControllerBase
             int? bestKeyshopMinor = null;
             (string? Source, string? Label, string? Classification, string? PricingType) officialMetadata = default;
             (string? Source, string? Label, string? Classification, string? PricingType) keyshopMetadata = default;
+            // The date travels with the winning price from the same row. It is observed_at (when the price was
+            // seen), never the provider's *_refreshed_at consultation stamp above it.
+            DateTime? bestOfficialObservedAt = null;
+            DateTime? bestKeyshopObservedAt = null;
             if (game is not null && aggregatesByGameId.TryGetValue(game.SteamGameId, out var aggregate))
             {
                 historyLowMinor = aggregate.HistoryLowMinor;
                 bestOfficialMinor = aggregate.BestOfficial?.Price;
                 bestKeyshopMinor = aggregate.BestKeyshop?.Price;
                 if (aggregate.BestOfficial is { } official)
+                {
                     officialMetadata = (official.Source, official.Label, official.Classification, official.PricingType);
+                    bestOfficialObservedAt = official.ObservedAt;
+                }
+
                 if (aggregate.BestKeyshop is { } keyshop)
+                {
                     keyshopMetadata = (keyshop.Source, keyshop.Label, keyshop.Classification, keyshop.PricingType);
+                    bestKeyshopObservedAt = keyshop.ObservedAt;
+                }
             }
 
             // Steam's own price competes for the best official price and does not live in game_offers: it is
@@ -680,9 +728,14 @@ public class WishlistController : ControllerBase
             var steamOfficialMinor = string.Equals(game?.Currency, MxnCurrency, StringComparison.OrdinalIgnoreCase)
                 ? game?.CurrentPriceMinor
                 : null;
-            // Steam wins ties; its metadata and price always travel together.
+            // Steam wins ties; its metadata, price and date always travel together: a Steam price dated with the
+            // external offer it beat would be the same mislabel the badge exists to avoid.
             if (steamOfficialMinor.HasValue && (!bestOfficialMinor.HasValue || steamOfficialMinor.Value <= bestOfficialMinor.Value))
+            {
                 officialMetadata = (SteamStore, "Steam", "official", "regional");
+                bestOfficialObservedAt = game?.ObservedAt;
+            }
+
             bestOfficialMinor = new[] { bestOfficialMinor, steamOfficialMinor }.Min();
 
             // steam_games.name is the Steam detail snapshot; user_library.title is the list snapshot and
@@ -723,7 +776,11 @@ public class WishlistController : ControllerBase
                 BestKeyshopSource: keyshopMetadata.Source,
                 BestKeyshopLabel: keyshopMetadata.Label,
                 BestKeyshopClassification: keyshopMetadata.Classification,
-                BestKeyshopPricingType: keyshopMetadata.PricingType));
+                BestKeyshopPricingType: keyshopMetadata.PricingType,
+                // The observation date of the very offer reported above; null when there is no such price.
+                // Old is not rejected here: the wishlist still shows the price, only its date is exposed.
+                BestOfficialObservedAt: bestOfficialObservedAt,
+                BestKeyshopObservedAt: bestKeyshopObservedAt));
         }
 
         return items;

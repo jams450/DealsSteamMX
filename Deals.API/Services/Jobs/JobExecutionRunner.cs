@@ -22,6 +22,26 @@ public interface IJobExecutor
 }
 
 /// <summary>
+/// An executor whose work is scoped to one person (spec S5). The requester arrives from the queue item — it was
+/// captured from the access token when the run was submitted — so the batch can never be widened by the payload
+/// nor read from an ambient request context in the background.
+///
+/// The plain <see cref="IJobExecutor"/> entry point stays available because the registration contract is one
+/// executor per job; calling it without a requester must fail closed instead of running a wider pass.
+/// </summary>
+public interface IUserScopedJobExecutor : IJobExecutor
+{
+    /// <param name="requestedByUserId">
+    /// The authenticated requester, always &gt; 0: <see cref="JobExecutionRunner"/> refuses to call this member
+    /// without it.
+    /// </param>
+    Task<JobExecutionResult> ExecuteAsync(
+        JobRunOptions options,
+        int requestedByUserId,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>
 /// Executes one queued manual run and records its outcome. The advisory lock is taken by the dispatcher
 /// before this runs, so the only responsibilities here are "find the executor", "run it", and "close the
 /// row exactly once".
@@ -56,17 +76,58 @@ public sealed class JobExecutionRunner(
             return;
         }
 
+        // The requester was captured from the access token when the run was queued. For a user-scoped job it is
+        // mandatory: without it the run is refused here, before a provider call, instead of silently widening
+        // the batch.
+        var requestedBy = item.RequestedByUserId is > 0 ? item.RequestedByUserId : null;
+
         string status;
         object details;
         try
         {
-            var result = await executor.ExecuteAsync(item.Options, cancellationToken);
-            status = result.Succeeded ? JobRunStatuses.Ok : JobRunStatuses.Failed;
-            details = new
+            JobExecutionResult result;
+            if (executor is IUserScopedJobExecutor scoped)
             {
-                requested = item.Options.ToDetails(),
-                result = result.Details
-            };
+                if (requestedBy is null)
+                {
+                    logger.LogWarning(
+                        "[jobs.manual] job={Job} jobRunId={JobRunId} has no authenticated requester; refused",
+                        item.Job,
+                        item.JobRunId);
+                    await FinishAsync(
+                        item.JobRunId,
+                        JobRunStatuses.Failed,
+                        new
+                        {
+                            reason = "requester_required",
+                            job = item.Job,
+                            requested = item.Options.ToDetails()
+                        },
+                        cancellationToken);
+                    return;
+                }
+
+                result = await scoped.ExecuteAsync(item.Options, requestedBy.Value, cancellationToken);
+                status = result.Succeeded ? JobRunStatuses.Ok : JobRunStatuses.Failed;
+                details = new
+                {
+                    // Kept in the closing record too: FinishAsync overwrites the row's details, and who asked
+                    // for a personal batch is part of what happened.
+                    requestedBy = requestedBy.Value,
+                    requested = item.Options.ToDetails(),
+                    result = result.Details
+                };
+            }
+            else
+            {
+                result = await executor.ExecuteAsync(item.Options, cancellationToken);
+                status = result.Succeeded ? JobRunStatuses.Ok : JobRunStatuses.Failed;
+                details = new
+                {
+                    requested = item.Options.ToDetails(),
+                    result = result.Details
+                };
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -76,12 +137,22 @@ public sealed class JobExecutionRunner(
         catch (Exception exception)
         {
             status = JobRunStatuses.Failed;
-            details = new
-            {
-                requested = item.Options.ToDetails(),
-                errorType = exception.GetType().Name,
-                error = exception.Message
-            };
+            // A personal run keeps its owner in the closing record too; every other job's failure shape is
+            // left exactly as it was.
+            details = requestedBy is { } requester
+                ? new
+                {
+                    requestedBy = requester,
+                    requested = item.Options.ToDetails(),
+                    errorType = exception.GetType().Name,
+                    error = exception.Message
+                }
+                : new
+                {
+                    requested = item.Options.ToDetails(),
+                    errorType = exception.GetType().Name,
+                    error = exception.Message
+                };
             logger.LogError(
                 exception,
                 "[jobs.manual] job={Job} jobRunId={JobRunId} failed",

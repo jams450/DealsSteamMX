@@ -1,3 +1,4 @@
+using Deals.BusinessLogic.Models.Discovery;
 using Deals.BusinessLogic.Services;
 
 namespace Deals.API.Services.Jobs;
@@ -21,6 +22,12 @@ public static class JobKeys
     /// <summary>Daily retention purge of <c>job_runs</c>. Was never recorded before this unit.</summary>
     public const string Purge = "jobs.purge";
 
+    /// <summary>
+    /// Manual-only pending-price pass (spec S5). Deliberately absent from every schedule: it is queued by a
+    /// human from the admin page and never by the host. It is scoped to that human's wishlist.
+    /// </summary>
+    public const string CatalogPricesRefresh = "catalog.prices-refresh";
+
     public static readonly IReadOnlyList<string> All =
     [
         WishlistSync,
@@ -29,7 +36,8 @@ public static class JobKeys
         GgDealsBundles,
         GlobalDeals,
         NtfyAlerts,
-        Purge
+        Purge,
+        CatalogPricesRefresh
     ];
 }
 
@@ -59,6 +67,10 @@ public sealed record JobOptionDescriptor(
 /// One row of the admin catalog. <see cref="AdvisoryLockKey"/> is the same PostgreSQL session lock the
 /// scheduled service takes, so a manual run can never overlap a scheduled one — or a second manual one.
 /// </summary>
+/// <param name="RequiresRequester">
+/// True when the job reads one person's data. The manual dispatcher then refuses to start it without the
+/// authenticated requester captured from the access token, and the executor never falls back to a wider scope.
+/// </param>
 public sealed record JobDefinition(
     string Job,
     string DisplayName,
@@ -69,7 +81,10 @@ public sealed record JobDefinition(
     long? AdvisoryLockKey,
     bool Destructive,
     bool RequiresConfirmation,
-    IReadOnlyList<JobOptionDescriptor> Options);
+    IReadOnlyList<JobOptionDescriptor> Options)
+{
+    public bool RequiresRequester { get; init; }
+}
 
 /// <summary>
 /// Plain snapshot of the configuration the catalog exposes. A record instead of eight
@@ -109,7 +124,8 @@ public sealed record JobCatalogSettings(
 }
 
 /// <summary>
-/// The seven hosted jobs the admin page may inspect and, when it is safe, launch by hand.
+/// The jobs the admin page may inspect and, when it is safe, launch by hand: the seven scheduled cycles plus
+/// the manual-only pending-price pass of the requester's wishlist.
 ///
 /// The catalog is data, not behaviour: it says what each job is, whether it can run right now, which lock
 /// a manual run must take and which bounded options it accepts. Execution lives in the job executors; the
@@ -228,7 +244,27 @@ public sealed class JobCatalog
                         "Simulación (no borra)",
                         $"Cuenta lo que se borraría con la retención actual ({settings.RetentionDays} día(s)) sin eliminar nada.",
                         DefaultValue: false)
-                ])
+                ]),
+            new JobDefinition(
+                JobKeys.CatalogPricesRefresh,
+                "Precios pendientes de mi wishlist",
+                "Refresca los precios de hasta " +
+                    $"{CatalogPriceRefreshLimits.BatchSize} juegos de tu lista de deseados cuyo precio " +
+                    $"comparable en MXN tiene más de {CatalogFreshness.Hours} h o no existe. Solo mira tu lista: " +
+                    "no toca tu biblioteca, tus favoritos ni los de otras cuentas. Se ejecuta solo a mano y no " +
+                    "envía avisos.",
+                Enabled: true,
+                DisabledReason: null,
+                Schedule: "solo manual (sin ejecución automática)",
+                CatalogPriceRefreshJobExecutor.AdvisoryLockKey,
+                Destructive: false,
+                RequiresConfirmation: false,
+                [])
+            {
+                // The batch belongs to the person who asked for it: the requester comes from the access token
+                // and is required, so there is no catalog-wide run and no fallback account.
+                RequiresRequester = true
+            }
         ];
 
         _byKey = All.ToDictionary(entry => entry.Job, StringComparer.Ordinal);

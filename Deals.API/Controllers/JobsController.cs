@@ -18,6 +18,10 @@ namespace Deals.API.Controllers;
 /// The whole controller is <c>AdminWithId</c>: it exposes operational health, provider budgets and the one
 /// destructive action in the product. Nothing here returns configuration secrets: details are sanitised on
 /// the way out (<see cref="JobDetailsSanitizer"/>).
+///
+/// The requester of a manual run is read from the access token by <see cref="ICurrentUserService"/> and passed
+/// to the dispatcher, which is the only way a wishlist-scoped job learns whose list to price. Nothing in the
+/// request body can name a user.
 /// </summary>
 [ApiController]
 [Route("api/jobs")]
@@ -25,7 +29,8 @@ namespace Deals.API.Controllers;
 public sealed class JobsController(
     IJobRunLogQueryService query,
     JobCatalog catalog,
-    JobSubmissionService submissions) : ControllerBase
+    JobSubmissionService submissions,
+    ICurrentUserService currentUser) : ControllerBase
 {
     private static readonly string[] KnownStatuses =
     [
@@ -137,8 +142,9 @@ public sealed class JobsController(
     /// this request open.
     ///
     /// Refusals are explicit: <c>404</c> unknown job, <c>400</c> invalid options or missing confirmation,
-    /// <c>409</c> a run of that job is already in progress. The rate limit is per administrator, because
-    /// every accepted request spends a provider budget.
+    /// <c>409</c> a run of that job is already in progress, <c>403</c> a personal job asked for without an
+    /// authenticated requester. The rate limit is per administrator, because every accepted request spends a
+    /// provider budget.
     /// </summary>
     [EnableRateLimiting("jobs-dispatch")]
     [HttpPost("{job}/run")]
@@ -151,7 +157,9 @@ public sealed class JobsController(
             job,
             request?.Options,
             request?.Confirm ?? false,
-            cancellationToken);
+            cancellationToken,
+            // Server-side identity only: the authenticated caller, never a body field.
+            currentUser.GetUserId());
 
         if (outcome.IsSuccess)
         {
@@ -170,6 +178,10 @@ public sealed class JobsController(
             JobSubmitStatus.ConfirmationRequired => Rejected(
                 StatusCodes.Status400BadRequest,
                 "job_confirmation_required",
+                outcome.Message),
+            JobSubmitStatus.RequesterRequired => Rejected(
+                StatusCodes.Status403Forbidden,
+                "job_requester_required",
                 outcome.Message),
             JobSubmitStatus.Invalid => Rejected(StatusCodes.Status400BadRequest, "job_options_invalid", outcome.Message),
             JobSubmitStatus.Duplicate => Rejected(

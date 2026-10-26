@@ -189,13 +189,17 @@ public static class CatalogDealQuery
     private const string UnconvertedPricing = GlobalDealPricingTypes.Unconverted;
 
     /// <summary>
-    /// Price and freshness portion of <see cref="DealAlertPolicy.IsComparable"/>: a positive MXN amount
-    /// inside the corruption ceiling, a pricing type other than `unconverted`, no Epic free or price-less
-    /// row, and a fresh observation. The shared region restriction is applied by CanonicalOffer.
+    /// Price portion of <see cref="DealAlertPolicy.IsComparable"/>: a positive MXN amount inside the
+    /// corruption ceiling, a pricing type other than `unconverted`, and no Epic free or price-less row. The
+    /// region restriction and the freshness window are applied by the callers.
+    ///
+    /// This half is public because the catalog freshness monitor asks the same question with a *different*
+    /// time window (and with no window at all): a price that is old is still a price, which is exactly the
+    /// distinction between `stale` and `missing`. Keeping one predicate is the only way the monitor and the
+    /// discover catalog cannot disagree about which rows count as an MXN price.
     /// </summary>
-    public static Expression<Func<GameOffer, bool>> ComparableOffer(DateTime nowUtc, TimeSpan maxSnapshotAge)
+    public static Expression<Func<GameOffer, bool>> PricedOffer()
     {
-        var threshold = nowUtc - maxSnapshotAge;
         var ceiling = DealAlertPolicy.MaxPriceMinor;
 
         return offer => offer.MxnCurrentPriceMinor != null &&
@@ -203,10 +207,27 @@ public static class CatalogDealQuery
             offer.MxnCurrentPriceMinor <= ceiling &&
             offer.PricingType != UnconvertedPricing &&
             !(offer.Source == EpicSource &&
-                (offer.OriginalCurrentPriceMinor == null || offer.OriginalCurrentPriceMinor <= 0)) &&
-            offer.ObservedAt >= threshold &&
-            offer.ObservedAt <= nowUtc;
+                (offer.OriginalCurrentPriceMinor == null || offer.OriginalCurrentPriceMinor <= 0));
     }
+
+    /// <summary>
+    /// Freshness portion of <see cref="DealAlertPolicy.IsComparable"/>: observed in the past, no older than
+    /// the window. A future stamp is corrupt evidence and is refused here, never read as fresh.
+    /// </summary>
+    public static Expression<Func<GameOffer, bool>> FreshOffer(DateTime nowUtc, TimeSpan maxSnapshotAge)
+    {
+        var threshold = nowUtc - maxSnapshotAge;
+
+        return offer => offer.ObservedAt >= threshold && offer.ObservedAt <= nowUtc;
+    }
+
+    /// <summary>
+    /// Price and freshness portion of <see cref="DealAlertPolicy.IsComparable"/>: a positive MXN amount
+    /// inside the corruption ceiling, a pricing type other than `unconverted`, no Epic free or price-less
+    /// row, and a fresh observation. The shared region restriction is applied by CanonicalOffer.
+    /// </summary>
+    public static Expression<Func<GameOffer, bool>> ComparableOffer(DateTime nowUtc, TimeSpan maxSnapshotAge) =>
+        And(PricedOffer(), FreshOffer(nowUtc, maxSnapshotAge));
 
     /// <summary>Shared comparability including exact MX region, plus the catalog's canonical anchor.</summary>
     public static Expression<Func<GameOffer, bool>> CanonicalOffer(DateTime nowUtc, TimeSpan maxSnapshotAge)
@@ -219,13 +240,12 @@ public static class CatalogDealQuery
     }
 
     /// <summary>
-    /// The Steam direct price of the game's MX snapshot, gated exactly like a provider row: MX region, an
-    /// MXN quote, a positive amount inside the corruption ceiling and a fresh observation. Its own
-    /// <c>lowest_price_minor</c> is never read: that value is created by our own observations.
+    /// The Steam direct price of the game's MX snapshot, without any time bound: region, an MXN quote, a
+    /// positive amount inside the corruption ceiling. The window is the caller's business, exactly like
+    /// <see cref="PricedOffer"/>.
     /// </summary>
-    public static Expression<Func<SteamGame, bool>> SteamDirect(DateTime nowUtc, TimeSpan maxSnapshotAge)
+    public static Expression<Func<SteamGame, bool>> PricedSteamDirect()
     {
-        var threshold = nowUtc - maxSnapshotAge;
         var ceiling = DealAlertPolicy.MaxPriceMinor;
         var region = Region;
         var currency = MxnCurrency;
@@ -235,9 +255,19 @@ public static class CatalogDealQuery
             game.Currency == currency &&
             game.CurrentPriceMinor != null &&
             game.CurrentPriceMinor > 0 &&
-            game.CurrentPriceMinor <= ceiling &&
-            game.ObservedAt >= threshold &&
-            game.ObservedAt <= nowUtc;
+            game.CurrentPriceMinor <= ceiling;
+    }
+
+    /// <summary>
+    /// The Steam direct price of the game's MX snapshot, gated exactly like a provider row: MX region, an
+    /// MXN quote, a positive amount inside the corruption ceiling and a fresh observation. Its own
+    /// <c>lowest_price_minor</c> is never read: that value is created by our own observations.
+    /// </summary>
+    public static Expression<Func<SteamGame, bool>> SteamDirect(DateTime nowUtc, TimeSpan maxSnapshotAge)
+    {
+        var threshold = nowUtc - maxSnapshotAge;
+
+        return And(PricedSteamDirect(), game => game.ObservedAt >= threshold && game.ObservedAt <= nowUtc);
     }
 
     /// <summary>Rule 2 on a provider row: the exact predicate of <see cref="DealAlertReasons.Price"/>.</summary>
@@ -289,7 +319,11 @@ public static class CatalogDealQuery
     public static Expression<Func<SteamGame, bool>> ScoreNeedsMoreThanHalfOffSteam() =>
         game => game.CurrentPriceMinor != null && game.CurrentPriceMinor * 2L < game.InitialPriceMinor;
 
-    private static Expression<Func<T, bool>> And<T>(
+    /// <summary>
+    /// Combines two predicates into one, rebinding both to a single parameter. Public because the freshness
+    /// monitor composes these same predicate fragments with a different window instead of copying them.
+    /// </summary>
+    public static Expression<Func<T, bool>> And<T>(
         Expression<Func<T, bool>> left,
         Expression<Func<T, bool>> right)
     {

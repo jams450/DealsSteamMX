@@ -13,6 +13,10 @@ export interface WishlistWinnerInput {
   readonly bestKeyshopLabel?: string | null;
   readonly bestKeyshopClassification?: string | null;
   readonly bestKeyshopPricingType?: string | null;
+  // Fecha en que se observó el importe de cada banda. Viaja con el ganador para que el precio que se pinta y
+  // su distintivo salgan de la misma banda: mezclarlos pondría la fecha del precio oficial sobre el de keyshop.
+  readonly bestOfficialObservedAt?: string | null;
+  readonly bestKeyshopObservedAt?: string | null;
 }
 
 export function wishlistWinner(item: WishlistWinnerInput) {
@@ -25,9 +29,10 @@ export function wishlistWinner(item: WishlistWinnerInput) {
   const label = (official ? item.bestOfficialLabel : item.bestKeyshopLabel) ?? null;
   const classification = (official ? item.bestOfficialClassification : item.bestKeyshopClassification) ?? null;
   const pricingType = (official ? item.bestOfficialPricingType : item.bestKeyshopPricingType) ?? null;
+  const observedAt = (official ? item.bestOfficialObservedAt : item.bestKeyshopObservedAt) ?? null;
   const badge = source === "steam" ? "Steam" : classification === "authorized" ? "Tienda autorizada" :
     classification === "official" ? "Tienda oficial" : classification === "keyshop" ? "Keyshop" : "Sin clasificar";
-  return { priceMinor, source, label, classification, pricingType, badge };
+  return { priceMinor, source, label, classification, pricingType, observedAt, badge };
 }
 
 export const SCORE_MAX = 10;

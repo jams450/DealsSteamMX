@@ -496,7 +496,8 @@ public sealed class SteamGameService(
         bool forceRefresh,
         bool interactive,
         CancellationToken cancellationToken,
-        GameRefreshMode? mode = null)
+        GameRefreshMode? mode = null,
+        StalePriceAttemptRecorder? attempt = null)
     {
         var refreshMode = mode ?? (forceRefresh ? GameRefreshMode.Full : GameRefreshMode.SteamOnly);
         var background = refreshMode == GameRefreshMode.BackgroundProviders;
@@ -516,18 +517,38 @@ public sealed class SteamGameService(
             MaxRefreshAfterDays);
         var refreshWindowStart = now.AddDays(-refreshDays);
 
-        var initialPlan = GameRefreshPolicy.Create(refreshMode, now, TimeSpan.FromDays(refreshDays),
+        // The stale-price batch does NOT reuse the configured provider TTL: it is the 72-hour pass the
+        // freshness monitor feeds, and inheriting the 7-day window would make it skip exactly what it was
+        // asked to reprice. The mode itself refuses a longer TTL (GameRefreshPolicy).
+        var providerTtl = refreshMode == GameRefreshMode.StalePriceBatch
+            ? TimeSpan.FromHours(GameRefreshPolicy.StalePriceBatchHours)
+            : TimeSpan.FromDays(refreshDays);
+
+        var initialPlan = GameRefreshPolicy.Create(refreshMode, now, providerTtl,
             snapshot is not null, snapshot is not null && HoldsSteamDetails(snapshot),
             snapshot?.ObservedAt ?? default, false, null, null, null, null, false, false);
         if (!initialPlan.CanRun) return null;
+        if (attempt is not null)
+        {
+            attempt.Ran = true;
+            attempt.RecordSteamDue(initialPlan.NeedsSteam);
+        }
+
         var needsSteam = initialPlan.NeedsSteam;
 
         // ---- Outbound phase: every provider call happens here, with no transaction open. ----
         var details = needsSteam ? await steamClient.GetAppDetailsAsync(appId, cancellationToken) : null;
         if (needsSteam && details is null)
         {
-            // Steam is the price source of truth and is never hidden by an ITAD failure.
+            // Steam is the price source of truth and is never hidden by an ITAD failure. For the batch this is
+            // a failed due phase, not a quiet no-op: the snapshot keeps its old date and the caller must retry.
+            attempt?.RecordSteamFailed();
             return null;
+        }
+
+        if (details is not null)
+        {
+            attempt?.RecordSteamRefreshed();
         }
 
         // A fresh Steam answer stamps its own ObservedAt; a cached snapshot keeps the stored one, because
@@ -546,11 +567,12 @@ public sealed class SteamGameService(
             ? await FindExternalIdAsync(snapshot?.GameId, GameExternalIdNamespaces.Epic, cancellationToken) : null;
         var microsoftExternalId = external
             ? await FindExternalIdAsync(snapshot?.GameId, GameExternalIdNamespaces.Xbox, cancellationToken) : null;
-        var plan = GameRefreshPolicy.Create(refreshMode, now, TimeSpan.FromDays(refreshDays),
+        var plan = GameRefreshPolicy.Create(refreshMode, now, providerTtl,
             snapshot is not null, snapshot is not null && HoldsSteamDetails(snapshot),
             snapshot?.ObservedAt ?? default, isComparable, snapshot?.OffersRefreshedAt,
             snapshot?.GgDealsRefreshedAt, snapshot?.EpicRefreshedAt, snapshot?.MicrosoftRefreshedAt,
             epicExternalId is not null, microsoftExternalId is not null);
+        attempt?.RecordProviderPlan(plan);
         var needsOffers = plan.RefreshItadPrices;
 
         // ITAD establishes the trusted links used by direct stores. It must complete before Epic and
@@ -568,6 +590,13 @@ public sealed class SteamGameService(
 
         // Read stored identities before concurrent outbound work. EF Core does not permit concurrent
         // operations on one DbContext; these fetches are independent once ITAD has answered.
+        // Identity-only ITAD reads never write a timestamp (an identity is not a price), so their failure is
+        // only visible here: a due phase that did not answer has to be reported by the caller as degraded.
+        if (itadRefresh is not null && !needsOffers)
+        {
+            attempt?.RecordIdentityPhase(itadRefresh.Outcome);
+        }
+
         var needsGgDeals = plan.RefreshGg;
         var needsEpic = plan.RefreshEpic;
         var needsMicrosoft = plan.RefreshMicrosoft;
@@ -643,7 +672,10 @@ public sealed class SteamGameService(
 
         // A cached GET has no fresh provider result to write. Return the no-tracking snapshot without a
         // transaction, tracked reload or SaveChanges; its freshness and response contract remain unchanged.
-        if (details is null && !forceRefresh && snapshot is not null)
+        // The stale-price batch is the exception on purpose: it exists to run the due provider phases and
+        // write their answers, so it must never answer from the snapshot without attempting them.
+        if (details is null && !forceRefresh && snapshot is not null &&
+            refreshMode != GameRefreshMode.StalePriceBatch)
         {
             var bundleFxRate = snapshot.BundleLinks.Count > 0
                 ? await fxRateService.GetLatestRateAsync(FxBaseCurrency, FxQuoteCurrency, cancellationToken)
@@ -686,6 +718,7 @@ public sealed class SteamGameService(
 
             if (needsOffers && itadRefresh is not null)
             {
+                var itadBefore = game.OffersRefreshedAt;
                 removedOffers.AddRange(ApplyItadRefresh(game, itadRefresh, observedAt));
                 if (itadRefresh.Outcome != ProviderRefreshOutcome.Failed)
                 {
@@ -694,6 +727,12 @@ public sealed class SteamGameService(
                     game.OffersRefreshedAt = observedAt;
                     offersStale = false;
                 }
+
+                attempt?.RecordProviderPhase(
+                    SteamStalePricePhases.Itad,
+                    itadRefresh.Outcome,
+                    itadBefore,
+                    game.OffersRefreshedAt);
             }
 
             var ggDealsStale = game.Offers.Any(offer => string.Equals(offer.Source, GgDealsSource, StringComparison.OrdinalIgnoreCase)) &&
@@ -701,16 +740,24 @@ public sealed class SteamGameService(
 
             if (ggDealsRefresh is not null)
             {
+                var ggDealsBefore = game.GgDealsRefreshedAt;
                 removedOffers.AddRange(ApplyGgDealsRefresh(game, ggDealsRefresh, observedAt));
                 if (ggDealsRefresh.Outcome != ProviderRefreshOutcome.Failed)
                 {
                     game.GgDealsRefreshedAt = observedAt;
                     ggDealsStale = false;
                 }
+
+                attempt?.RecordProviderPhase(
+                    SteamStalePricePhases.GgDeals,
+                    ggDealsRefresh.Outcome,
+                    ggDealsBefore,
+                    game.GgDealsRefreshedAt);
             }
 
             if (epicRefresh is not null)
             {
+                var epicBefore = game.EpicRefreshedAt;
                 removedOffers.AddRange(await ApplyClaimedStoreRefreshAsync(
                     game,
                     EpicSource,
@@ -723,10 +770,17 @@ public sealed class SteamGameService(
                 {
                     game.EpicRefreshedAt = observedAt;
                 }
+
+                attempt?.RecordProviderPhase(
+                    SteamStalePricePhases.Epic,
+                    epicRefresh.Outcome,
+                    epicBefore,
+                    game.EpicRefreshedAt);
             }
 
             if (microsoftRefresh is not null)
             {
+                var microsoftBefore = game.MicrosoftRefreshedAt;
                 removedOffers.AddRange(await ApplyClaimedStoreRefreshAsync(
                     game,
                     MicrosoftSource,
@@ -739,6 +793,12 @@ public sealed class SteamGameService(
                 {
                     game.MicrosoftRefreshedAt = observedAt;
                 }
+
+                attempt?.RecordProviderPhase(
+                    SteamStalePricePhases.Microsoft,
+                    microsoftRefresh.Outcome,
+                    microsoftBefore,
+                    game.MicrosoftRefreshedAt);
             }
 
             var bundlesStale = game.BundleLinks.Any(link =>
@@ -818,6 +878,101 @@ public sealed class SteamGameService(
         await gateLease.Semaphore.WaitAsync(cancellationToken);
         try { return await LoadDetailsAsync(appId, false, false, cancellationToken, GameRefreshMode.BackgroundProviders); }
         finally { gateLease.Semaphore.Release(); }
+    }
+
+    /// <summary>
+    /// The manual pending-price pass: every due price phase of one game — Steam direct included — gated at 72 h
+    /// instead of the configured TTL, through the same per-app gate as every other load. A game that is already
+    /// fresh costs no provider request and no write: the plan simply has no steps, and the pass records a skip.
+    ///
+    /// The typed outcome is the point of this entry point: the pipeline turns a provider fault into a
+    /// <c>Failed</c> phase result and still returns a details model, so "which due phase really answered" has to
+    /// be observed here or it is lost.
+    /// </summary>
+    public async Task<SteamStalePriceRefresh> RefreshStalePricesAsync(int appId, CancellationToken cancellationToken)
+    {
+        if (appId <= 0) throw new ArgumentException("El appid de Steam debe ser un entero positivo.");
+
+        var attempt = new StalePriceAttemptRecorder();
+        using var gateLease = AcquireAppGate(appId);
+        await gateLease.Semaphore.WaitAsync(cancellationToken);
+        try
+        {
+            await LoadDetailsAsync(appId, false, false, cancellationToken, GameRefreshMode.StalePriceBatch, attempt);
+            return attempt.ToResult();
+        }
+        finally { gateLease.Semaphore.Release(); }
+    }
+
+    /// <summary>
+    /// Accumulates what one stale-price attempt was asked to do and what it actually did. Only the batch mode
+    /// passes one, so no other caller pays for it. It never decides anything: the classification lives in
+    /// <see cref="CatalogPriceRefreshClassification"/>, which the offline checks exercise.
+    /// </summary>
+    private sealed class StalePriceAttemptRecorder
+    {
+        private readonly List<string> due = [];
+        private readonly List<string> advanced = [];
+        private readonly List<string> degraded = [];
+
+        public bool Ran { get; set; }
+
+        public bool SteamDue { get; private set; }
+
+        public void RecordSteamDue(bool steamDue)
+        {
+            SteamDue = steamDue;
+            if (steamDue) due.Add(SteamStalePricePhases.Steam);
+        }
+
+        public void RecordProviderPlan(GameRefreshPlan plan)
+        {
+            foreach (var step in plan.Steps)
+            {
+                due.Add(step);
+            }
+        }
+
+        public void RecordSteamRefreshed()
+        {
+            if (SteamDue) advanced.Add(SteamStalePricePhases.Steam);
+        }
+
+        public void RecordSteamFailed()
+        {
+            if (SteamDue) degraded.Add(SteamStalePricePhases.Steam);
+        }
+
+        /// <summary>
+        /// One due price phase. A <c>Failed</c> outcome is degradation even when the row already carries a price
+        /// from an earlier pass, and so is a phase that claims success without moving its own timestamp: only
+        /// <see cref="SteamStalePriceRefresh.PersistedAnswer"/> separates a real answer from a failed call.
+        /// </summary>
+        public void RecordProviderPhase(string phase, ProviderRefreshOutcome outcome, DateTime? before, DateTime? after)
+        {
+            if (!SteamStalePriceRefresh.PersistedAnswer(outcome == ProviderRefreshOutcome.Failed, before, after))
+            {
+                degraded.Add(phase);
+                return;
+            }
+
+            advanced.Add(phase);
+        }
+
+        /// <summary>
+        /// The identity-only ITAD read: it never writes a timestamp (an identity is not a price), so a failure
+        /// is the only thing it can prove. Success is silent on purpose.
+        /// </summary>
+        public void RecordIdentityPhase(ProviderRefreshOutcome outcome)
+        {
+            if (outcome == ProviderRefreshOutcome.Failed)
+            {
+                degraded.Add(SteamStalePricePhases.Itad);
+            }
+        }
+
+        public SteamStalePriceRefresh ToResult() =>
+            new(Ran, SteamDue, due.ToArray(), advanced.ToArray(), degraded.ToArray());
     }
 
     /// <summary>

@@ -81,6 +81,10 @@ public static class ServiceCollectionExtensions
         // not depend on the notification extension being composed first.
         services.TryAddSingleton(TimeProvider.System);
         services.AddScoped<CatalogDealService>();
+        // Price monitor of the requester's wishlist (spec S4): the same read-only, provider-free posture as the
+        // catalog above, and a required wishlist-scope resolver so there is no unscoped path.
+        services.AddScoped<ICatalogWishlistScopeResolver, CatalogWishlistScopeResolver>();
+        services.AddScoped<CatalogFreshnessService>();
         services.AddHostedService<GlobalDealSyncJob>();
         services.AddScoped<IGameIdentityResolver, GameIdentityResolver>();
         services.AddScoped<IGameMergeService, GameMergeService>();
@@ -471,6 +475,14 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IJobExecutor>(sp => sp.GetRequiredService<NtfyDealsJobExecutor>());
         services.AddScoped<JobRunPurgeJobExecutor>();
         services.AddScoped<IJobExecutor>(sp => sp.GetRequiredService<JobRunPurgeJobExecutor>());
+
+        // Manual-only pending-price pass (spec S5/S6): registered for the dispatcher, deliberately NOT as a
+        // hosted service — nothing in the host schedules it. Its candidate selection, its 72 h provider gates
+        // and its wishlist scope (the requester's own list, captured when queued) live in the business layer;
+        // the executor only maps counters to a job result.
+        services.AddScoped<ICatalogPriceRefreshService, CatalogPriceRefreshService>();
+        services.AddScoped<CatalogPriceRefreshJobExecutor>();
+        services.AddScoped<IJobExecutor>(sp => sp.GetRequiredService<CatalogPriceRefreshJobExecutor>());
         services.AddHostedService<JobRunDispatchService>();
         services.AddOptions<JobBudgetOptions>()
             .Validate(options => options.RetentionDays > 0 && options.PurgeBatchSize > 0, "JobBudgets retention and purge batch must be positive.")

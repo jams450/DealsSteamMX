@@ -20,6 +20,7 @@ await JobSubmissionChecks.RunAsync();
 await JobExecutionChecks.RunAsync();
 JobSanitizerChecks.Run();
 JobCompatibilityChecks.Run();
+CatalogPriceRefreshChecks.Run();
 
 Console.WriteLine("PASS: all jobs catalog/dispatch checks");
 
@@ -29,7 +30,7 @@ internal static class JobCatalogChecks
     {
         var catalog = new JobCatalog(JobCatalogSettings.Default);
 
-        Check(catalog.All.Count == 7, "catalog exposes exactly the seven registered hosted jobs");
+        Check(catalog.All.Count == 8, "catalog exposes the seven scheduled jobs plus the manual price pass");
         Check(
             catalog.All.Select(entry => entry.Job).ToHashSet(StringComparer.Ordinal)
                 .SetEquals(JobKeys.All),
@@ -106,6 +107,10 @@ internal static class JobCatalogChecks
 
         Check(catalog.Find(JobKeys.FxRateRefresh)!.Options.Count == 0, "fx refresh has no options");
         Check(catalog.Find(JobKeys.Purge)!.Options.Count == 1, "purge exposes only the dry run switch");
+        // The manual price pass takes no options on purpose: its batch bound is a constant, so nothing in the
+        // request can widen it into a whole-catalog sweep.
+        Check(catalog.Find(JobKeys.CatalogPricesRefresh)!.Options.Count == 0,
+            "the manual price pass exposes no options");
         Console.WriteLine("PASS: jobs catalog checks");
     }
 
@@ -576,12 +581,13 @@ internal static class JobCompatibilityChecks
             GgDealsBundleSyncJobExecutor.JobKey,
             GlobalDealSyncJobExecutor.JobKey,
             NtfyDealsJobExecutor.JobKey,
-            JobRunPurgeJobExecutor.JobKey
+            JobRunPurgeJobExecutor.JobKey,
+            CatalogPriceRefreshJobExecutor.JobKey
         };
         Check(executorJobs.Distinct(StringComparer.Ordinal).Count() == executorJobs.Length,
             "each job key has one executor");
         Check(executorJobs.ToHashSet(StringComparer.Ordinal).SetEquals(JobKeys.All),
-            "the catalog and the executors describe the same seven jobs");
+            "the catalog and the executors describe the same eight jobs");
 
         Check(JobRunTracker.AbandonedAfter == TimeSpan.FromHours(6),
             "the abandoned-run window is the documented six hours");
@@ -644,7 +650,8 @@ internal static class JobRegistrationChecks
         Deals.API.Extensions.ServiceCollectionExtensions.AddApiApplicationServices(services);
         Type[] types = [typeof(WishlistSyncJobExecutor), typeof(FxRateRefreshJobExecutor),
             typeof(GlobalBundleSyncJobExecutor), typeof(GgDealsBundleSyncJobExecutor),
-            typeof(GlobalDealSyncJobExecutor), typeof(NtfyDealsJobExecutor), typeof(JobRunPurgeJobExecutor)];
+            typeof(GlobalDealSyncJobExecutor), typeof(NtfyDealsJobExecutor), typeof(JobRunPurgeJobExecutor),
+            typeof(CatalogPriceRefreshJobExecutor)];
         foreach (var type in types)
         {
             var registration = services.SingleOrDefault(item => item.ServiceType == type);
@@ -658,7 +665,7 @@ internal static class JobRegistrationChecks
         using var provider = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services);
         using var scope = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.CreateScope(provider);
         var manual = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetServices<IJobExecutor>(scope.ServiceProvider).ToList();
-        if (manual.Count != types.Length) throw new Exception("Manual executor count must remain seven");
+        if (manual.Count != types.Length) throw new Exception("Manual executor count must match the catalog");
         foreach (var type in types)
         {
             var scheduled = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService(scope.ServiceProvider, type);

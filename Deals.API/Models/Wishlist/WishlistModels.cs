@@ -10,6 +10,11 @@ namespace Deals.API.Models.Wishlist;
 /// of a legitimate shop and of a keyshop respectively (null when there is no converted price).
 /// <see cref="BestOfficialMinor"/> spans every source, the direct Steam snapshot included: it is the
 /// minimum among ITAD, Epic, Microsoft and Steam.
+/// <see cref="BestOfficialObservedAt"/>/<see cref="BestKeyshopObservedAt"/> are the observation date of the very
+/// offer whose price and shop metadata those columns report, so the ≤72h/+72h label describes a price and a
+/// date of the same source. They are not provider consultation stamps (<c>*SyncedAt</c>): a provider can be
+/// consulted minutes ago and still quote a price seen days ago, and only the latter describes the figure on
+/// screen. Null means no comparable price, never "now".
 /// The five <c>*SyncedAt</c> fields are the per-provider refresh stamps the snapshot already carries, one
 /// per source, so the row can say which store is in sync and when it last was. They are not derived from
 /// each other: a provider that failed keeps its old stamp while the others advance.
@@ -42,7 +47,9 @@ public sealed record WishlistItemResponse(
     string? BestKeyshopSource = null,
     string? BestKeyshopLabel = null,
     string? BestKeyshopClassification = null,
-    string? BestKeyshopPricingType = null);
+    string? BestKeyshopPricingType = null,
+    DateTime? BestOfficialObservedAt = null,
+    DateTime? BestKeyshopObservedAt = null);
 
 public sealed record WishlistCategorySummary(long Id, string Name, int ItemCount);
 

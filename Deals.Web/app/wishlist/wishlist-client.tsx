@@ -6,7 +6,7 @@ import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type Fo
 import { ArrowDown, ArrowUp, Gamepad2, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { PriceFact, formatMinor } from "@/components/ui/price-value";
+import { PriceFact, PriceValue, formatMinor } from "@/components/ui/price-value";
 import { refreshSteamGame } from "@/app/steam/_lib/steam-api";
 import { cn } from "@/lib/ui/cn";
 import { ToastStack } from "@/components/feedback/toast-stack";
@@ -15,6 +15,7 @@ import { assignWishlistCategory, createWishlistCategory, getWishlist, previewWis
 import { createWishlistSearchScheduler, withAppliedSearch } from "./_lib/wishlist-search";
 import type { PaginationState, SortingState } from "@tanstack/react-table";
 import { dealScore, discountPercent, wishlistWinner } from "./_lib/wishlist-metrics";
+import { observedAtBadge, observedAtLabel, advanceObservedAtClock, OBSERVED_AT_CLOCK_TICK_MS, OBSERVED_AT_FRESH_HOURS } from "./_lib/wishlist-observed-at";
 import {
   MAX_PACKAGE_APP_IDS,
   exceedsPackageLimit,
@@ -36,6 +37,8 @@ import { AcquireDialog } from "./_components/acquire-dialog";
 
 const dateFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
 const shortDateFormatter = new Intl.DateTimeFormat("es-MX", { day: "2-digit", month: "short" });
+// El tooltip del distintivo de antigüedad necesita la hora, no solo el día.
+const fullDateTimeFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium", timeStyle: "short" });
 
 // Los mínimos llegan en MXN; la procedencia indica si el ganador es una estimación FX.
 const MXN = "MXN";
@@ -96,6 +99,12 @@ function formatDateTime(value: string | null) {
   if (!value) return null;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : dateFormatter.format(date);
+}
+
+function formatFullDateTime(value: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : fullDateTimeFormatter.format(date);
 }
 
 // El formateo de importes (`formatMinor`, `PriceValue`, `PriceFact`) vive en
@@ -251,6 +260,78 @@ function itemScore(item: WishlistItem, bestMinor: number | null, minViableDiscou
     historyLowCurrency: item.historyLowCurrency,
     minViableDiscountPercent
   });
+}
+
+// Reloj de la página. Arranca en `null` —el HTML del servidor y la primera hidratación dicen «todavía sin
+// reloj», así que coinciden en vez de calcular dos «ahora» distintos— y toma la primera muestra en un efecto,
+// ya en el cliente. Se vuelve a muestrear cada minuto para que una fecha futura pueda volverse pasada y para
+// que el borde de las 72 h se cruce con el reloj y no con una recarga.
+//
+// Es uno solo por lista: se crea aquí y baja como prop a cada tarjeta, así que no hay un temporizador por fila.
+// Un «ahora» calculado al cargar el módulo no serviría: el proceso del servidor vive entre peticiones y el
+// cliente carga en otro instante, de modo que congelarlo no da paridad de hidratación, da un reloj parado.
+function useWishlistClock(): number | null {
+  const [nowMs, setNowMs] = useState<number | null>(null);
+
+  useEffect(() => {
+    // La muestra va dentro del efecto, nunca en el cuerpo del render.
+    const sample = () => setNowMs((current) => advanceObservedAtClock(current, Date.now()));
+    sample();
+    const timer = setInterval(sample, OBSERVED_AT_CLOCK_TICK_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  return nowMs;
+}
+
+// Precio de banda (oficial / keyshop) con el distintivo de cuándo se observó ESE precio, en la misma línea
+// del importe. Repite la forma de `PriceFact` —etiqueta arriba, importe abajo— que ya usa la tabla compacta,
+// y añade el distintivo al lado sin mover el importe de sitio.
+function BandPriceFact({ label, amountMinor, currency, observedAt, nowMs }: {
+  readonly label: string;
+  readonly amountMinor: number | null;
+  readonly currency: string | null;
+  // Opcional en el contrato: un payload anterior no lo manda, y el distintivo lo trata como desconocido.
+  readonly observedAt: string | null | undefined;
+  // Reloj de la página; null hasta que monta (ver `useWishlistClock`).
+  readonly nowMs: number | null;
+}) {
+  return (
+    <div className="min-w-0">
+      <p className="text-xs text-muted">{label}</p>
+      <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-1">
+        <PriceValue amountMinor={amountMinor} currency={currency} />
+        <ObservedAtBadge amountMinor={amountMinor} observedAt={observedAt} nowMs={nowMs} />
+      </span>
+    </div>
+  );
+}
+
+// Antigüedad del precio de la banda que acompaña. Sin precio no hay nada que fechar, así que el distintivo
+// desaparece en vez de decir «Fecha desconocida» al lado de un «—». Con precio y sin fecha legible sí se
+// dice desconocida: es un hecho sobre el dato, no una invención, y nunca se rellena con el sello del
+// proveedor ni con la fecha de refresco de la fila (dirían cuándo corrió el proveedor, no cuándo se leyó
+// este importe). El texto corto viene del helper puro; aquí solo se elige el tono y la fecha completa.
+function ObservedAtBadge({ amountMinor, observedAt, nowMs }: { readonly amountMinor: number | null; readonly observedAt: string | null | undefined; readonly nowMs: number | null }) {
+  if (amountMinor === null) return null;
+
+  const badge = observedAtBadge(observedAt, nowMs);
+  // Sin reloj todavía no hay distintivo: la primera pintura (servidor e hidratación) no adivina el «ahora».
+  if (badge === null) return null;
+
+  const full = formatFullDateTime(badge.observedAt);
+  const tone = badge.status === "recent" ? "tabler-badge-success"
+    : badge.status === "stale" ? "tabler-badge-warning" : "tabler-badge-muted";
+
+  return (
+    <span
+      className={cn("tabler-badge", tone)}
+      title={full === null ? "Precio observado en fecha desconocida" : `Precio observado el ${full}`}
+    >
+      {badge.label}
+      <span className="sr-only">{full === null ? " (precio observado en fecha desconocida)" : ` (precio observado el ${full})`}</span>
+    </span>
+  );
 }
 
 // Los cuatro valores que no son importes directos (descuentos y scores): viven en la zona de
@@ -917,6 +998,8 @@ interface WishlistCardProps {
   readonly refreshingAppId: number | null;
   readonly rowErrors: Readonly<Record<number, string>>;
   readonly minViableDiscountPercent: number;
+  // Reloj compartido de la lista: nulo hasta montar. Sin él, el distintivo no se pinta.
+  readonly clockMs: number | null;
   readonly onRefresh: (item: WishlistItem) => void;
   readonly onEditCategories: (item: WishlistItem, trigger: HTMLButtonElement) => void;
   readonly onAcquire: (item: WishlistItem, trigger: HTMLButtonElement) => void;
@@ -931,6 +1014,7 @@ function WishlistCard({
   refreshingAppId,
   rowErrors,
   minViableDiscountPercent,
+  clockMs,
   onRefresh,
   onEditCategories,
   onAcquire
@@ -975,6 +1059,7 @@ function WishlistCard({
               </p>
               {winner && <div className="flex flex-wrap items-center gap-2">
                 <span className={cn("tabler-badge", sourceBadgeClass)}>{winner.badge}</span>
+                <ObservedAtBadge amountMinor={winner.priceMinor} observedAt={winner.observedAt} nowMs={clockMs} />
                 {winner.label && <span className="text-sm text-secondary">{winner.label}</span>}
                 {estimated && <span className="text-xs text-muted">Estimación FX</span>}
               </div>}
@@ -1014,8 +1099,8 @@ function WishlistCard({
             <span className="block text-xs text-muted">Actualizado {refreshed ?? "—"}</span>
             <div className="grid grid-cols-2 gap-x-3 gap-y-2">
               <PriceFact label="Precio base Steam" amountMinor={item.basePriceMinor} currency={item.baseCurrency} className="text-secondary" />
-              <PriceFact label="Mín. oficial" amountMinor={item.bestOfficialMinor} currency={MXN} />
-              <PriceFact label="Mín. keys" amountMinor={item.bestKeyshopMinor} currency={MXN} />
+              <BandPriceFact label="Mín. oficial" amountMinor={item.bestOfficialMinor} currency={MXN} observedAt={item.bestOfficialObservedAt} nowMs={clockMs} />
+              <BandPriceFact label="Mín. keys" amountMinor={item.bestKeyshopMinor} currency={MXN} observedAt={item.bestKeyshopObservedAt} nowMs={clockMs} />
               <MobileMetrics item={item} minViableDiscountPercent={minViableDiscountPercent} />
             </div>
             <div className="pb-1"><WishlistRowMeta item={item} /></div>
@@ -1091,6 +1176,8 @@ function WishlistItems({
   onClearFilters
 }: WishlistItemsProps) {
 
+  // Un solo reloj para toda la lista: todas las tarjetas comparten la misma muestra y el mismo temporizador.
+  const clockMs = useWishlistClock();
   const [selectedAppIds, setSelectedAppIds] = useState<ReadonlySet<number>>(() => new Set<number>());
   const [categoryFeedback, setCategoryFeedback] = useState("");
   const [categoryFormOpen, setCategoryFormOpen] = useState(false);
@@ -1260,6 +1347,7 @@ function WishlistItems({
           </p>
         ) : null}
         <p className="text-xs text-muted">«Mín. oficial» y «Mín. keys» ya están en MXN. El precio base y el mínimo histórico se muestran en la moneda del proveedor, sin convertir.</p>
+        <p className="text-xs text-muted">Junto a esos dos precios, {observedAtLabel("recent", OBSERVED_AT_FRESH_HOURS)} significa que el importe se leyó dentro de esa ventana y {observedAtLabel("stale", OBSERVED_AT_FRESH_HOURS)} que es más antiguo. {observedAtLabel("unknown", OBSERVED_AT_FRESH_HOURS)} avisa de que el importe existe pero no su fecha: nunca se rellena con la última sincronización del proveedor.</p>
         <p className="text-xs text-muted">«% dto.» se calcula contra el precio de lista de Steam (precio base) y «Deal» es un score híbrido de 0 a 10: 7 puntos por la escala del descuento frente al mínimo viable y 3 por la cercanía al mínimo histórico.</p>
       </div>
       <div className="overflow-hidden rounded-[var(--radius-md)] border border-default bg-[var(--color-surface-2)]">
@@ -1360,6 +1448,7 @@ function WishlistItems({
                 refreshingAppId={refreshingAppId}
                 rowErrors={rowErrors}
                 minViableDiscountPercent={minViableDiscountPercent}
+                clockMs={clockMs}
                 onRefresh={onRefresh}
                 onEditCategories={(cardItem, trigger) => {
                   categoryTriggerRef.current = trigger;

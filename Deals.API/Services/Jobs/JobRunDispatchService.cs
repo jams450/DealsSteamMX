@@ -13,6 +13,10 @@ namespace Deals.API.Services.Jobs;
 /// One item at a time per process on purpose. The operator asked for a run, not for a burst: serialising
 /// here keeps two manual jobs from spending the same provider budget simultaneously, and the advisory lock
 /// already serialises against the scheduled cycle and against other instances.
+///
+/// The item is the whole execution context: it already carries the requester captured from the access token
+/// when the run was accepted, so a wishlist-scoped job never has to look at an <c>HttpContext</c> from a
+/// background thread — there is none by then.
 /// </summary>
 public sealed class JobRunDispatchService(
     IJobRunQueue queue,

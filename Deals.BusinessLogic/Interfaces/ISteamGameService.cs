@@ -21,6 +21,18 @@ public interface ISteamGameService
     /// <summary>Due external providers only, using persisted Steam details; never requests Steam.</summary>
     Task<SteamGameDetails?> RefreshProvidersAsync(int appId, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// The manual pending-price pass for one game: every due price phase — including the Steam direct snapshot —
+    /// gated by the 72-hour stale-price window instead of the configured provider TTL. Same per-app gate, same
+    /// governors, same "a failed answer never advances a timestamp" rule as
+    /// <see cref="RefreshProvidersAsync"/>, and nothing is ever forced.
+    ///
+    /// It returns a typed <see cref="SteamStalePriceRefresh"/> instead of only the details because the pipeline
+    /// absorbs a provider fault into a <c>Failed</c> phase result: without which phases were due, which really
+    /// answered and which failed, the caller cannot tell a completed price from a failed call.
+    /// </summary>
+    Task<SteamStalePriceRefresh> RefreshStalePricesAsync(int appId, CancellationToken cancellationToken);
+
     Task<IReadOnlyList<SteamSearchResult>> GetSuggestionsAsync(string? query, CancellationToken cancellationToken);
 
     /// <summary>

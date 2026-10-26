@@ -40,14 +40,23 @@ public sealed class JobRunLog(IRepository repository)
     }
 
     /// <summary>Opens a run in <c>running</c> and returns its id for <see cref="FinishAsync"/>.</summary>
-    public async Task<long> StartAsync(string job, string trigger, CancellationToken cancellationToken)
+    /// <param name="details">
+    /// Provenance recorded with the row <em>before</em> the work starts, so an interrupted run still says who
+    /// asked for it. Null for a scheduled cycle, which has no requester.
+    /// </param>
+    public async Task<long> StartAsync(
+        string job,
+        string trigger,
+        CancellationToken cancellationToken,
+        object? details = null)
     {
         var run = new JobRun
         {
             Job = job,
             Trigger = trigger,
             Status = JobRunStatuses.Running,
-            StartedAt = DateTime.UtcNow
+            StartedAt = DateTime.UtcNow,
+            Details = details is null ? null : JsonSerializer.Serialize(details)
         };
 
         repository.GetTrack<JobRun>().Add(run);
