@@ -746,7 +746,10 @@ internal static class CatalogWishlistIsolationChecks
     {
         public List<int> Calls { get; } = [];
 
-        public Task<SteamStalePriceRefresh> RefreshStalePricesAsync(int appId, CancellationToken cancellationToken)
+        public Task<SteamStalePriceRefresh> RefreshStalePricesAsync(
+            int appId,
+            CancellationToken cancellationToken,
+            int ageHours = GameRefreshPolicy.StalePriceBatchHours)
         {
             Calls.Add(appId);
             return Task.FromResult(new SteamStalePriceRefresh(

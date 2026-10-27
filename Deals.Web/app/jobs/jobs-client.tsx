@@ -2,23 +2,42 @@
 
 import { ChevronLeft, ChevronRight, Play, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import { AdminShell } from "@/components/navigation/admin-shell";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import {
   buildJobRunPayload,
   clampJobPage,
   formatJobOptionValues,
+  jobOptionInputText,
+  jobOptionRangeText,
+  jobOptionValueError,
   JOB_RUNS_PAGE_SIZE,
   type JobCatalog,
   type JobCatalogItem,
+  type JobOption,
+  type JobOptionInput,
   type JobRun,
-  type JobRunPayload,
   type JobsResponse
 } from "@/lib/contracts/jobs";
+import { cn } from "@/lib/ui/cn";
 import { getJobCatalog, getJobRun, getJobRuns, runJob, type JobRunQueued } from "./_lib/jobs-api";
+import { DiagnosticsPanel } from "./diagnostics-panel";
+
+// Dos secciones en la misma página: la operación de siempre (ejecutar, catálogo, historial) y la lectura del
+// diagnóstico de sincronización de una ejecución histórica. La primera conserva tal cual su comportamiento;
+// la segunda solo lee. No hay ejecución por tienda.
+const JOB_TABS = ["runs", "diagnostics"] as const;
+type JobTab = (typeof JOB_TABS)[number];
+
+const JOB_TAB_LABELS: Record<JobTab, string> = {
+  runs: "Ejecuciones",
+  diagnostics: "Diagnóstico de sincronización"
+};
 
 // Copy de estados: el backend devuelve claves de máquina (`running`, `ok`, `failed`, `scheduled`, `startup`,
 // `manual`) y la traducción vive aquí, no en el contrato.
@@ -167,11 +186,60 @@ type Feedback =
   | { readonly kind: "success"; readonly message: string; readonly run: JobRun | null }
   | { readonly kind: "error"; readonly message: string };
 
+/**
+ * Campo de una opción `integer` (p. ej. las horas de antigüedad). Se pinta como número, no como casilla: el
+ * texto del usuario se guarda tal cual, el rango declarado y el motivo del rechazo se anuncian con
+ * `aria-describedby`, y un valor vacío o inválido nunca se reemplaza por el default.
+ */
+function IntegerOptionField({
+  option,
+  value,
+  onChange
+}: {
+  readonly option: JobOption;
+  readonly value: string;
+  readonly onChange: (next: string) => void;
+}) {
+  const error = jobOptionValueError(option, value);
+  const range = jobOptionRangeText(option);
+  const helpId = `job-option-${option.key}-help`;
+  const rangeId = `job-option-${option.key}-range`;
+  const describedBy = [option.help ? helpId : null, range ? rangeId : null].filter(Boolean).join(" ") || undefined;
+
+  return (
+    <div className="space-y-1 text-sm text-primary">
+      <Input
+        id={`job-option-${option.key}`}
+        label={option.label}
+        type="number"
+        inputMode="numeric"
+        step={1}
+        min={option.minValue ?? undefined}
+        max={option.maxValue ?? undefined}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        error={error ?? undefined}
+        aria-describedby={describedBy}
+      />
+      {option.help ? (
+        <p id={helpId} className="text-xs text-muted">
+          {option.help}
+        </p>
+      ) : null}
+      {range ? (
+        <p id={rangeId} className="text-xs text-muted">
+          {range}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function JobsClient({ username }: { username: string }) {
   const [catalog, setCatalog] = useState<JobCatalog | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selectedJob, setSelectedJob] = useState<string>("");
-  const [optionValues, setOptionValues] = useState<Record<string, boolean>>({});
+  const [optionValues, setOptionValues] = useState<Record<string, JobOptionInput>>({});
   const [confirmDestructive, setConfirmDestructive] = useState(false);
   const [starting, setStarting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>({ kind: "idle" });
@@ -186,6 +254,9 @@ export function JobsClient({ username }: { username: string }) {
   const [filterTrigger, setFilterTrigger] = useState("");
   const [expandedRunId, setExpandedRunId] = useState<number | null>(null);
   const historyRequest = useRef(0);
+
+  const [activeTab, setActiveTab] = useState<JobTab>("runs");
+  const [diagnosticRunId, setDiagnosticRunId] = useState<number | null>(null);
 
   const loadCatalog = useCallback(async () => {
     try {
@@ -299,17 +370,21 @@ export function JobsClient({ username }: { username: string }) {
     setConfirmDestructive(false);
     setFeedback({ kind: "idle" });
     const item = catalog?.items.find((candidate) => candidate.job === job);
-    const defaults: Record<string, boolean> = {};
-    for (const option of item?.options ?? []) defaults[option.key] = option.defaultValue;
+    const defaults: Record<string, JobOptionInput> = {};
+    for (const option of item?.options ?? []) {
+      // La casilla arranca en su default booleano; el campo numérico arranca con el entero declarado, o
+      // vacío si el descriptor no trajo un default válido (nunca con un número inventado).
+      defaults[option.key] = option.type === "integer" ? jobOptionInputText(option, undefined) : option.defaultValue === true;
+    }
     setOptionValues(defaults);
   }
 
   async function submit(item: JobCatalogItem, dryRun: boolean) {
     const values = dryRun ? { ...optionValues, dryRun: true } : optionValues;
-    const payload: JobRunPayload = buildJobRunPayload(item.options, values, confirmDestructive);
     setStarting(true);
     setFeedback({ kind: "idle" });
     try {
+      const payload = buildJobRunPayload(item.options, values, confirmDestructive);
       const queued = await runJob(item.job, payload);
       setFeedback({ kind: "queued", queued });
       setWatched({
@@ -338,11 +413,32 @@ export function JobsClient({ username }: { username: string }) {
     setExpandedRunId((current) => (current === run.jobRunId ? null : run.jobRunId));
   }
 
+  // Roving tabindex: las flechas mueven la pestaña activa y el foco, como en el resto de la app.
+  function onTabKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const index = JOB_TABS.indexOf(activeTab);
+    let next = -1;
+    if (event.key === "ArrowRight") next = (index + 1) % JOB_TABS.length;
+    else if (event.key === "ArrowLeft") next = (index - 1 + JOB_TABS.length) % JOB_TABS.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = JOB_TABS.length - 1;
+    else return;
+
+    event.preventDefault();
+    const tab = JOB_TABS[next];
+    setActiveTab(tab);
+    document.getElementById(`jobs-tab-${tab}`)?.focus();
+  }
+
   const totalPages = history?.totalPages ?? 1;
   const page = clampJobPage(history?.page ?? 1, totalPages);
   const optionSummary = selectedItem ? formatJobOptionValues(selectedItem.options, optionValues) : [];
+  // Una opción inválida bloquea el envío: el payload no puede construirse sin inventar o redondear un valor.
+  const invalidOption = selectedItem
+    ? selectedItem.options.find((option) => jobOptionValueError(option, optionValues[option.key]) !== null) ?? null
+    : null;
   const requiresAck = Boolean(selectedItem?.requiresConfirmation);
-  const canRun = Boolean(selectedItem?.enabled) && !starting && (!requiresAck || confirmDestructive);
+  const canRun =
+    Boolean(selectedItem?.enabled) && !starting && invalidOption === null && (!requiresAck || confirmDestructive);
   const catalogJobs = catalog?.items ?? [];
 
   return (
@@ -353,6 +449,42 @@ export function JobsClient({ username }: { username: string }) {
       subtitle="Historial, detalle completo y ejecución manual de los jobs registrados en este host."
     >
       <div className="space-y-4">
+        <div
+          role="tablist"
+          aria-label="Secciones de Jobs"
+          onKeyDown={onTabKeyDown}
+          className="flex flex-wrap gap-2"
+        >
+          {JOB_TABS.map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              id={`jobs-tab-${tab}`}
+              aria-selected={tab === activeTab}
+              aria-controls={`jobs-panel-${tab}`}
+              tabIndex={tab === activeTab ? 0 : -1}
+              onClick={() => setActiveTab(tab)}
+              className={cn(
+                "inline-flex h-9 items-center gap-2 rounded-[var(--radius-sm)] border px-3 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]",
+                tab === activeTab
+                  ? "border-accent bg-[var(--color-accent-soft)] text-primary"
+                  : "border-default text-secondary hover:text-primary"
+              )}
+            >
+              {JOB_TAB_LABELS[tab]}
+            </button>
+          ))}
+        </div>
+
+        <div
+          role="tabpanel"
+          id="jobs-panel-runs"
+          aria-labelledby="jobs-tab-runs"
+          tabIndex={0}
+          hidden={activeTab !== "runs"}
+          className="space-y-4 focus-visible:outline-none"
+        >
         <Card className="space-y-3 p-4" aria-labelledby="jobs-run-heading">
           <div className="space-y-1">
             <p className="text-xs font-semibold uppercase tracking-widest text-muted">A demanda</p>
@@ -415,22 +547,35 @@ export function JobsClient({ username }: { username: string }) {
               <legend className="px-1 text-xs font-semibold uppercase tracking-widest text-muted">
                 Opciones
               </legend>
-              {selectedItem.options.map((option) => (
-                <label key={option.key} className="flex items-start gap-2 text-sm text-primary">
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 h-4 w-4 accent-[var(--color-accent)]"
-                    checked={optionValues[option.key] ?? option.defaultValue}
-                    onChange={(event) =>
-                      setOptionValues((current) => ({ ...current, [option.key]: event.target.checked }))
-                    }
+              {selectedItem.options.map((option) =>
+                option.type === "integer" ? (
+                  <IntegerOptionField
+                    key={option.key}
+                    option={option}
+                    value={jobOptionInputText(option, optionValues[option.key])}
+                    onChange={(next) => setOptionValues((current) => ({ ...current, [option.key]: next }))}
                   />
-                  <span>
-                    <span className="font-medium">{option.label}</span>
-                    {option.help ? <span className="block text-xs text-muted">{option.help}</span> : null}
-                  </span>
-                </label>
-              ))}
+                ) : (
+                  <label key={option.key} className="flex items-start gap-2 text-sm text-primary">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 h-4 w-4 accent-[var(--color-accent)]"
+                      checked={
+                        typeof optionValues[option.key] === "boolean"
+                          ? optionValues[option.key] === true
+                          : option.defaultValue === true
+                      }
+                      onChange={(event) =>
+                        setOptionValues((current) => ({ ...current, [option.key]: event.target.checked }))
+                      }
+                    />
+                    <span>
+                      <span className="font-medium">{option.label}</span>
+                      {option.help ? <span className="block text-xs text-muted">{option.help}</span> : null}
+                    </span>
+                  </label>
+                )
+              )}
             </fieldset>
           ) : null}
 
@@ -466,13 +611,18 @@ export function JobsClient({ username }: { username: string }) {
                   type="button"
                   variant="secondary"
                   onClick={() => selectedItem && void submit(selectedItem, true)}
-                  disabled={!selectedItem.enabled || starting}
+                  disabled={!selectedItem.enabled || starting || invalidOption !== null}
                 >
                   Simulación (no borra)
                 </Button>
               ) : null}
               {selectedItem.options.length > 0 ? (
                 <span className="text-xs text-muted">Opciones efectivas: {optionSummary.join(" · ")}</span>
+              ) : null}
+              {invalidOption ? (
+                <span className="text-xs text-[var(--color-danger)]">
+                  Corrige «{invalidOption.label}» para poder ejecutar: no se envía el valor por defecto.
+                </span>
               ) : null}
             </div>
           ) : null}
@@ -686,6 +836,30 @@ export function JobsClient({ username }: { username: string }) {
             </nav>
           ) : null}
         </Card>
+        </div>
+
+        <div
+          role="tabpanel"
+          id="jobs-panel-diagnostics"
+          aria-labelledby="jobs-tab-diagnostics"
+          tabIndex={0}
+          hidden={activeTab !== "diagnostics"}
+          className="focus-visible:outline-none"
+        >
+          {/* Montado solo al abrir la pestaña: no se pide ningún detalle mientras está oculta. */}
+          {activeTab === "diagnostics" ? (
+            <Card className="space-y-3 p-4" aria-labelledby="jobs-diagnostics-heading">
+              <DiagnosticsPanel
+                history={history}
+                historyLoading={historyLoading}
+                historyError={historyError}
+                onReloadHistory={() => void loadHistory(page)}
+                selectedRunId={diagnosticRunId}
+                onSelectRun={setDiagnosticRunId}
+              />
+            </Card>
+          ) : null}
+        </div>
       </div>
     </AdminShell>
   );

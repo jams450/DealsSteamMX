@@ -48,7 +48,10 @@ internal static class CatalogPriceRefreshChecks
         Check(entry!.Enabled, "the manual price pass is available");
         Check(!entry.Destructive, "the price pass deletes nothing");
         Check(!entry.RequiresConfirmation, "re-pricing persisted prices needs no confirmation");
-        Check(entry.Options.Count == 0, "the price pass has no options to invent");
+        // Spec S2/S5: one numeric option (the requester's window); the batch bound is still a constant.
+        Check(entry.Options.Count == 1, "the price pass exposes only its bounded window option");
+        Check(entry.Options[0].Key == JobOptionKeys.AgeHours, "the option is the chosen age in hours");
+        Check(entry.Options[0].Type == JobOptionTypes.Integer, "the option is an integer");
 
         // The batch bound is a constant, not an option: an operator cannot ask for the whole-catalog sweep.
         Check(CatalogPriceRefreshLimits.BatchSize == 20, "the batch is hard bounded to 20 games");
@@ -543,7 +546,8 @@ internal static class CatalogPriceRefreshChecks
     {
         public Task<CatalogPriceRefreshOutcome> RefreshPendingAsync(
             int requestedByUserId,
-            CancellationToken cancellationToken = default) =>
+            CancellationToken cancellationToken = default,
+            int ageHours = CatalogPriceRefreshLimits.DefaultAgeHours) =>
             Task.FromResult(outcome);
     }
 
@@ -561,7 +565,8 @@ internal static class CatalogPriceRefreshChecks
 
         public Task<CatalogPriceRefreshOutcome> RefreshPendingAsync(
             int requestedByUserId,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            int ageHours = CatalogPriceRefreshLimits.DefaultAgeHours)
         {
             Calls++;
             Requesters.Add(requestedByUserId);

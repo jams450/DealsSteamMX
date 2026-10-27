@@ -1,4 +1,5 @@
 using Deals.BusinessLogic.Models.Steam;
+using Deals.BusinessLogic.Services;
 
 namespace Deals.BusinessLogic.Interfaces;
 
@@ -23,15 +24,23 @@ public interface ISteamGameService
 
     /// <summary>
     /// The manual pending-price pass for one game: every due price phase — including the Steam direct snapshot —
-    /// gated by the 72-hour stale-price window instead of the configured provider TTL. Same per-app gate, same
-    /// governors, same "a failed answer never advances a timestamp" rule as
-    /// <see cref="RefreshProvidersAsync"/>, and nothing is ever forced.
+    /// gated by the <b>chosen</b> window (spec S2/S3) instead of the configured provider TTL. Same per-app gate, same
+    /// governors, same "a failed answer never advances a timestamp" rule as <see cref="RefreshProvidersAsync"/>, and
+    /// nothing is ever forced.
+    ///
+    /// <paramref name="ageHours"/> is the requester's window, bounded by
+    /// <see cref="Deals.BusinessLogic.Models.Discovery.CatalogPriceRefreshLimits"/>; it is a parameter and never a
+    /// configuration read, so one run cannot inherit the 7-day provider TTL or a fixed 72 h guard per game. An
+    /// out-of-range window throws before any provider is called.
     ///
     /// It returns a typed <see cref="SteamStalePriceRefresh"/> instead of only the details because the pipeline
     /// absorbs a provider fault into a <c>Failed</c> phase result: without which phases were due, which really
     /// answered and which failed, the caller cannot tell a completed price from a failed call.
     /// </summary>
-    Task<SteamStalePriceRefresh> RefreshStalePricesAsync(int appId, CancellationToken cancellationToken);
+    Task<SteamStalePriceRefresh> RefreshStalePricesAsync(
+        int appId,
+        CancellationToken cancellationToken,
+        int ageHours = GameRefreshPolicy.StalePriceBatchHours);
 
     Task<IReadOnlyList<SteamSearchResult>> GetSuggestionsAsync(string? query, CancellationToken cancellationToken);
 

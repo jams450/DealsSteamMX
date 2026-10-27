@@ -1,3 +1,5 @@
+using Deals.BusinessLogic.Interfaces;
+using Deals.BusinessLogic.Models.Diagnostics;
 using Deals.Models.Entities;
 
 namespace Deals.API.Services.Jobs;
@@ -54,7 +56,10 @@ public sealed class JobExecutionRunner(
     JobCatalog catalog,
     IEnumerable<IJobExecutor> executors,
     IJobRunTracker tracker,
-    ILogger<JobExecutionRunner> logger)
+    ILogger<JobExecutionRunner> logger,
+    // Scoped observer of the same run (spec S2/S3). Optional so a hand-built runner still works; the run it
+    // observes is the one in this scope, so its report can never contain another run's events.
+    ISyncDiagnosticsCollector? diagnostics = null)
 {
     public async Task RunAsync(JobQueueItem item, CancellationToken cancellationToken)
     {
@@ -139,19 +144,24 @@ public sealed class JobExecutionRunner(
             status = JobRunStatuses.Failed;
             // A personal run keeps its owner in the closing record too; every other job's failure shape is
             // left exactly as it was.
+            var report = Report();
             details = requestedBy is { } requester
                 ? new
                 {
                     requestedBy = requester,
                     requested = item.Options.ToDetails(),
                     errorType = exception.GetType().Name,
-                    error = exception.Message
+                    error = exception.Message,
+                    // What the run observed before it failed: without it the failure record says only that the
+                    // executor threw, which is exactly the half-information this unit exists to remove.
+                    diagnostics = report
                 }
                 : new
                 {
                     requested = item.Options.ToDetails(),
                     errorType = exception.GetType().Name,
-                    error = exception.Message
+                    error = exception.Message,
+                    diagnostics = report
                 };
             logger.LogError(
                 exception,
@@ -162,6 +172,13 @@ public sealed class JobExecutionRunner(
 
         await FinishAsync(item.JobRunId, status, details, cancellationToken);
     }
+
+    /// <summary>
+    /// The report of the run this runner is executing, or null when it observed no provider phase: a run that never
+    /// reached a provider must not carry an empty document that could be read as "nothing failed".
+    /// </summary>
+    private SyncDiagnosticsSnapshot? Report() =>
+        diagnostics is { HasEvents: true } collector ? collector.BuildSnapshot() : null;
 
     private async Task FinishAsync(long jobRunId, string status, object details, CancellationToken cancellationToken)
     {

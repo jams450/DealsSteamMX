@@ -1,5 +1,6 @@
 using Deals.API.Services.Jobs;
 using Deals.BusinessLogic.Context;
+using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Services;
 using Deals.Models.Entities;
 using Microsoft.Extensions.Options;
@@ -164,10 +165,15 @@ public sealed class WishlistSyncJob(
 
         var status = JobRunStatuses.Ok;
         object? details = null;
+        // Resolved inside the cycle's own scope (spec S2/S3). The reference outlives the scope on purpose: the
+        // collector holds no disposable resource, and the failure path below is the only way an interrupted cycle
+        // still reports the phases it observed.
+        ISyncDiagnosticsCollector? diagnostics = null;
 
         try
         {
             using var scope = scopeFactory.CreateAsyncScope();
+            diagnostics = scope.ServiceProvider.GetService<ISyncDiagnosticsCollector>();
             var result = await scope.ServiceProvider.GetRequiredService<WishlistSyncJobExecutor>()
                 .ExecuteAsync(WishlistSyncJobExecutor.ScheduledOptions, cancellationToken);
             status = result.Succeeded ? JobRunStatuses.Ok : JobRunStatuses.Failed;
@@ -182,7 +188,9 @@ public sealed class WishlistSyncJob(
         {
             // Scope creation itself failed; the host stays up and the next cycle retries.
             status = JobRunStatuses.Failed;
-            details = new { error = exception.Message };
+            details = diagnostics is { HasEvents: true } collected
+                ? new { error = exception.Message, diagnostics = collected.BuildSnapshot() }
+                : new { error = exception.Message };
             logger.LogError(exception, "[wishlist.sync] cycle failed");
         }
 

@@ -126,11 +126,16 @@ public sealed class JobSubmissionService(
         {
             // The requester is recorded with the row before the work starts, so an interrupted run still says
             // whose list it was going to refresh.
+            //
+            // The requested options travel with it for a requester-scoped job (spec S3/S4): a queued row, a run that is
+            // still working and a row whose process died mid-run only ever have the START details, so without them here
+            // the record would lose the window that produced its numbers. Every other job keeps its option-free start
+            // details exactly as before — that baseline is what the history page has always shown.
             jobRunId = await tracker.StartAsync(
                 definition.Job,
                 cancellationToken,
                 definition.RequiresRequester && requestedByUserId is { } requester
-                    ? new { requestedBy = requester }
+                    ? new { requestedBy = requester, requested = parsed.Options.ToDetails() }
                     : null);
         }
         catch

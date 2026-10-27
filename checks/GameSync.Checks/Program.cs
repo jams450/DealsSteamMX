@@ -37,14 +37,18 @@ Check(!Plan(GameRefreshMode.SteamOnly, fresh, fresh, fresh, fresh).NeedsSteam, "
 var noncomparableFull = GameRefreshPolicy.Create(GameRefreshMode.Full, now, TimeSpan.FromDays(7),
     true, true, fresh, false, fresh, fresh, fresh, fresh, true, true);
 Check(noncomparableFull.Steps.SequenceEqual(all.Steps), "Full noncomparable clears snapshots via no-match");
-// --- The 72-hour batch gate (catalog price monitor, spec S5/S6) ------------------------------------------
-// The pending-price pass must gate providers with the monitor's 72 hours, never with the configured 7-day
-// TTL: reusing the TTL would make the job skip exactly the rows the panel calls stale. These assertions are
-// the reason the mode exists, so they are stated against both modes with the same stamps.
+// --- The batch window (catalog price monitor, spec S5/S6 → spec S2/S3 of the configurable pass) ----------
+// The pending-price pass must gate providers with the window the requester chose, never with the configured
+// 7-day TTL: reusing the TTL would make the job skip exactly the rows the job was asked to reprice. 72 h is the
+// documented DEFAULT of that window and the monitor's fixed window, not a ceiling: the bounded explicit choice is
+// 1..720 h. These assertions are the reason the mode exists, so they are stated against both modes with the same
+// stamps.
 const int batchHours = GameRefreshPolicy.StalePriceBatchHours;
-Check(batchHours == 72, "the batch window is the monitor's 72 hours");
-Check(GameRefreshPolicy.MaximumStalePriceBatchTtl == TimeSpan.FromHours(72),
-    "the batch never accepts a longer provider TTL");
+Check(batchHours == 72, "72 h is the documented default window of the batch");
+Check(GameRefreshPolicy.MinimumStalePriceBatchTtl == TimeSpan.FromHours(1),
+    "the batch accepts a chosen window from 1 h");
+Check(GameRefreshPolicy.MaximumStalePriceBatchTtl == TimeSpan.FromHours(720),
+    "the batch accepts a chosen window up to 720 h");
 
 var fiveDaysAgo = now.AddDays(-5);
 GameRefreshPlan Batch(DateTime? itad, DateTime? gg, DateTime? epic, DateTime? ms,
@@ -73,18 +77,44 @@ var batchIdentity = Batch(fresh, fresh, fresh, fiveDaysAgo, msIdentity: false);
 Check(batchIdentity.FetchItad && !batchIdentity.RefreshItadPrices && batchIdentity.RefreshMicrosoft,
     "the batch keeps the identity-before-direct-store rule");
 
-var rejectedSevenDays = false;
-try
+// The window is a bounded CHOICE (spec S2/S3: 1..720 h). 7 days = 168 h is a legitimate choice now, not an
+// inherited TTL; what the guard refuses is anything outside the documented bounds. The batch still never reads the
+// configured provider TTL itself — it only ever receives the explicit window.
+GameRefreshPlan Windowed(int hours) =>
+    GameRefreshPolicy.Create(GameRefreshMode.StalePriceBatch, now, TimeSpan.FromHours(hours),
+        true, true, fresh, true, fiveDaysAgo, fiveDaysAgo, fiveDaysAgo, fiveDaysAgo, true, true);
+
+Check(Windowed(24).Steps.Count == 4, "a 24 h chosen window makes a five-day-old provider due");
+Check(Windowed(72).Steps.Count == 4, "a 72 h chosen window makes a five-day-old provider due");
+Check(Windowed(168).Steps.Count == 0, "a 168 h chosen window keeps the same provider fresh");
+Check(Windowed(720).Steps.Count == 0, "720 h is the widest window and it is accepted");
+Check(Windowed(1).Steps.Count == 4, "1 h is the narrowest window and it is accepted");
+
+bool Rejects(TimeSpan ttl)
 {
-    GameRefreshPolicy.Create(GameRefreshMode.StalePriceBatch, now, TimeSpan.FromDays(7),
-        true, true, fresh, true, fresh, fresh, fresh, fresh, true, true);
-}
-catch (ArgumentOutOfRangeException)
-{
-    rejectedSevenDays = true;
+    try
+    {
+        GameRefreshPolicy.Create(GameRefreshMode.StalePriceBatch, now, ttl,
+            true, true, fresh, true, fresh, fresh, fresh, fresh, true, true);
+        return false;
+    }
+    catch (ArgumentOutOfRangeException)
+    {
+        return true;
+    }
 }
 
-Check(rejectedSevenDays, "the batch refuses to inherit the 7-day provider TTL");
+Check(Rejects(TimeSpan.FromHours(721)), "the batch refuses a window above 720 h");
+Check(Rejects(TimeSpan.FromMinutes(30)), "the batch refuses a window below 1 h");
+
+// The same Steam snapshot is inside or outside the window depending on the chosen hours, which is the whole point
+// of propagating the choice instead of keeping a hidden 72 h guard per game.
+GameRefreshPlan SteamWindow(int hours) =>
+    GameRefreshPolicy.Create(GameRefreshMode.StalePriceBatch, now, TimeSpan.FromHours(hours),
+        true, true, now.AddHours(-100), true, fresh, fresh, fresh, fresh, true, true);
+Check(SteamWindow(24).NeedsSteam, "a 100 h old Steam price is due for a 24 h window");
+Check(SteamWindow(72).NeedsSteam, "a 100 h old Steam price is due for a 72 h window");
+Check(!SteamWindow(168).NeedsSteam, "the same Steam price is already inside a 168 h window");
 
 // The Steam direct snapshot is a price too: a game whose Steam price is five days old and whose provider
 // stamps are all fresh must still be repriced by the batch, or "pending prices" would silently mean "external

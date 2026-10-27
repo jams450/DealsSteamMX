@@ -22,6 +22,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IPasswordService, PasswordService>();
         services.AddScoped<ICurrentUserService, CurrentUserService>();
         services.AddScoped<IUserService, UserService>();
+        // Per-scope observer of the sync diagnosis (spec S2): a job run and an interactive request each get their
+        // own instance, which is what keeps two runs from sharing events and keeps request traffic out of a report.
+        // A null logger is tolerated so a hand-built service (checks) needs no logging infrastructure.
+        services.AddScoped<ISyncDiagnosticsCollector>(provider =>
+            new SyncDiagnosticsCollector(provider.GetService<ILogger<SyncDiagnosticsCollector>>()));
         services.AddScoped<ISteamGameService, SteamGameService>();
         services.AddScoped<BundleCatalogService>();
         services.AddOptions<GlobalBundleOptions>()

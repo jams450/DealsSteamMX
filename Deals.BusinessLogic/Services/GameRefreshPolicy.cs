@@ -1,3 +1,5 @@
+using Deals.BusinessLogic.Models.Discovery;
+
 namespace Deals.BusinessLogic.Services;
 
 /// <summary>
@@ -9,12 +11,13 @@ namespace Deals.BusinessLogic.Services;
 /// <item><see cref="BackgroundProviders"/>: the due external providers of an existing snapshot, gated by the
 /// configured provider TTL (7 days by default). Never requests Steam.</item>
 /// <item><see cref="StalePriceBatch"/>: the manual pending-price pass. The same phases as
-/// <see cref="BackgroundProviders"/> <em>plus</em> the Steam direct snapshot, all gated by the monitor's
-/// 72-hour window instead of the configured TTL, and nothing is ever forced. Steam belongs here because the
-/// user asked for pending prices, not pending external prices: a five-day-old Steam price next to fresh
-/// provider stamps is a pending price. The distinct member is deliberate — reusing
-/// <see cref="BackgroundProviders"/> with a 7-day TTL is exactly the mistake this pass must not make, so the
-/// mode itself refuses a longer TTL (<see cref="GameRefreshPolicy.MaximumStalePriceBatchTtl"/>).</item>
+/// <see cref="BackgroundProviders"/> <em>plus</em> the Steam direct snapshot, all gated by the window the requester
+/// chose (spec S2/S3) instead of the configured TTL, and nothing is ever forced. Steam belongs here because the
+/// user asked for pending prices, not pending external prices: a five-day-old Steam price next to fresh provider
+/// stamps is a pending price. The distinct member is deliberate — reusing <see cref="BackgroundProviders"/> with a
+/// 7-day TTL is exactly the mistake this pass must not make, so the mode itself validates the explicit window
+/// (<see cref="MinimumStalePriceBatchTtl"/>..<see cref="MaximumStalePriceBatchTtl"/>) instead of inheriting any
+/// configuration.</item>
 /// </list>
 /// </summary>
 public enum GameRefreshMode { SteamOnly, Full, BackgroundProviders, StalePriceBatch }
@@ -32,30 +35,43 @@ public sealed record GameRefreshPlan(bool CanRun, bool NeedsSteam, bool RefreshI
 public static class GameRefreshPolicy
 {
     /// <summary>
-    /// The provider gate of <see cref="GameRefreshMode.StalePriceBatch"/>: the same 72 hours the freshness
-    /// monitor buckets with, so "the panel says it is stale" and "the batch refreshes it" mean one thing.
+    /// The DEFAULT provider gate of <see cref="GameRefreshMode.StalePriceBatch"/>: the 72 hours the freshness monitor
+    /// buckets with, which is also the default the manual pass offers (spec S1/S2). It is a default, not a ceiling:
+    /// the pass accepts any chosen window inside
+    /// <see cref="MinimumStalePriceBatchTtl"/>..<see cref="MaximumStalePriceBatchTtl"/>.
     /// </summary>
-    public const int StalePriceBatchHours = 72;
+    public const int StalePriceBatchHours = CatalogPriceRefreshLimits.DefaultAgeHours;
 
-    /// <summary>The longest provider TTL a batch run may use. Anything longer is silently a 7-day pass.</summary>
-    public static TimeSpan MaximumStalePriceBatchTtl { get; } = TimeSpan.FromHours(StalePriceBatchHours);
+    /// <summary>The narrowest window a batch run may use. Anything shorter is the interactive refresh's business.</summary>
+    public static TimeSpan MinimumStalePriceBatchTtl { get; } =
+        TimeSpan.FromHours(CatalogPriceRefreshLimits.MinAgeHours);
+
+    /// <summary>
+    /// The widest window a batch run may use (30 days). Bounded on purpose: a pass that re-asks every provider is a
+    /// different job, and an unbounded number would let a payload turn this one into it.
+    /// </summary>
+    public static TimeSpan MaximumStalePriceBatchTtl { get; } =
+        TimeSpan.FromHours(CatalogPriceRefreshLimits.MaxAgeHours);
 
     /// <param name="providerTtl">
-    /// Age at which a provider phase becomes due. For <see cref="GameRefreshMode.StalePriceBatch"/> it must not
-    /// exceed <see cref="MaximumStalePriceBatchTtl"/>: the batch exists to reprice what the 72-hour monitor
-    /// calls stale, so inheriting a longer configured TTL would make the job report work it never did.
+    /// Age at which a provider phase becomes due. For <see cref="GameRefreshMode.StalePriceBatch"/> it is the window the
+    /// requester chose and must lie inside
+    /// <see cref="MinimumStalePriceBatchTtl"/>..<see cref="MaximumStalePriceBatchTtl"/>: the batch exists to reprice the
+    /// chosen window, so it neither inherits the configured TTL nor accepts an unbounded one.
     /// </param>
     public static GameRefreshPlan Create(GameRefreshMode mode, DateTime now, TimeSpan providerTtl,
         bool hasSnapshot, bool holdsDetails, DateTime observedAt, bool comparable,
         DateTime? itadAt, DateTime? ggAt, DateTime? epicAt, DateTime? microsoftAt,
         bool hasEpicIdentity, bool hasMicrosoftIdentity)
     {
-        if (mode == GameRefreshMode.StalePriceBatch && providerTtl > MaximumStalePriceBatchTtl)
+        if (mode == GameRefreshMode.StalePriceBatch &&
+            (providerTtl < MinimumStalePriceBatchTtl || providerTtl > MaximumStalePriceBatchTtl))
         {
             throw new ArgumentOutOfRangeException(
                 nameof(providerTtl),
                 providerTtl,
-                $"El modo de lote de precios solo admite una antigüedad máxima de {StalePriceBatchHours} h " +
+                "El lote de precios solo admite una antigüedad explícita entre " +
+                $"{CatalogPriceRefreshLimits.MinAgeHours} y {CatalogPriceRefreshLimits.MaxAgeHours} h " +
                 "(no reutiliza la ventana de proveedores configurada).");
         }
 
@@ -70,7 +86,7 @@ public static class GameRefreshPolicy
             _ => true
         };
 
-        // Steam's own cache window: 1 h for an interactive detail read, the 72-hour batch window for the price
+        // Steam's own cache window: 1 h for an interactive detail read, the chosen batch window for the price
         // pass. `Full` still forces it and the background mode still never asks for it.
         var steamTtl = batch ? providerTtl : TimeSpan.FromHours(1);
         var steam = canRun && mode != GameRefreshMode.BackgroundProviders &&

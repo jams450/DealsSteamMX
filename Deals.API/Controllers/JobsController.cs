@@ -105,7 +105,7 @@ public sealed class JobsController(
                 definition.Destructive,
                 definition.RequiresConfirmation,
                 definition.Options
-                    .Select(option => new JobOptionResponse(option.Key, option.Label, option.Help, option.DefaultValue))
+                    .Select(JobOptionResponse.From)
                     .ToList(),
                 run is null ? null : ToListItem(run));
         }).ToList();

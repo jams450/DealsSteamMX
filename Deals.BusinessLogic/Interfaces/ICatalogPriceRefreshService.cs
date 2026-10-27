@@ -9,7 +9,7 @@ namespace Deals.BusinessLogic.Interfaces;
 public interface ICatalogPriceRefreshService
 {
     /// <summary>
-    /// Recomputes the pending set <em>of one user's wishlist</em>, refreshes at most
+    /// Recomputes the pending set <em>of one user's wishlist</em> for the chosen window, refreshes at most
     /// <see cref="CatalogPriceRefreshLimits.BatchSize"/> due games through the existing per-game pipeline and
     /// returns the counters of what actually happened.
     /// </summary>
@@ -18,7 +18,14 @@ public interface ICatalogPriceRefreshService
     /// It is the only input that decides whose wishlist is read: a non-positive value throws
     /// <see cref="ArgumentException"/> rather than falling back to the whole catalog or to a configured owner.
     /// </param>
+    /// <param name="ageHours">
+    /// The window the requester chose (spec S2/S3): a price older than this many hours is pending, and so is a game
+    /// with no price at all. Bounded by <see cref="CatalogPriceRefreshLimits"/> (1..720, default 72) and used for the
+    /// bucket, the provider gates, the selection, the measurement and the remaining count. It is a parameter and never
+    /// a configuration read, and an out-of-range value throws before any provider call.
+    /// </param>
     Task<CatalogPriceRefreshOutcome> RefreshPendingAsync(
         int requestedByUserId,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        int ageHours = CatalogPriceRefreshLimits.DefaultAgeHours);
 }

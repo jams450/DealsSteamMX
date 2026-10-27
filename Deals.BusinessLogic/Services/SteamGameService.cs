@@ -5,6 +5,8 @@ using System.Text.Json;
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Bundles;
 using Deals.BusinessLogic.Models.Catalog;
+using Deals.BusinessLogic.Models.Diagnostics;
+using Deals.BusinessLogic.Models.Discovery;
 using Deals.BusinessLogic.Models.GgDeals;
 using Deals.BusinessLogic.Models.Itad;
 using Deals.BusinessLogic.Models.Steam;
@@ -33,7 +35,11 @@ public sealed class SteamGameService(
     IFxRateService fxRateService,
     IGameIdentityResolver identityResolver,
     ILogger<SteamGameService> logger,
-    SteamOffersSettings? offersSettings = null) : ISteamGameService
+    SteamOffersSettings? offersSettings = null,
+    // Scoped, and optional on purpose: the collector is an observer (spec S2/S3). When the host does not
+    // register it — or a check builds the service by hand — every phase still runs exactly as before and no
+    // diagnosis is produced. It is never static, so two runs (or a request and a run) can never share events.
+    ISyncDiagnosticsCollector? diagnostics = null) : ISteamGameService
 {
     private const string Region = "mx";
     private const string GameType = "game";
@@ -97,6 +103,17 @@ public sealed class SteamGameService(
 
     // Items that take part in the tier comparison: only a plain game has a comparable standalone price.
     private const string ComparableItemType = "game";
+
+    // Phase names of the sync diagnosis (spec S3). They are the same strings the pipeline already logs with
+    // [steam.refresh.phase], so the log line and the job record name one phase the same way.
+    private const string SteamPhaseName = "steam";
+    private const string ItadPhaseName = "itad";
+    private const string ItadIdentityPhaseName = "itad-identity";
+    private const string ItadBundlesPhaseName = "itad-bundles";
+    private const string GgDealsPhaseName = "ggdeals";
+    private const string EpicPhaseName = "epic";
+    private const string MicrosoftPhaseName = "microsoft";
+
     private const int DefaultRefreshAfterDays = 7;
     private const int MinRefreshAfterDays = 1;
     private const int MaxRefreshAfterDays = 90;
@@ -497,7 +514,8 @@ public sealed class SteamGameService(
         bool interactive,
         CancellationToken cancellationToken,
         GameRefreshMode? mode = null,
-        StalePriceAttemptRecorder? attempt = null)
+        StalePriceAttemptRecorder? attempt = null,
+        TimeSpan? providerTtlOverride = null)
     {
         var refreshMode = mode ?? (forceRefresh ? GameRefreshMode.Full : GameRefreshMode.SteamOnly);
         var background = refreshMode == GameRefreshMode.BackgroundProviders;
@@ -517,17 +535,33 @@ public sealed class SteamGameService(
             MaxRefreshAfterDays);
         var refreshWindowStart = now.AddDays(-refreshDays);
 
-        // The stale-price batch does NOT reuse the configured provider TTL: it is the 72-hour pass the
-        // freshness monitor feeds, and inheriting the 7-day window would make it skip exactly what it was
-        // asked to reprice. The mode itself refuses a longer TTL (GameRefreshPolicy).
-        var providerTtl = refreshMode == GameRefreshMode.StalePriceBatch
+        // The stale-price batch does NOT reuse the configured provider TTL: it gates providers with the window the
+        // requester chose (spec S2/S3), passed explicitly by RefreshStalePricesAsync and bounded there. Every other
+        // mode keeps the configured 7-day window exactly as before.
+        var providerTtl = providerTtlOverride ?? (refreshMode == GameRefreshMode.StalePriceBatch
             ? TimeSpan.FromHours(GameRefreshPolicy.StalePriceBatchHours)
-            : TimeSpan.FromDays(refreshDays);
+            : TimeSpan.FromDays(refreshDays));
 
         var initialPlan = GameRefreshPolicy.Create(refreshMode, now, providerTtl,
             snapshot is not null, snapshot is not null && HoldsSteamDetails(snapshot),
             snapshot?.ObservedAt ?? default, false, null, null, null, null, false, false);
-        if (!initialPlan.CanRun) return null;
+        if (!initialPlan.CanRun)
+        {
+            // The batch asked for this game and the plan refused it before any phase existed: a row with no
+            // Steam snapshot has no identity to price. Recorded only for the batch, which is the mode whose
+            // caller counts this as a declined gate (spec S3: an actual gate, not a guess).
+            if (refreshMode == GameRefreshMode.StalePriceBatch && diagnostics is not null)
+            {
+                diagnostics.Record(
+                    appId,
+                    snapshot?.GameId,
+                    SyncDiagnosticProvider.Steam,
+                    SyncDiagnosticOutcome.Skipped,
+                    SyncDiagnosticReason.GateDeclined);
+            }
+
+            return null;
+        }
         if (attempt is not null)
         {
             attempt.Ran = true;
@@ -537,7 +571,18 @@ public sealed class SteamGameService(
         var needsSteam = initialPlan.NeedsSteam;
 
         // ---- Outbound phase: every provider call happens here, with no transaction open. ----
-        var details = needsSteam ? await steamClient.GetAppDetailsAsync(appId, cancellationToken) : null;
+        var details = needsSteam
+            ? await MeasureRefreshPhaseAsync(
+                appId,
+                snapshot?.GameId,
+                SteamPhaseName,
+                _ => steamClient.GetAppDetailsAsync(appId, cancellationToken),
+                // Steam answering without details is the store's authoritative "nothing for this appid", not a
+                // fault to retry; the caller still counts it as a failed refresh, exactly as before.
+                answer => answer is null ? ProviderRefreshOutcome.NoMatch : ProviderRefreshOutcome.Refreshed,
+                SyncDiagnosticReason.NoIdentity,
+                cancellationToken)
+            : null;
         if (needsSteam && details is null)
         {
             // Steam is the price source of truth and is never hidden by an ITAD failure. For the batch this is
@@ -549,6 +594,14 @@ public sealed class SteamGameService(
         if (details is not null)
         {
             attempt?.RecordSteamRefreshed();
+        }
+
+        // The cached-Steam answer is a gate, not a provider call: the snapshot was younger than the window this
+        // mode uses. It is reported for every mode that owns a Steam window (the batch and the interactive/list
+        // read) and never for the background provider pass, which does not request Steam by design.
+        if (!needsSteam && refreshMode is GameRefreshMode.SteamOnly or GameRefreshMode.StalePriceBatch)
+        {
+            RecordGateSkip(appId, snapshot?.GameId, SteamPhaseName, comparable: true);
         }
 
         // A fresh Steam answer stamps its own ObservedAt; a cached snapshot keeps the stored one, because
@@ -575,6 +628,18 @@ public sealed class SteamGameService(
         attempt?.RecordProviderPlan(plan);
         var needsOffers = plan.RefreshItadPrices;
 
+        // Every phase the plan did not ask for is a gate, and it is reported as one (spec S3). Only the two
+        // non-interactive price modes do this: an interactive read has no provider plan, so claiming its gates
+        // would be reporting a decision nobody took. The reason distinguishes "not a comparable item" from
+        // "inside the window", because those are different answers for the operator.
+        if (refreshMode is GameRefreshMode.BackgroundProviders or GameRefreshMode.StalePriceBatch)
+        {
+            if (!plan.FetchItad) RecordGateSkip(appId, snapshot?.GameId, ItadPhaseName, isComparable);
+            if (!plan.RefreshGg) RecordGateSkip(appId, snapshot?.GameId, GgDealsPhaseName, isComparable);
+            if (!plan.RefreshEpic) RecordGateSkip(appId, snapshot?.GameId, EpicPhaseName, isComparable);
+            if (!plan.RefreshMicrosoft) RecordGateSkip(appId, snapshot?.GameId, MicrosoftPhaseName, isComparable);
+        }
+
         // ITAD establishes the trusted links used by direct stores. It must complete before Epic and
         // Microsoft begin; no DbContext operation runs while the provider calls below are in flight.
         // ITAD links require the prices endpoint. Identity-only reads do not write fresh snapshots.
@@ -582,10 +647,13 @@ public sealed class SteamGameService(
             ? (isComparable
                 ? await MeasureRefreshPhaseAsync(
                     appId,
-                    needsOffers ? "itad" : "itad-identity",
-                    () => FetchItadRefreshAsync(appId, interactive, cancellationToken),
-                    refresh => refresh.Outcome)
-                : ItadRefreshResult.NoMatch())
+                    snapshot?.GameId,
+                    needsOffers ? ItadPhaseName : ItadIdentityPhaseName,
+                    probe => FetchItadRefreshAsync(appId, interactive, probe, cancellationToken),
+                    refresh => refresh.Outcome,
+                    SyncDiagnosticReason.NoIdentity,
+                    cancellationToken)
+                : NotComparableItad(appId, snapshot?.GameId))
             : null;
 
         // Read stored identities before concurrent outbound work. EF Core does not permit concurrent
@@ -611,25 +679,34 @@ public sealed class SteamGameService(
         {
             var ggDealsTask = needsGgDeals ? MeasureRefreshPhaseAsync(
                 appId,
-                "ggdeals",
-                () => FetchGgDealsRefreshAsync(appId, cancellationToken),
-                refresh => refresh.Outcome) : Task.FromResult<GgDealsRefreshResult>(null!);
+                snapshot?.GameId,
+                GgDealsPhaseName,
+                probe => FetchGgDealsRefreshAsync(appId, probe, cancellationToken),
+                refresh => refresh.Outcome,
+                SyncDiagnosticReason.NoIdentity,
+                cancellationToken) : Task.FromResult<GgDealsRefreshResult>(null!);
             if (background) ggDealsRefresh = await ggDealsTask;
             var epicTask = needsEpic ? MeasureRefreshPhaseAsync(
                 appId,
-                "epic",
-                () => isComparable
-                    ? FetchEpicRefreshAsync(title, epicExternalId, itadDeals, allowTitleFallback, interactive, cancellationToken)
-                    : Task.FromResult(StoreRefreshResult.NoMatch()),
-                refresh => refresh.Outcome) : Task.FromResult<StoreRefreshResult>(null!);
+                snapshot?.GameId,
+                EpicPhaseName,
+                probe => isComparable
+                    ? FetchEpicRefreshAsync(title, epicExternalId, itadDeals, allowTitleFallback, interactive, probe, cancellationToken)
+                    : NotComparableStore(probe),
+                refresh => refresh.Outcome,
+                SyncDiagnosticReason.StoreNoOffer,
+                cancellationToken) : Task.FromResult<StoreRefreshResult>(null!);
             if (background) epicRefresh = await epicTask;
             var microsoftTask = needsMicrosoft ? MeasureRefreshPhaseAsync(
                 appId,
-                "microsoft",
-                () => isComparable
-                    ? FetchMicrosoftRefreshAsync(title, microsoftExternalId, itadDeals, allowTitleFallback, interactive, cancellationToken)
-                    : Task.FromResult(StoreRefreshResult.NoMatch()),
-                refresh => refresh.Outcome) : Task.FromResult<StoreRefreshResult>(null!);
+                snapshot?.GameId,
+                MicrosoftPhaseName,
+                probe => isComparable
+                    ? FetchMicrosoftRefreshAsync(title, microsoftExternalId, itadDeals, allowTitleFallback, interactive, probe, cancellationToken)
+                    : NotComparableStore(probe),
+                refresh => refresh.Outcome,
+                SyncDiagnosticReason.StoreNoOffer,
+                cancellationToken) : Task.FromResult<StoreRefreshResult>(null!);
 
             await Task.WhenAll(ggDealsTask, epicTask, microsoftTask);
             ggDealsRefresh = await ggDealsTask;
@@ -647,9 +724,12 @@ public sealed class SteamGameService(
                 ProviderRefreshOutcome.Refreshed when itadRefresh.ItadGameId is not null =>
                     await MeasureRefreshPhaseAsync(
                         appId,
-                        "itad-bundles",
-                        () => FetchItadBundlesAsync(itadRefresh.ItadGameId, cancellationToken),
-                        refresh => refresh.Outcome),
+                        snapshot?.GameId,
+                        ItadBundlesPhaseName,
+                        probe => FetchItadBundlesAsync(itadRefresh.ItadGameId, probe, cancellationToken),
+                        refresh => refresh.Outcome,
+                        SyncDiagnosticReason.NoIdentity,
+                        cancellationToken),
                 ProviderRefreshOutcome.NoMatch => ItadBundlesRefreshResult.NoMatch(),
                 _ => ItadBundlesRefreshResult.Failed()
             };
@@ -670,12 +750,21 @@ public sealed class SteamGameService(
             baseDetails = ToPersistedDetails(cached);
         }
 
-        // A cached GET has no fresh provider result to write. Return the no-tracking snapshot without a
-        // transaction, tracked reload or SaveChanges; its freshness and response contract remain unchanged.
-        // The stale-price batch is the exception on purpose: it exists to run the due provider phases and
-        // write their answers, so it must never answer from the snapshot without attempting them.
-        if (details is null && !forceRefresh && snapshot is not null &&
-            refreshMode != GameRefreshMode.StalePriceBatch)
+        // The interactive Steam cache: a Steam-only GET whose snapshot is inside the Steam window answers
+        // from the database, without a transaction, a tracked reload or a SaveChanges, and with no provider
+        // traffic — that mode never requests a provider at all. Its freshness and response contract are
+        // unchanged.
+        //
+        // This is deliberately the ONLY mode allowed to answer from the snapshot here, and the reason is a
+        // measured production cycle (wishlist.syncprices: 604 Steam successes, 2168 provider failures, zero
+        // successes). Both price passes — BackgroundProviders and StalePriceBatch — reach this point with no
+        // fresh Steam payload *by design* and with their provider answers already in hand, so the earlier
+        // form of this condition (`details is null && !forceRefresh && snapshot is not null` plus an
+        // exception only for the batch) threw away every authoritative store answer: the stores were called,
+        // nothing was persisted, the provider stamps never advanced and the job's counter — which compares a
+        // stamp before and after the pass — could only read "failed". Steam-free is not cacheable: a mode
+        // that fetches providers must write what they answered.
+        if (refreshMode == GameRefreshMode.SteamOnly && details is null && !forceRefresh && snapshot is not null)
         {
             var bundleFxRate = snapshot.BundleLinks.Count > 0
                 ? await fxRateService.GetLatestRateAsync(FxBaseCurrency, FxQuoteCurrency, cancellationToken)
@@ -881,24 +970,41 @@ public sealed class SteamGameService(
     }
 
     /// <summary>
-    /// The manual pending-price pass: every due price phase of one game — Steam direct included — gated at 72 h
-    /// instead of the configured TTL, through the same per-app gate as every other load. A game that is already
-    /// fresh costs no provider request and no write: the plan simply has no steps, and the pass records a skip.
+    /// The manual pending-price pass: every due price phase of one game — Steam direct included — gated at the
+    /// <paramref name="ageHours"/> the requester chose (spec S2/S3) instead of the configured TTL, through the same
+    /// per-app gate as every other load. A game that is already fresh costs no provider request and no write: the
+    /// plan simply has no steps, and the pass records a skip.
+    ///
+    /// The window is an explicit, bounded argument — <see cref="CatalogPriceRefreshLimits"/> — and never a
+    /// configuration read: the batch must not inherit the 7-day provider TTL, and it is no longer pinned to a hidden
+    /// 72 h guard either, so a 24 h or a 168 h run means what it says. An out-of-range window is refused here, before
+    /// any provider call.
     ///
     /// The typed outcome is the point of this entry point: the pipeline turns a provider fault into a
     /// <c>Failed</c> phase result and still returns a details model, so "which due phase really answered" has to
     /// be observed here or it is lost.
     /// </summary>
-    public async Task<SteamStalePriceRefresh> RefreshStalePricesAsync(int appId, CancellationToken cancellationToken)
+    public async Task<SteamStalePriceRefresh> RefreshStalePricesAsync(
+        int appId,
+        CancellationToken cancellationToken,
+        int ageHours = GameRefreshPolicy.StalePriceBatchHours)
     {
         if (appId <= 0) throw new ArgumentException("El appid de Steam debe ser un entero positivo.");
+        CatalogPriceRefreshLimits.ValidateAgeHours(ageHours, nameof(ageHours));
 
         var attempt = new StalePriceAttemptRecorder();
         using var gateLease = AcquireAppGate(appId);
         await gateLease.Semaphore.WaitAsync(cancellationToken);
         try
         {
-            await LoadDetailsAsync(appId, false, false, cancellationToken, GameRefreshMode.StalePriceBatch, attempt);
+            await LoadDetailsAsync(
+                appId,
+                false,
+                false,
+                cancellationToken,
+                GameRefreshMode.StalePriceBatch,
+                attempt,
+                TimeSpan.FromHours(ageHours));
             return attempt.ToResult();
         }
         finally { gateLease.Semaphore.Release(); }
@@ -1213,35 +1319,156 @@ public sealed class SteamGameService(
     /// <summary>
     /// Measures one provider phase without logging provider payloads, URLs, or credentials. Client-level
     /// logs retain queue/rate-limit/retry detail; this span identifies the phase consuming request time.
+    ///
+    /// <para>
+    /// It is also the single place a phase becomes a diagnostics event (spec S3), for three reasons: the phase
+    /// name, the elapsed time and the typed outcome are all known here; the fetchers that absorb a provider
+    /// fault into a <c>Failed</c> result write the fault into the <see cref="SyncPhaseProbe"/> they receive, so
+    /// the reason survives even though the exception never leaves them; and nothing else in the pipeline sees
+    /// every phase exactly once — recording anywhere else would double-count or miss.
+    /// </para>
+    ///
+    /// <para>
+    /// The recording never changes the outcome: it observes the result and, on the throwing path, records before
+    /// rethrowing the same exception. Provider ordering, gates, timestamps and persistence are untouched.
+    /// </para>
     /// </summary>
     private async Task<T> MeasureRefreshPhaseAsync<T>(
         int appId,
+        long? gameId,
         string phase,
-        Func<Task<T>> operation,
-        Func<T, ProviderRefreshOutcome> outcome)
+        Func<SyncPhaseProbe, Task<T>> operation,
+        Func<T, ProviderRefreshOutcome> outcome,
+        SyncDiagnosticReason noMatchReason,
+        CancellationToken cancellationToken)
     {
-        var stopwatch = Stopwatch.StartNew();
+        var probe = new SyncPhaseProbe();
         try
         {
-            var result = await operation();
+            var result = await operation(probe);
+            var phaseOutcome = outcome(result);
+            RecordPhaseEvent(appId, gameId, phase, phaseOutcome, probe, noMatchReason, cancellationToken);
             logger.LogInformation(
                 "[steam.refresh.phase] appId={AppId} phase={Phase} outcome={Outcome} elapsedMs={ElapsedMs}",
                 appId,
                 phase,
-                outcome(result),
-                stopwatch.ElapsedMilliseconds);
+                phaseOutcome,
+                probe.ElapsedMilliseconds);
             return result;
         }
         catch (Exception exception)
         {
+            // The exception ends the phase here: a caller cancellation is an outcome of its own, everything
+            // else is the failure the caller will see.
+            probe.Capture(exception);
+            RecordPhaseEvent(appId, gameId, phase, ProviderRefreshOutcome.Failed, probe, noMatchReason, cancellationToken);
             logger.LogWarning(
                 exception,
                 "[steam.refresh.phase] appId={AppId} phase={Phase} outcome=exception elapsedMs={ElapsedMs}",
                 appId,
                 phase,
-                stopwatch.ElapsedMilliseconds);
+                probe.ElapsedMilliseconds);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Turns one finished phase into its diagnostics event. The reason is the phase's own note when it has one
+    /// (it is the only thing that knows whether a no-match was "no identity" or "the store does not sell it")
+    /// and the classified exception when the phase failed. Both are closed tokens, so nothing free-form — no
+    /// message, URL or body — can reach the job record.
+    /// </summary>
+    private void RecordPhaseEvent(
+        int appId,
+        long? gameId,
+        string phase,
+        ProviderRefreshOutcome outcome,
+        SyncPhaseProbe probe,
+        SyncDiagnosticReason noMatchReason,
+        CancellationToken cancellationToken)
+    {
+        if (diagnostics is null || SyncDiagnosticsContract.ProviderForPhase(phase) is not { } provider)
+        {
+            return;
+        }
+
+        SyncDiagnosticOutcome diagnosticOutcome;
+        SyncDiagnosticReason reason;
+        int? httpStatus = null;
+        string? errorType = null;
+
+        switch (outcome)
+        {
+            case ProviderRefreshOutcome.Refreshed:
+                diagnosticOutcome = SyncDiagnosticOutcome.Refreshed;
+                reason = probe.Note ?? SyncDiagnosticReason.Refreshed;
+                break;
+
+            case ProviderRefreshOutcome.NoMatch:
+                // A no-match the phase reports as a skip (a non-comparable item, an unasked provider) is not the
+                // store saying "I do not sell it": the store was never asked.
+                diagnosticOutcome = probe.Outcome ?? SyncDiagnosticOutcome.NoMatch;
+                reason = probe.Note ?? noMatchReason;
+                break;
+
+            default:
+                var failure = SyncDiagnosticFailure.Classify(probe.Cause, cancellationToken);
+                diagnosticOutcome = failure.Outcome;
+                reason = failure.Reason;
+                httpStatus = failure.HttpStatus;
+                errorType = failure.ErrorType;
+                break;
+        }
+
+        diagnostics.Record(
+            appId,
+            gameId,
+            provider,
+            diagnosticOutcome,
+            reason,
+            httpStatus,
+            errorType,
+            probe.ElapsedMilliseconds);
+    }
+
+    /// <summary>
+    /// Records why a phase did not run at all (spec S3: a gate is only reported when it is actual evidence). It is
+    /// called from the two non-interactive price modes only, where "no provider was asked" is a decision of the
+    /// plan and the game is known; an interactive GET never reports provider gates, because it never consults them.
+    /// </summary>
+    private void RecordGateSkip(int appId, long? gameId, string phase, bool comparable)
+    {
+        if (diagnostics is null || SyncDiagnosticsContract.ProviderForPhase(phase) is not { } provider)
+        {
+            return;
+        }
+
+        diagnostics.Record(
+            appId,
+            gameId,
+            provider,
+            SyncDiagnosticOutcome.Skipped,
+            comparable ? SyncDiagnosticReason.GateSkipped : SyncDiagnosticReason.NotComparable);
+    }
+
+    /// <summary>
+    /// The ITAD phase of a game whose Steam type/free flag makes it non-comparable: the provider is never asked,
+    /// because there is nothing to compare. Reported as its own reason so it is never read as an outage.
+    /// </summary>
+    private ItadRefreshResult NotComparableItad(int appId, long? gameId)
+    {
+        RecordGateSkip(appId, gameId, ItadPhaseName, comparable: false);
+        return ItadRefreshResult.NoMatch();
+    }
+
+    /// <summary>
+    /// The in-phase version of the same decision, for a store phase the plan did ask for: the probe carries the
+    /// reason back to <see cref="MeasureRefreshPhaseAsync"/>, which records the single event of the phase.
+    /// </summary>
+    private static Task<StoreRefreshResult> NotComparableStore(SyncPhaseProbe probe)
+    {
+        probe.Skip(SyncDiagnosticReason.NotComparable);
+        return Task.FromResult(StoreRefreshResult.NoMatch());
     }
 
     /// <summary>
@@ -1252,6 +1479,7 @@ public sealed class SteamGameService(
     private async Task<ItadRefreshResult> FetchItadRefreshAsync(
         int appId,
         bool interactive,
+        SyncPhaseProbe probe,
         CancellationToken cancellationToken)
     {
         var priority = interactive ? ItadRequestPriority.Interactive : ItadRequestPriority.Background;
@@ -1261,7 +1489,9 @@ public sealed class SteamGameService(
             itadId = await itadClient.LookupSteamAppIdAsync(appId, cancellationToken, priority);
             if (itadId is null)
             {
-                // Delisted / unknown / not a comparable item: ITAD returned an authoritative no-match.
+                // Delisted / unknown / not a comparable item: ITAD returned an authoritative no-match. The
+                // diagnosis names it "no identity" because that is what it is: nothing to attribute prices to.
+                probe.Explain(SyncDiagnosticReason.NoIdentity);
                 return ItadRefreshResult.NoMatch();
             }
 
@@ -1281,6 +1511,7 @@ public sealed class SteamGameService(
             // Provider down, unparseable, or timed out: keep the persisted snapshot and let the caller
             // leave offersStale standing. The lookup may have succeeded before the price call failed, so
             // its id is still carried for persistence. A caller-request cancellation fails the filter.
+            probe.Capture(exception);
             return ItadRefreshResult.Failed(itadId);
         }
     }
@@ -1291,7 +1522,10 @@ public sealed class SteamGameService(
     /// bundle is attributed to this game only when one of its tier items is the queried id; an empty list
     /// is the provider's authoritative "this game is in no active bundle".
     /// </summary>
-    private async Task<ItadBundlesRefreshResult> FetchItadBundlesAsync(string itadId, CancellationToken cancellationToken)
+    private async Task<ItadBundlesRefreshResult> FetchItadBundlesAsync(
+        string itadId,
+        SyncPhaseProbe probe,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -1306,6 +1540,7 @@ public sealed class SteamGameService(
         {
             // Provider down, unparseable, timed out, or out of the shared budget: keep the persisted bundle
             // snapshot and leave BundlesRefreshedAt untouched so the next request retries.
+            probe.Capture(exception);
             return ItadBundlesRefreshResult.Failed();
         }
     }
@@ -1552,7 +1787,10 @@ public sealed class SteamGameService(
     /// Outbound gg.deals phase. No transaction is open and nothing is written here; applying the result
     /// is <see cref="ApplyGgDealsRefresh"/>, a separate DB-only step.
     /// </summary>
-    private async Task<GgDealsRefreshResult> FetchGgDealsRefreshAsync(int appId, CancellationToken cancellationToken)
+    private async Task<GgDealsRefreshResult> FetchGgDealsRefreshAsync(
+        int appId,
+        SyncPhaseProbe probe,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -1564,6 +1802,8 @@ public sealed class SteamGameService(
             // single request, forever.
             if (!prices.TryGetValue(appId, out var price) || string.IsNullOrWhiteSpace(price.Currency))
             {
+                // gg.deals does not track this app id: there is no entry to attribute a price to.
+                probe.Explain(SyncDiagnosticReason.NoIdentity);
                 return GgDealsRefreshResult.NoMatch();
             }
 
@@ -1576,6 +1816,7 @@ public sealed class SteamGameService(
         {
             // Provider down, unparseable, timed out, or out of the shared budget: keep the persisted
             // snapshot and leave GgDealsRefreshedAt untouched so the next request retries.
+            probe.Capture(exception);
             return GgDealsRefreshResult.Failed();
         }
     }
@@ -1687,12 +1928,14 @@ public sealed class SteamGameService(
         IReadOnlyList<ItadDeal> itadDeals,
         bool allowTitleFallback,
         bool interactive,
+        SyncPhaseProbe probe,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(title))
         {
             // The store is searched by title: without one there is nothing to resolve, and that is an
             // authoritative no-match for this cycle rather than a failure to retry.
+            probe.Explain(SyncDiagnosticReason.NoIdentity);
             return StoreRefreshResult.NoMatch();
         }
 
@@ -1714,24 +1957,34 @@ public sealed class SteamGameService(
                 // si ITAD respondió: un slug adivinado es el precio de otro juego.
                 if (!allowTitleFallback)
                 {
+                    probe.Explain(SyncDiagnosticReason.TitleFallbackDisabled);
                     return StoreRefreshResult.NoMatch();
                 }
 
                 var searched = await storePriceProvider.FindOfferByTitleAsync(title, cancellationToken);
-                return searched is null
-                    ? StoreRefreshResult.NoMatch()
-                    : StoreRefreshResult.Succeeded(searched);
+                if (searched is null)
+                {
+                    probe.Explain(SyncDiagnosticReason.StoreNoOffer);
+                    return StoreRefreshResult.NoMatch();
+                }
+
+                return StoreRefreshResult.Succeeded(searched);
             }
 
             var offer = await storePriceProvider.FindOfferAsync(title, resolved.ExternalId, cancellationToken);
-            return offer is null
-                ? StoreRefreshResult.NoMatch()
-                : StoreRefreshResult.Succeeded(offer);
+            if (offer is null)
+            {
+                probe.Explain(SyncDiagnosticReason.StoreNoOffer);
+                return StoreRefreshResult.NoMatch();
+            }
+
+            return StoreRefreshResult.Succeeded(offer);
         }
         catch (Exception exception) when (IsDegradableProviderFailure(exception, cancellationToken))
         {
             // Store down, bot challenge, unparseable, timed out, or out of the shared budget: keep the
             // persisted snapshot and leave EpicRefreshedAt untouched so the next request retries.
+            probe.Capture(exception);
             return StoreRefreshResult.Failed();
         }
     }
@@ -1754,6 +2007,7 @@ public sealed class SteamGameService(
         IReadOnlyList<ItadDeal> itadDeals,
         bool allowTitleFallback,
         bool interactive,
+        SyncPhaseProbe probe,
         CancellationToken cancellationToken)
     {
         try
@@ -1776,13 +2030,20 @@ public sealed class SteamGameService(
                 // ITAD respondió: un id adivinado es el precio de otro juego.
                 if (!allowTitleFallback || string.IsNullOrWhiteSpace(title))
                 {
+                    probe.Explain(allowTitleFallback
+                        ? SyncDiagnosticReason.NoIdentity
+                        : SyncDiagnosticReason.TitleFallbackDisabled);
                     return StoreRefreshResult.NoMatch();
                 }
 
                 var searched = await microsoftStoreClient.FindOfferByTitleAsync(title, cancellationToken);
-                return searched is null
-                    ? StoreRefreshResult.NoMatch()
-                    : StoreRefreshResult.Succeeded(searched);
+                if (searched is null)
+                {
+                    probe.Explain(SyncDiagnosticReason.StoreNoOffer);
+                    return StoreRefreshResult.NoMatch();
+                }
+
+                return StoreRefreshResult.Succeeded(searched);
             }
 
             // The id is mandatory here, so the title is not part of the identity: the client never searches
@@ -1793,14 +2054,19 @@ public sealed class SteamGameService(
                 cancellationToken,
                 resolved.StoreUrl);
 
-            return offer is null
-                ? StoreRefreshResult.NoMatch()
-                : StoreRefreshResult.Succeeded(offer);
+            if (offer is null)
+            {
+                probe.Explain(SyncDiagnosticReason.StoreNoOffer);
+                return StoreRefreshResult.NoMatch();
+            }
+
+            return StoreRefreshResult.Succeeded(offer);
         }
         catch (Exception exception) when (IsDegradableProviderFailure(exception, cancellationToken))
         {
             // Same contract as Epic: keep the persisted snapshot and leave MicrosoftRefreshedAt untouched
             // so the next request retries.
+            probe.Capture(exception);
             return StoreRefreshResult.Failed();
         }
     }

@@ -1,5 +1,6 @@
 using Deals.BusinessLogic.Interfaces;
 using Deals.BusinessLogic.Models.Discovery;
+using Deals.BusinessLogic.Models.Diagnostics;
 
 namespace Deals.API.Services.Jobs;
 
@@ -12,6 +13,11 @@ namespace Deals.API.Services.Jobs;
 /// The batch is the constant <see cref="CatalogPriceRefreshLimits.BatchSize"/>, paced by the existing provider
 /// governors (one admission per HTTP attempt). The dispatcher takes this job's own advisory lock, preventing
 /// concurrent runs of this same job across instances; different jobs have separate locks.
+///
+/// The window is the run's own <c>ageHours</c> option (spec S2/S3) — 1..720, default 72 — and it is the single number
+/// the pass uses for the bucket, the gates, the selection, the measurement and the remaining count. The record
+/// repeats it, together with the split between games whose price is merely old and games with no price at all, so a
+/// history entry can never be read as if it had used the monitor's fixed 72 h.
 ///
 /// Ownership: the person who queued the run is captured from the access token at submission and travels in the
 /// queue item, so this executor receives a user id and never reads the HTTP context. Called without one — the
@@ -28,7 +34,11 @@ namespace Deals.API.Services.Jobs;
 /// "unsupported only" verdict is only true when the unsupported count *is* the pending count, and a mixed set
 /// gets its own honest reason instead of borrowing that one.
 /// </summary>
-public sealed class CatalogPriceRefreshJobExecutor(ICatalogPriceRefreshService refreshService)
+public sealed class CatalogPriceRefreshJobExecutor(
+    ICatalogPriceRefreshService refreshService,
+    // Optional like the other scoped observers: a hand-built executor (checks, tools) keeps working and simply
+    // produces no diagnosis.
+    ISyncDiagnosticsCollector? diagnostics = null)
     : IUserScopedJobExecutor
 {
     public const string JobKey = JobKeys.CatalogPricesRefresh;
@@ -61,11 +71,19 @@ public sealed class CatalogPriceRefreshJobExecutor(ICatalogPriceRefreshService r
 
         if (requestedByUserId <= 0)
         {
-            // Belt and braces: the dispatcher already refuses, and the pass would refuse too.
+            // Belt and braces: the dispatcher already refuses, and the pass would refuse too. A refused run claims
+            // nothing, so it cannot produce a report either.
             return new JobExecutionResult(false, new { reason = "requester_required" });
         }
 
-        var outcome = await refreshService.RefreshPendingAsync(requestedByUserId, cancellationToken);
+        // The run owns the diagnosis of this scope (spec S2/S3): claimed before the pass, and only here, so an
+        // interactive request — which shares the service but never the claim — records nothing.
+        diagnostics?.Activate();
+
+        // The chosen window travels as an argument, not as configuration: this job never reads a TTL, so it cannot
+        // inherit the 7-day provider window and it is not pinned to a fixed 72 h either.
+        var ageHours = options.AgeHours;
+        var outcome = await refreshService.RefreshPendingAsync(requestedByUserId, cancellationToken, ageHours);
 
         // The reasons are part of the record: "0 selected" alone cannot be told apart from a broken run.
         string? reason = null;
@@ -106,7 +124,11 @@ public sealed class CatalogPriceRefreshJobExecutor(ICatalogPriceRefreshService r
         {
             reason,
             requestedBy = requestedByUserId,
+            // The window this run really used, so the counts below are read against the hours that produced them.
+            ageHours = outcome.AgeHours,
             pending = outcome.Pending,
+            olderPricePending = outcome.OlderPricePending,
+            missingPricePending = outcome.MissingPricePending,
             selected = outcome.Selected,
             updated = outcome.Updated,
             skipped = outcome.Skipped,
@@ -118,6 +140,9 @@ public sealed class CatalogPriceRefreshJobExecutor(ICatalogPriceRefreshService r
             errors = outcome.Errors,
             remaining = outcome.Remaining,
             unresolvedWishlistEntries = outcome.UnresolvedWishlistEntries,
+            // Per-game detail of the same pass (spec S2/S3): which provider phase of which game refreshed, had
+            // nothing to offer or failed, and why. Null when no phase ran, never an invented empty report.
+            diagnostics = diagnostics is { HasEvents: true } collected ? collected.BuildSnapshot() : null,
         });
     }
 }

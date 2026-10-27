@@ -111,7 +111,9 @@ public sealed class MicrosoftStoreClient(
         if (!response.IsSuccessStatusCode)
         {
             throw new HttpRequestException(
-                $"Microsoft Store search returned HTTP {(int)response.StatusCode}.");
+                $"Microsoft Store search returned HTTP {(int)response.StatusCode}.",
+                null,
+                response.StatusCode);
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -193,7 +195,9 @@ public sealed class MicrosoftStoreClient(
         if (!response.IsSuccessStatusCode)
         {
             throw new HttpRequestException(
-                $"Microsoft Store catalog returned HTTP {(int)response.StatusCode}.");
+                $"Microsoft Store catalog returned HTTP {(int)response.StatusCode}.",
+                null,
+                response.StatusCode);
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);

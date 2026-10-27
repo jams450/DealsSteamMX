@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using Deals.API.Services.Jobs;
 
 namespace Deals.API.Models.Jobs;
 
@@ -45,7 +47,28 @@ public sealed record JobRunDetailResponse(
     long? DurationMilliseconds,
     JsonElement? Details);
 
-public sealed record JobOptionResponse(string Key, string Label, string Help, bool DefaultValue);
+/// <summary>
+/// One option as the admin page reads it. The shape is additive to the previous contract (spec S5): the four fields
+/// keep their names, <see cref="DefaultValue"/> is a boolean for a switch and a number for an integer option, and
+/// <see cref="Type"/>/<see cref="MinValue"/>/<see cref="MaxValue"/> are new. The two bounds are null (and therefore
+/// omitted) for a switch, so an old-style option still serialises as it did plus its explicit type.
+/// </summary>
+public sealed record JobOptionResponse(
+    string Key,
+    string Label,
+    string Help,
+    object DefaultValue,
+    string Type,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? MinValue = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? MaxValue = null)
+{
+    /// <summary>
+    /// Maps a catalog descriptor to the response the admin page reads. Kept here, next to the wire record, so the
+    /// option contract is tested through the same mapping the controller uses instead of a copy of it.
+    /// </summary>
+    public static JobOptionResponse From(JobOptionDescriptor option) =>
+        new(option.Key, option.Label, option.Help, option.DefaultValue, option.Type, option.MinValue, option.MaxValue);
+}
 
 /// <summary>
 /// One job as the operator may execute it. <c>enabled</c>/<c>disabledReason</c> report configuration

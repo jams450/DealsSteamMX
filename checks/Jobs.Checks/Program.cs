@@ -19,8 +19,10 @@ JobQueueChecks.Run();
 await JobSubmissionChecks.RunAsync();
 await JobExecutionChecks.RunAsync();
 JobSanitizerChecks.Run();
+SyncDiagnosticsChecks.Run();
 JobCompatibilityChecks.Run();
 CatalogPriceRefreshChecks.Run();
+await NumericJobOptionChecks.RunAsync();
 
 Console.WriteLine("PASS: all jobs catalog/dispatch checks");
 
@@ -107,10 +109,15 @@ internal static class JobCatalogChecks
 
         Check(catalog.Find(JobKeys.FxRateRefresh)!.Options.Count == 0, "fx refresh has no options");
         Check(catalog.Find(JobKeys.Purge)!.Options.Count == 1, "purge exposes only the dry run switch");
-        // The manual price pass takes no options on purpose: its batch bound is a constant, so nothing in the
-        // request can widen it into a whole-catalog sweep.
-        Check(catalog.Find(JobKeys.CatalogPricesRefresh)!.Options.Count == 0,
-            "the manual price pass exposes no options");
+        // The manual price pass takes exactly one bounded option — the requester's window in hours (spec S2/S5) —
+        // and no batch option: the batch bound stays a constant, so nothing in the request can widen it into a
+        // whole-wishlist sweep.
+        var pricePassOptions = catalog.Find(JobKeys.CatalogPricesRefresh)!.Options;
+        Check(pricePassOptions.Count == 1, "the manual price pass exposes exactly its window option");
+        Check(pricePassOptions[0].Key == JobOptionKeys.AgeHours, "the option is the chosen age in hours");
+        Check(pricePassOptions[0].Type == JobOptionTypes.Integer, "the option is an integer, not a switch");
+        Check(!pricePassOptions.Any(option => option.Key.Contains("batch", StringComparison.OrdinalIgnoreCase)),
+            "no option widens the batch");
         Console.WriteLine("PASS: jobs catalog checks");
     }
 
@@ -388,7 +395,7 @@ internal static class JobExecutionChecks
         var tracker = new RecordingTracker();
         var executor = new FakeExecutor(JobKeys.WishlistSync, new JobExecutionResult(true, new { refreshed = 3 }));
         var runner = Runner(catalog, tracker, executor);
-        var options = new JobRunOptions(new Dictionary<string, bool>(StringComparer.Ordinal)
+        var options = new JobRunOptions(new Dictionary<string, object>(StringComparer.Ordinal)
         {
             [JobOptionKeys.IncludePriceRefresh] = true
         });

@@ -20,10 +20,13 @@ namespace Deals.BusinessLogic.Services;
 ///
 /// The refresh itself is the existing per-game pipeline with <see cref="GameRefreshMode.StalePriceBatch"/>:
 /// the same per-app gate (concurrent same-app work queues instead of racing), the same provider governors and
-/// cooldowns, the same "a failed answer never advances a timestamp" rule, and a 72-hour provider TTL instead of
-/// the configured 7-day one. It never forces the interactive Full mode. When due, the Steam phase calls
+/// cooldowns, the same "a failed answer never advances a timestamp" rule, and the provider TTL the requester chose
+/// instead of the configured 7-day one. It never forces the interactive Full mode. When due, the Steam phase calls
 /// GetAppDetailsAsync and persists the returned store snapshot, including price and metadata; the ITAD phase
-/// resolves provider identity when needed. Both run under the batch's independent 72-hour gates.
+/// resolves provider identity when needed. Both run under the batch's independent gates, all derived from the same
+/// <c>ageHours</c>: the bucket of the cheapest stored price, the per-phase due gates, the selection, the
+/// before/after measurement and the remaining count. 72 is only the caller's default — no per-game code re-reads a
+/// fixed 72 h window, and the monitor's own window is not consulted.
 ///
 /// The wishlist is the only scope: the library (<c>owned</c>), the favourites and other accounts are not read,
 /// and the requester's id is a required argument, so an anonymous run is impossible by construction rather
@@ -43,8 +46,13 @@ public sealed class CatalogPriceRefreshService(
 {
     public async Task<CatalogPriceRefreshOutcome> RefreshPendingAsync(
         int requestedByUserId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int ageHours = CatalogPriceRefreshLimits.DefaultAgeHours)
     {
+        // The window is validated before any read: a run that would reprice a window nobody asked for must not spend
+        // a query, let alone a provider call, and it must not record an answer for it either.
+        CatalogPriceRefreshLimits.ValidateAgeHours(ageHours, nameof(ageHours));
+
         // Fail closed before any read: a pass whose owner is unknown would be the old catalogue-wide sweep.
         var scope = await wishlistScope.LoadAsync(requestedByUserId, cancellationToken);
         if (scope.IsEmpty)
@@ -53,7 +61,8 @@ public sealed class CatalogPriceRefreshService(
             // wishlist is not an empty one.
             return new CatalogPriceRefreshOutcome(
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                UnresolvedWishlistEntries: scope.UnresolvedEntries);
+                UnresolvedWishlistEntries: scope.UnresolvedEntries,
+                AgeHours: ageHours);
         }
 
         var asOfUtc = clock.GetUtcNow().UtcDateTime;
@@ -63,15 +72,28 @@ public sealed class CatalogPriceRefreshService(
         var pending = CatalogFreshnessQueries.Pending(CatalogFreshnessQueries.GameStates(
             CatalogFreshnessQueries.WishlistGames(repository.Get<Game>(), scope.GameIds),
             prices,
-            asOfUtc));
+            asOfUtc,
+            ageHours));
 
         var pendingCount = await pending.CountAsync(cancellationToken);
         if (pendingCount == 0)
         {
             return new CatalogPriceRefreshOutcome(
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                UnresolvedWishlistEntries: scope.UnresolvedEntries);
+                UnresolvedWishlistEntries: scope.UnresolvedEntries,
+                AgeHours: ageHours);
         }
+
+        // The pending set split by WHY it is pending (spec S1/S3): a price older than the chosen window, or no price
+        // at all. Both are included by default — the user's own choice — and reporting them apart is what keeps the
+        // record honest about which half was repriced.
+        var pendingByStatus = await CatalogFreshnessQueries.Counts(pending).ToListAsync(cancellationToken);
+        var olderPricePending = pendingByStatus
+            .Where(row => string.Equals(row.Status, CatalogFreshnessStatus.Stale, StringComparison.Ordinal))
+            .Sum(row => row.Total);
+        var missingPricePending = pendingByStatus
+            .Where(row => string.Equals(row.Status, CatalogFreshnessStatus.Missing, StringComparison.Ordinal))
+            .Sum(row => row.Total);
 
         // The two pending games this pass will not attempt, counted instead of hidden: no Steam identity at
         // all, and "already asked inside the window with nothing comparable back".
@@ -79,11 +101,11 @@ public sealed class CatalogPriceRefreshService(
             .PendingWithoutSteam(pending, steamGames)
             .CountAsync(cancellationToken);
         var notDue = await CatalogFreshnessQueries
-            .PendingNotDue(pending, steamGames, asOfUtc)
+            .PendingNotDue(pending, steamGames, asOfUtc, ageHours)
             .CountAsync(cancellationToken);
 
         var candidates = await CatalogFreshnessQueries
-            .PendingCandidates(pending, steamGames, CatalogPriceRefreshLimits.BatchSize, asOfUtc)
+            .PendingCandidates(pending, steamGames, CatalogPriceRefreshLimits.BatchSize, asOfUtc, ageHours)
             .ToListAsync(cancellationToken);
 
         var updated = 0;
@@ -100,7 +122,10 @@ public sealed class CatalogPriceRefreshService(
             SteamStalePriceRefresh attempt;
             try
             {
-                attempt = await steamGameService.RefreshStalePricesAsync(candidate.AppId, cancellationToken);
+                attempt = await steamGameService.RefreshStalePricesAsync(
+                    candidate.AppId,
+                    cancellationToken,
+                    ageHours);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -123,7 +148,7 @@ public sealed class CatalogPriceRefreshService(
             // usable comparable MXN price, with its amount and instant — never with a second definition and never
             // with "the newest observation of any shop". A phase that renews a more expensive Steam price leaves
             // the panel's price exactly where it was, so it is a skip and not a price update (user correction S9).
-            var after = await ChosenPriceAsync(candidate.GameId, cancellationToken);
+            var after = await ChosenPriceAsync(candidate.GameId, ageHours, cancellationToken);
             var hasUsablePriceAfter = after?.ChosenObservedAt is not null;
             var advanced = CatalogPriceRefreshMeasurement.Advanced(
                 candidate.ChosenPriceMinor,
@@ -164,20 +189,28 @@ public sealed class CatalogPriceRefreshService(
         }
 
         var remainingAsOfUtc = clock.GetUtcNow().UtcDateTime;
+        // The remaining count is measured with the SAME window: a run that moved a 24 h boundary and then counted the
+        // rest at 72 h would report a wishlist it did not leave behind.
         var remaining = await CatalogFreshnessQueries
             .Pending(CatalogFreshnessQueries.GameStates(
                 CatalogFreshnessQueries.WishlistGames(repository.Get<Game>(), scope.GameIds),
                 CatalogFreshnessQueries.PriceUniverse(offers, steamGames, remainingAsOfUtc),
-                remainingAsOfUtc))
+                remainingAsOfUtc,
+                ageHours))
             .CountAsync(cancellationToken);
 
         logger.LogInformation(
-            "[catalog.prices-refresh] user={UserId} pending={Pending} selected={Selected} updated={Updated} " +
+            "[catalog.prices-refresh] user={UserId} ageHours={AgeHours} pending={Pending} " +
+            "olderPricePending={OlderPricePending} missingPricePending={MissingPricePending} " +
+            "selected={Selected} updated={Updated} " +
             "skipped={Skipped} gateDeclined={GateDeclined} noComparable={NoComparable} unsupported={Unsupported} " +
             "notDue={NotDue} degraded={Degraded} errors={Errors} remaining={Remaining} " +
             "unresolvedEntries={UnresolvedEntries}",
             requestedByUserId,
+            ageHours,
             pendingCount,
+            olderPricePending,
+            missingPricePending,
             candidates.Count,
             updated,
             skipped,
@@ -202,7 +235,10 @@ public sealed class CatalogPriceRefreshService(
             degraded,
             errors,
             remaining,
-            scope.UnresolvedEntries);
+            scope.UnresolvedEntries,
+            ageHours,
+            olderPricePending,
+            missingPricePending);
     }
 
     /// <summary>
@@ -210,7 +246,10 @@ public sealed class CatalogPriceRefreshService(
     /// monitor buckets with, so "did this pass change the price the panel shows" is measured with the panel's own
     /// definition and not with a second one. Returns <c>null</c> only if the game row itself disappeared.
     /// </summary>
-    private async Task<CatalogFreshnessGameState?> ChosenPriceAsync(long gameId, CancellationToken cancellationToken)
+    private async Task<CatalogFreshnessGameState?> ChosenPriceAsync(
+        long gameId,
+        int ageHours,
+        CancellationToken cancellationToken)
     {
         var asOfUtc = clock.GetUtcNow().UtcDateTime;
         var prices = CatalogFreshnessQueries.PriceUniverse(
@@ -219,7 +258,7 @@ public sealed class CatalogPriceRefreshService(
             asOfUtc);
 
         return await CatalogFreshnessQueries
-            .GameStates(repository.Get<Game>().Where(game => game.GameId == gameId), prices, asOfUtc)
+            .GameStates(repository.Get<Game>().Where(game => game.GameId == gameId), prices, asOfUtc, ageHours)
             .FirstOrDefaultAsync(cancellationToken);
     }
 }

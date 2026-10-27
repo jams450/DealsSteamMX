@@ -41,11 +41,30 @@ export type JobsResponse = {
   readonly filters: JobRunFilters;
 };
 
+/**
+ * Tipo de una opción declarada por el backend. `integer` es un entero escrito por el usuario (horas);
+ * `boolean` es la casilla de siempre. Un descriptor sin `type` se lee como `boolean`, que es la forma
+ * que ya tenían todos los jobs antes de existir las opciones numéricas.
+ */
+export type JobOptionType = "boolean" | "integer";
+
+export type JobOptionValue = boolean | number;
+
+/** Lo que el usuario tiene en la UI: la casilla (booleano) o el texto tal cual del campo numérico. */
+export type JobOptionInput = JobOptionValue | string;
+
 export type JobOption = {
   readonly key: string;
   readonly label: string;
   readonly help: string;
-  readonly defaultValue: boolean;
+  readonly type: JobOptionType;
+  /**
+   * Default efectivo. Es `null` solo si el backend declaró `integer` con un default que no es un entero
+   * dentro de sus propios límites: se rechaza en vez de redondearlo o leerlo como si fuera válido.
+   */
+  readonly defaultValue: boolean | number | null;
+  readonly minValue: number | null;
+  readonly maxValue: number | null;
 };
 
 export type JobCatalogItem = {
@@ -70,9 +89,20 @@ export type JobCatalog = {
 };
 
 export type JobRunPayload = {
-  readonly options: Record<string, boolean>;
+  readonly options: Record<string, JobOptionValue>;
   readonly confirm: boolean;
 };
+
+/** Lo lanza el payload builder cuando un valor declarado no se puede enviar: nunca se cae al default. */
+export class JobOptionValidationError extends Error {
+  readonly optionKey: string;
+
+  constructor(option: JobOption, reason: string) {
+    super(`${option.label}: ${reason}`);
+    this.name = "JobOptionValidationError";
+    this.optionKey = option.key;
+  }
+}
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -92,6 +122,92 @@ function count(value: unknown, fallback: number): number {
 function positiveInt(value: unknown): number | null {
   const parsed = count(value, Number.NaN);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/** Un límite solo cuenta si ya es un número entero; `"1"` o `720.5` no se convierten. */
+function integerBound(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
+}
+
+function withinBounds(value: number, minValue: number | null, maxValue: number | null): boolean {
+  return (minValue === null || value >= minValue) && (maxValue === null || value <= maxValue);
+}
+
+function boundsReason(minValue: number | null, maxValue: number | null): string {
+  if (minValue !== null && maxValue !== null) return `Debe estar entre ${minValue} y ${maxValue}.`;
+  if (minValue !== null) return `Debe ser al menos ${minValue}.`;
+  return `Debe ser como máximo ${maxValue}.`;
+}
+
+/**
+ * Lee un descriptor del backend. Un `integer` cuyo default o límites no son enteros no se coerciona: el
+ * default queda en `null` (el campo se pinta vacío) y los límites ilegibles se ignoran, porque la API
+ * sigue siendo la que valida. Un `type` ausente o desconocido es un booleano, como antes.
+ */
+function normalizeJobOption(input: unknown): JobOption | null {
+  const entry = record(input);
+  const key = text(entry.key);
+  if (key === null) return null;
+
+  const type: JobOptionType = entry.type === "integer" ? "integer" : "boolean";
+  const label = text(entry.label) ?? key;
+  const help = text(entry.help) ?? "";
+
+  if (type === "boolean") {
+    return { key, label, help, type, defaultValue: entry.defaultValue === true, minValue: null, maxValue: null };
+  }
+
+  const minValue = integerBound(entry.minValue);
+  const maxValue = integerBound(entry.maxValue);
+  const declaredDefault = integerBound(entry.defaultValue);
+  const defaultValue =
+    declaredDefault !== null && withinBounds(declaredDefault, minValue, maxValue) ? declaredDefault : null;
+
+  return { key, label, help, type, defaultValue, minValue, maxValue };
+}
+
+type JobOptionParseResult =
+  | { readonly ok: true; readonly value: JobOptionValue }
+  | { readonly ok: false; readonly error: string };
+
+const INTEGER_TEXT = /^-?\d+$/;
+
+/**
+ * Valida y normaliza un valor declarado. `present` distingue «la clave no existe» (se usa el default, que es
+ * el comportamiento histórico de las casillas) de «el usuario borró el campo» (error: no se envía el default
+ * en silencio). Un entero nunca se redondea y nunca se lee de `"72.5"`, `"1e2"` o `true`.
+ */
+function parseJobOption(option: JobOption, raw: JobOptionInput | undefined, present: boolean): JobOptionParseResult {
+  if (option.type !== "integer") {
+    if (!present) return { ok: true, value: option.defaultValue === true };
+    return typeof raw === "boolean"
+      ? { ok: true, value: raw }
+      : { ok: false, error: "Marca o desmarca la opción." };
+  }
+
+  if (!present) {
+    return typeof option.defaultValue === "number"
+      ? { ok: true, value: option.defaultValue }
+      : { ok: false, error: "Escribe un número entero." };
+  }
+
+  let parsed: number;
+  if (typeof raw === "number") {
+    if (!Number.isInteger(raw)) return { ok: false, error: "Debe ser un número entero, sin decimales." };
+    parsed = raw;
+  } else if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return { ok: false, error: "Escribe un número entero; el campo está vacío." };
+    if (!INTEGER_TEXT.test(trimmed)) return { ok: false, error: "Debe ser un número entero, sin decimales ni otros caracteres." };
+    parsed = Number(trimmed);
+    if (!Number.isInteger(parsed)) return { ok: false, error: "Debe ser un número entero, sin decimales." };
+  } else {
+    return { ok: false, error: "Escribe un número entero." };
+  }
+
+  return withinBounds(parsed, option.minValue, option.maxValue)
+    ? { ok: true, value: parsed }
+    : { ok: false, error: boundsReason(option.minValue, option.maxValue) };
 }
 
 export function normalizeJobRun(input: unknown): JobRun | null {
@@ -129,17 +245,8 @@ export function normalizeJobCatalog(input: unknown): JobCatalog {
 
     const options = Array.isArray(item.options)
       ? item.options.flatMap((option): JobOption[] => {
-          const entry = record(option);
-          const key = text(entry.key);
-          if (key === null) return [];
-          return [
-            {
-              key,
-              label: text(entry.label) ?? key,
-              help: text(entry.help) ?? "",
-              defaultValue: entry.defaultValue === true
-            }
-          ];
+          const normalized = normalizeJobOption(option);
+          return normalized ? [normalized] : [];
         })
       : [];
 
@@ -191,32 +298,65 @@ export function normalizeJobs(input: unknown): JobsResponse {
 
 /**
  * Construye el cuerpo de `POST /api/jobs/{job}/run`. Solo viajan las opciones que el catálogo declaró: un
- * valor del cliente para una clave desconocida se descarta, porque el backend la rechazaría y no hay nada
- * que el usuario pueda hacer con ese error.
+ * valor del cliente para una clave desconocida —`userId` incluido— se descarta, porque el backend la
+ * rechazaría y no hay nada que el usuario pueda hacer con ese error. Un valor declarado que no se puede
+ * enviar lanza `JobOptionValidationError`: no se sustituye por el default ni se redondea.
  */
 export function buildJobRunPayload(
   options: readonly JobOption[],
-  values: Record<string, boolean | undefined>,
+  values: Record<string, JobOptionInput | undefined>,
   confirm: boolean
 ): JobRunPayload {
-  const payload: Record<string, boolean> = {};
+  const payload: Record<string, JobOptionValue> = {};
   for (const option of options) {
-    const selected = values[option.key];
-    payload[option.key] = typeof selected === "boolean" ? selected : option.defaultValue;
+    const present = Object.prototype.hasOwnProperty.call(values, option.key);
+    const result = parseJobOption(option, values[option.key], present);
+    if (!result.ok) throw new JobOptionValidationError(option, result.error);
+    payload[option.key] = result.value;
   }
 
   return { options: payload, confirm };
 }
 
+/** Motivo por el que un valor no se puede enviar, o `null` si es válido. */
+export function jobOptionValueError(option: JobOption, raw: JobOptionInput | undefined): string | null {
+  const result = parseJobOption(option, raw, raw !== undefined);
+  return result.ok ? null : result.error;
+}
+
+/**
+ * Texto que pinta el campo numérico: el texto del usuario tal cual (para no redondear ni recortar mientras
+ * escribe), o el default declarado si es válido. Nunca inventa un `72` que el backend no declaró.
+ */
+export function jobOptionInputText(option: JobOption, raw: JobOptionInput | undefined): string {
+  if (typeof raw === "string") return raw;
+  if (typeof raw === "number") return String(raw);
+  return typeof option.defaultValue === "number" ? String(option.defaultValue) : "";
+}
+
+/** Descripción accesible del rango declarado; `null` cuando el descriptor no limita la opción. */
+export function jobOptionRangeText(option: JobOption): string | null {
+  if (option.type !== "integer") return null;
+  const { minValue, maxValue } = option;
+  if (minValue !== null && maxValue !== null) return `Rango permitido: ${minValue}–${maxValue}.`;
+  if (minValue !== null) return `Mínimo permitido: ${minValue}.`;
+  if (maxValue !== null) return `Máximo permitido: ${maxValue}.`;
+  return null;
+}
+
+function formatJobOptionValue(option: JobOption, value: JobOptionValue): string {
+  return option.type === "integer" ? String(value) : value === true ? "sí" : "no";
+}
+
 /** Resumen legible de las opciones efectivas, para la tarjeta de confirmación. */
 export function formatJobOptionValues(
   options: readonly JobOption[],
-  values: Record<string, boolean | undefined>
+  values: Record<string, JobOptionInput | undefined>
 ): string[] {
   return options.map((option) => {
-    const selected = values[option.key];
-    const effective = typeof selected === "boolean" ? selected : option.defaultValue;
-    return `${option.label}: ${effective ? "sí" : "no"}`;
+    const present = Object.prototype.hasOwnProperty.call(values, option.key);
+    const result = parseJobOption(option, values[option.key], present);
+    return `${option.label}: ${result.ok ? formatJobOptionValue(option, result.value) : "—"}`;
   });
 }
 

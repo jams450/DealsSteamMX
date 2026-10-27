@@ -20,6 +20,8 @@ namespace Deals.API.Services.Jobs;
 /// </summary>
 public sealed class WishlistSyncJobExecutor(
     IWishlistSyncService syncService,
+    // Scoped observer, claimed by ExecuteAsync and never by a request handler.
+    ISyncDiagnosticsCollector diagnostics,
     ILogger<WishlistSyncJobExecutor> logger) : IJobExecutor
 {
     public const string JobKey = JobKeys.WishlistSync;
@@ -32,7 +34,7 @@ public sealed class WishlistSyncJobExecutor(
     /// The manual default is the opposite (list only), so this is spelled out rather than inherited.
     /// </summary>
     public static JobRunOptions ScheduledOptions { get; } = new(
-        new Dictionary<string, bool>(StringComparer.Ordinal)
+        new Dictionary<string, object>(StringComparer.Ordinal)
         {
             [JobOptionKeys.IncludePriceRefresh] = true
         });
@@ -42,6 +44,10 @@ public sealed class WishlistSyncJobExecutor(
     public async Task<JobExecutionResult> ExecuteAsync(JobRunOptions options, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(options);
+
+        // This cycle owns the diagnosis of this scope (spec S2/S3). Claiming it here — before any phase — is what makes
+        // the collector job-only: an interactive request's scope is never claimed and therefore records nothing.
+        diagnostics.Activate();
 
         var outcome = new Dictionary<string, object?>(StringComparer.Ordinal);
         var failed = false;
@@ -103,6 +109,15 @@ public sealed class WishlistSyncJobExecutor(
         else
         {
             outcome["refresh"] = new { requested = false, reason = "price_refresh_not_requested" };
+        }
+
+        // The safe diagnosis of this cycle (spec S2/S3), attached at the root of the executor's details: a
+        // scheduled run writes this object directly to job_runs.details, and a manual run reaches it under
+        // details.result. It is skipped when no provider phase ran, so a run that touched nothing does not claim
+        // a report it cannot fill. Nothing above reads it: the cycle's behaviour is unchanged.
+        if (diagnostics.HasEvents)
+        {
+            outcome["diagnostics"] = diagnostics.BuildSnapshot();
         }
 
         return new JobExecutionResult(!failed, outcome);
@@ -225,7 +240,7 @@ public sealed class NtfyDealsJobExecutor(
     /// empty <see cref="JobRunOptions"/> means "no phase selected", which is a refusal, not a default.
     /// </summary>
     public static JobRunOptions ScheduledOptions { get; } = new(
-        new Dictionary<string, bool>(StringComparer.Ordinal)
+        new Dictionary<string, object>(StringComparer.Ordinal)
         {
             [JobOptionKeys.Produce] = true,
             [JobOptionKeys.Dispatch] = true

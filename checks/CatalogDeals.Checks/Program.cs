@@ -15,3 +15,5 @@ CatalogDealChecks.Run();
 CatalogFreshnessChecks.Run();
 CatalogWishlistIsolationChecks.Run();
 WishlistPriceObservedAtChecks.Run();
+WishlistProviderRefreshChecks.Run();
+CatalogAgeHoursChecks.Run();

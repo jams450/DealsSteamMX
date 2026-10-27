@@ -260,8 +260,13 @@ public sealed class EpicStoreClient(
         using var response = await PostSearchAsync(keywords, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
+            // The status travels with the exception (as it already does in the Steam, FX and gg.deals clients)
+            // so a phase report can tell the documented Cloudflare 403 apart from a 429 or a 5xx. Only the status
+            // is added: the message, the retry policy and the phase outcome are unchanged.
             throw new HttpRequestException(
-                $"Epic Games Store search returned HTTP {(int)response.StatusCode}.");
+                $"Epic Games Store search returned HTTP {(int)response.StatusCode}.",
+                null,
+                response.StatusCode);
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);

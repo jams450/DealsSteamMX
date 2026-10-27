@@ -16,3 +16,12 @@ test("Jobs detail and dispatch share one Next dynamic segment", async () => {
   assert.match(dispatch, /export async function POST/);
   assert.match(dispatch, /encodeURIComponent\(job\)/);
 });
+
+test("the run route forwards the declared options, numbers included, without rewriting them", async () => {
+  const dispatch = await readFile(new URL("[job]/run/route.ts", routes), "utf8");
+
+  // El contrato de opciones lo valida la API: el BFF solo reenvía el sobre. Un filtro `typeof === "boolean"`
+  // aquí convertiría las horas en otra cosa (o las perdería) antes de que el backend las vea.
+  assert.match(dispatch, /options: body\?\.options \?\? null/);
+  assert.doesNotMatch(dispatch, /typeof [^;]*(?:"boolean"|'boolean')/);
+});

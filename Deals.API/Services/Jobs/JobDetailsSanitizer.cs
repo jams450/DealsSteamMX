@@ -105,6 +105,21 @@ public static class JobDetailsSanitizer
                 writer.WriteStartObject();
                 foreach (var property in element.EnumerateObject())
                 {
+                    // The sync diagnosis is the one subtree whose shape is known (spec S5/S7): it is validated
+                    // against the frozen contract instead of being copied. A document with an unknown schema
+                    // version, an unknown token or an unsafe string is dropped whole — an unreadable report is
+                    // reported as absent, never as a run with nothing wrong. Unknown extra fields are discarded.
+                    if (SyncDiagnosticsReadValidator.IsDiagnosticsProperty(property.Name))
+                    {
+                        if (SyncDiagnosticsReadValidator.TryNormalize(property.Value, out var diagnostics))
+                        {
+                            writer.WritePropertyName(property.Name);
+                            diagnostics.WriteTo(writer);
+                        }
+
+                        continue;
+                    }
+
                     writer.WritePropertyName(property.Name);
                     // A credential-named property never renders its value, whatever the JSON type is: a
                     // numeric token is as much a secret as a string one. Structures fall through so their

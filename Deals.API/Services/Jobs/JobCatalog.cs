@@ -41,7 +41,10 @@ public static class JobKeys
     ];
 }
 
-/// <summary>Option keys the manual dispatcher understands. Every one is a boolean on purpose.</summary>
+/// <summary>
+/// Option keys the manual dispatcher understands. All but one are switches; <c>catalog.prices-refresh</c> also takes
+/// the bounded number of hours the requester wants re-priced (spec S2).
+/// </summary>
 public static class JobOptionKeys
 {
     /// <summary><c>wishlist.sync</c>: also run the expensive per-game price pass.</summary>
@@ -55,13 +58,47 @@ public static class JobOptionKeys
 
     /// <summary><c>jobs.purge</c>: count what the purge would delete, deleting nothing.</summary>
     public const string DryRun = "dryRun";
+
+    /// <summary>
+    /// <c>catalog.prices-refresh</c>: how many hours of price age the requester wants re-priced (spec S1/S2). A game
+    /// whose cheapest stored price is older than this, or that has no price at all, is pending.
+    /// </summary>
+    public const string AgeHours = "ageHours";
 }
 
+/// <summary>
+/// The frozen, additive option types of the admin contract. <see cref="Boolean"/> is what every option was before
+/// this unit, and it stays the meaning of a descriptor or payload that does not say otherwise.
+/// </summary>
+public static class JobOptionTypes
+{
+    public const string Boolean = "boolean";
+
+    public const string Integer = "integer";
+
+    public static bool IsInteger(string? type) =>
+        string.Equals(type, Integer, StringComparison.Ordinal);
+}
+
+/// <summary>
+/// One option of one job, as the catalog publishes it (spec S5). The contract is additive: <see cref="Key"/>,
+/// <see cref="Label"/>, <see cref="Help"/> and <see cref="DefaultValue"/> keep their names and meaning, and
+/// <see cref="Type"/> (defaulting to <c>boolean</c>), <see cref="MinValue"/> and <see cref="MaxValue"/> are new. A
+/// boolean option therefore serialises exactly as it did, plus an explicit <c>type</c>; an integer option publishes
+/// its bounds so the page can render an hours input without knowing the job.
+/// </summary>
+/// <param name="DefaultValue">
+/// The value a run gets when the option is absent. Boxed <c>bool</c> for a boolean option, boxed <c>int</c> for an
+/// integer one — that is what keeps the old payload shape working while the new option carries a number.
+/// </param>
 public sealed record JobOptionDescriptor(
     string Key,
     string Label,
     string Help,
-    bool DefaultValue);
+    object DefaultValue,
+    string Type = JobOptionTypes.Boolean,
+    int? MinValue = null,
+    int? MaxValue = null);
 
 /// <summary>
 /// One row of the admin catalog. <see cref="AdvisoryLockKey"/> is the same PostgreSQL session lock the
@@ -250,7 +287,7 @@ public sealed class JobCatalog
                 "Precios pendientes de mi wishlist",
                 "Refresca los precios de hasta " +
                     $"{CatalogPriceRefreshLimits.BatchSize} juegos de tu lista de deseados cuyo precio " +
-                    $"comparable en MXN tiene más de {CatalogFreshness.Hours} h o no existe. Solo mira tu lista: " +
+                    "comparable en MXN es más antiguo que la antigüedad que elijas o no existe. Solo mira tu lista: " +
                     "no toca tu biblioteca, tus favoritos ni los de otras cuentas. Se ejecuta solo a mano y no " +
                     "envía avisos.",
                 Enabled: true,
@@ -259,7 +296,22 @@ public sealed class JobCatalog
                 CatalogPriceRefreshJobExecutor.AdvisoryLockKey,
                 Destructive: false,
                 RequiresConfirmation: false,
-                [])
+                [
+                    // The one bounded choice of this job (spec S2/S5). It is a window, never a batch size: the
+                    // 20-game bound stays a constant so no payload can widen it into a whole-wishlist sweep.
+                    new JobOptionDescriptor(
+                        JobOptionKeys.AgeHours,
+                        "Antigüedad mínima (horas)",
+                        "Solo se refrescan los juegos de tu lista de deseados cuyo precio guardado es más antiguo " +
+                            $"que estas horas (entre {CatalogPriceRefreshLimits.MinAgeHours} y " +
+                            $"{CatalogPriceRefreshLimits.MaxAgeHours}) o que no tiene precio. Los juegos sin precio " +
+                            "se incluyen siempre. Es independiente del monitor, que siempre usa " +
+                            $"{CatalogFreshness.Hours} h.",
+                        DefaultValue: CatalogPriceRefreshLimits.DefaultAgeHours,
+                        Type: JobOptionTypes.Integer,
+                        MinValue: CatalogPriceRefreshLimits.MinAgeHours,
+                        MaxValue: CatalogPriceRefreshLimits.MaxAgeHours)
+                ])
             {
                 // The batch belongs to the person who asked for it: the requester comes from the access token
                 // and is required, so there is no catalog-wide run and no fallback account.

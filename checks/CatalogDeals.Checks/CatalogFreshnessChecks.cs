@@ -1573,7 +1573,10 @@ internal static class CatalogFreshnessChecks
     {
         public List<int> Calls { get; } = [];
 
-        public Task<SteamStalePriceRefresh> RefreshStalePricesAsync(int appId, CancellationToken cancellationToken)
+        public Task<SteamStalePriceRefresh> RefreshStalePricesAsync(
+            int appId,
+            CancellationToken cancellationToken,
+            int ageHours = GameRefreshPolicy.StalePriceBatchHours)
         {
             Calls.Add(appId);
 

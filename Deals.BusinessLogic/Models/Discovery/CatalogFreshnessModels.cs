@@ -6,9 +6,13 @@ namespace Deals.BusinessLogic.Models.Discovery;
 
 /// <summary>
 /// The freshness window of the monitor (spec S4/S6). It is a constant, not a setting: the panel's contract
-/// says "72 hours" and the manual pending-price pass gates providers with the same number. The notifier's
+/// says "72 hours" and the wishlist badges keep saying it whatever a manual run was asked for. The notifier's
 /// <c>MaxSnapshotAgeHours</c> is a *different* knob (it decides which snapshots may become alerts); reusing it
 /// here would let a notification setting silently change what the monitor calls stale.
+///
+/// The manual pending-price pass does not use this constant as its window: it takes the requester's chosen
+/// <c>ageHours</c> (spec S2/S3), which is bounded by <see cref="CatalogPriceRefreshLimits"/>. 72 is its default,
+/// and it stays the monitor's only value on purpose — one surface is configurable, the other is not.
 /// </summary>
 public static class CatalogFreshness
 {
@@ -17,6 +21,13 @@ public static class CatalogFreshness
     public static TimeSpan Window { get; } = TimeSpan.FromHours(Hours);
 
     public static DateTime Cutoff(DateTime asOfUtc) => asOfUtc - Window;
+
+    /// <summary>
+    /// Cutoff of a chosen window. Out-of-range hours are refused instead of being coerced to 72: a silent fallback
+    /// would make the pass price a window nobody asked for, and the run record would claim the chosen one.
+    /// </summary>
+    public static DateTime Cutoff(DateTime asOfUtc, int ageHours) =>
+        asOfUtc - TimeSpan.FromHours(CatalogPriceRefreshLimits.ValidateAgeHours(ageHours));
 }
 
 /// <summary>
@@ -299,13 +310,45 @@ public sealed record CatalogPriceRefreshCandidate
 }
 
 /// <summary>
-/// Hard bounds of the manual pending-price pass (spec S5): a batch of 20 games, chosen fresh on every run,
-/// never a whole-catalog sweep. The bound is a constant and not an option on purpose — an option would let an
-/// operator ask for the unbounded pass this job exists to avoid.
+/// Hard bounds of the manual pending-price pass. The batch is a constant on purpose — an option would let an
+/// operator ask for the unbounded sweep this job exists to avoid — and so is the range of the one option the pass
+/// does take: how many hours of price age the requester wants re-priced (spec S2/S3).
+///
+/// <see cref="DefaultAgeHours"/> is the documented default, not a ceiling: it is the same 72 h the monitor uses, but
+/// the pass accepts any whole number of hours from <see cref="MinAgeHours"/> to <see cref="MaxAgeHours"/>. The
+/// monitor keeps its fixed window; only this job is parameterised.
 /// </summary>
 public static class CatalogPriceRefreshLimits
 {
     public const int BatchSize = 20;
+
+    /// <summary>The narrowest meaningful window: anything below an hour is the interactive refresh's business.</summary>
+    public const int MinAgeHours = 1;
+
+    /// <summary>Thirty days. Wide enough to re-price an abandoned wishlist, still bounded.</summary>
+    public const int MaxAgeHours = 720;
+
+    /// <summary>The window a run gets when the requester does not choose one (spec S1/S2).</summary>
+    public const int DefaultAgeHours = 72;
+
+    /// <summary>
+    /// The single validation of a chosen window, shared by the option parser, the query cutoff, the pass and the
+    /// per-game provider gate. It returns the value so callers can validate and use it in one expression; an
+    /// out-of-range window throws instead of falling back to the default, because a silent fallback would reprice a
+    /// window nobody asked for and record the asked one.
+    /// </summary>
+    public static int ValidateAgeHours(int ageHours, string? paramName = null)
+    {
+        if (ageHours < MinAgeHours || ageHours > MaxAgeHours)
+        {
+            throw new ArgumentOutOfRangeException(
+                paramName ?? nameof(ageHours),
+                ageHours,
+                $"La antigüedad mínima debe estar entre {MinAgeHours} y {MaxAgeHours} horas.");
+        }
+
+        return ageHours;
+    }
 }
 
 /// <summary>
@@ -417,12 +460,18 @@ public static class CatalogPriceRefreshMeasurement
 /// <see cref="SteamStalePriceRefresh.DegradedPhases"/>) is what keeps them from being counted as updates. A
 /// failed answer does not advance a stamp, so those games stay due and are retried;</item>
 /// <item><b>errors</b>: exceptions that escaped the refresh entirely;</item>
-/// <item><b>remaining</b>: pending games recomputed after the pass, unsupported and cooled-down ones
-/// included.</item>
+/// <item><b>remaining</b>: pending games recomputed after the pass WITH THE SAME CHOSEN WINDOW, unsupported and
+/// cooled-down ones included. Measuring it with another window would make a run look finished that only moved the
+/// boundary it was measured against;</item>
 /// <item><b>unresolvedWishlistEntries</b>: wishlist <em>entries</em> (rows, not games) that no exact identity
 /// path could attribute to an existing game. They are not pending games — there is nothing to price — but they
 /// are not coverage either, so the pass reports them and never calls a zero-selected run "nothing pending" while
 /// they exist.</item>
+/// <item><b>ageHours</b>: the window this run really used (spec S2/S3). It travels in the record so a history entry
+/// can never be read with the monitor's fixed 72 h by mistake;</item>
+/// <item><b>olderPricePending</b>: pending games whose CHEAPEST stored price is older than <b>ageHours</b>;</item>
+/// <item><b>missingPricePending</b>: pending games with no usable comparable price at all. Both are included by
+/// default as the user asked; splitting them is what makes the report honest about which half was repriced.</item>
 /// </list>
 /// </summary>
 public sealed record CatalogPriceRefreshOutcome(
@@ -437,7 +486,10 @@ public sealed record CatalogPriceRefreshOutcome(
     int Degraded,
     int Errors,
     int Remaining,
-    int UnresolvedWishlistEntries = 0);
+    int UnresolvedWishlistEntries = 0,
+    int AgeHours = CatalogPriceRefreshLimits.DefaultAgeHours,
+    int OlderPricePending = 0,
+    int MissingPricePending = 0);
 
 /// <summary>
 /// Provider names of the monitor. The first four are the ones that also carry a consultation stamp on
@@ -688,16 +740,21 @@ public static class CatalogFreshnessQueries
     /// grouped subqueries plus a <c>CASE</c>), so the monitor pages the catalog instead of materializing it. Every <c>games</c> row appears exactly once, which is what keeps Steam-less games in the
     /// monitor, and the price universe is narrowed to the selected games before it is grouped, so the reductions
     /// never scan prices of games outside the caller's list.
+    ///
+    /// <paramref name="ageHours"/> is the window the bucket is drawn against (spec S2/S3). The monitor always uses
+    /// its fixed <see cref="CatalogFreshness.Hours"/>; the manual pass passes the window the requester chose, so
+    /// "pending" means the same thing to both surfaces without the pass inheriting a hidden constant.
     /// </summary>
     public static IQueryable<CatalogFreshnessGameState> GameStates(
         IQueryable<Game> games,
         IQueryable<CatalogFreshnessPriceRow> prices,
-        DateTime asOfUtc)
+        DateTime asOfUtc,
+        int ageHours = CatalogFreshness.Hours)
     {
         ArgumentNullException.ThrowIfNull(games);
         ArgumentNullException.ThrowIfNull(prices);
 
-        var cutoff = CatalogFreshness.Cutoff(asOfUtc);
+        var cutoff = CatalogFreshness.Cutoff(asOfUtc, ageHours);
         var recent = CatalogFreshnessStatus.Recent;
         var stale = CatalogFreshnessStatus.Stale;
         var missing = CatalogFreshnessStatus.Missing;
@@ -832,8 +889,9 @@ public static class CatalogFreshnessQueries
 
     /// <summary>
     /// Whether at least one price phase of this snapshot would actually run: the Steam direct snapshot, or any
-    /// provider stamp, is missing, older than the freshness window, or in the future (corrupt evidence must not
-    /// park a game out of the batch).
+    /// provider stamp, is missing, older than the window, or in the future (corrupt evidence must not park a game
+    /// out of the batch). The window is <paramref name="ageHours"/> — the requester's choice for a manual pass, the
+    /// monitor's fixed 72 h (and every other caller's default) otherwise.
     ///
     /// This is the named, stricter per-phase evaluation the pass uses on top of the game-coverage buckets
     /// (spec S4/S5). It is what stops a title no shop can price — delisted, no MX offer, no identity match —
@@ -846,9 +904,11 @@ public static class CatalogFreshnessQueries
     /// price that is five days old next to fresh provider stamps is exactly a pending price. Skipping it would
     /// silently narrow the pass to external stores.
     /// </summary>
-    public static Expression<Func<CatalogFreshnessSteamRow, bool>> DuePhaseGate(DateTime asOfUtc)
+    public static Expression<Func<CatalogFreshnessSteamRow, bool>> DuePhaseGate(
+        DateTime asOfUtc,
+        int ageHours = CatalogFreshness.Hours)
     {
-        var cutoff = CatalogFreshness.Cutoff(asOfUtc);
+        var cutoff = CatalogFreshness.Cutoff(asOfUtc, ageHours);
 
         return snapshot =>
             snapshot.ObservedAt < cutoff ||
@@ -876,6 +936,9 @@ public static class CatalogFreshnessQueries
     /// external offer is selected even while Steam was asked an hour ago (user correction S9). Selection is
     /// recomputed from persisted rows on every run: there is no queue and no pending flag to go stale.
     ///
+    /// The due gates use <paramref name="ageHours"/>, the same window the caller's pending set was drawn against, so
+    /// a 24 h run and a 168 h run differ in both what they select and when they consider a provider fresh.
+    ///
     /// Steam-less pending games are excluded here on purpose and counted by
     /// <see cref="PendingWithoutSteam"/>: their pricing path is the store's own identity (Xbox package family
     /// name), which this pass does not have for a whole wishlist at once. Selecting them would burn a batch slot
@@ -885,7 +948,8 @@ public static class CatalogFreshnessQueries
         IQueryable<CatalogFreshnessGameState> pending,
         IQueryable<SteamGame> steamGames,
         int batchSize,
-        DateTime asOfUtc)
+        DateTime asOfUtc,
+        int ageHours = CatalogFreshness.Hours)
     {
         if (batchSize < 1 || batchSize > CatalogPriceRefreshLimits.BatchSize)
         {
@@ -894,7 +958,7 @@ public static class CatalogFreshnessQueries
                 $"El lote debe estar entre 1 y {CatalogPriceRefreshLimits.BatchSize} juegos.");
         }
 
-        var dueSnapshots = ChosenSnapshots(steamGames).Where(DuePhaseGate(asOfUtc));
+        var dueSnapshots = ChosenSnapshots(steamGames).Where(DuePhaseGate(asOfUtc, ageHours));
 
         // The hard bound is part of the query, not of the caller: no caller can ask for the unbounded sweep
         // this pass exists to avoid.
@@ -912,16 +976,18 @@ public static class CatalogFreshnessQueries
     }
 
     /// <summary>
-    /// The pending games whose every provider gate is still fresh: consulted inside the window and nothing
-    /// comparable came back. They are the honest "nothing to re-ask yet" counter of the pass, and they keep
-    /// their coverage bucket (this is not a way to call them priced).
+    /// The pending games whose every provider gate is still fresh for the SAME <paramref name="ageHours"/> the pending
+    /// set was drawn against: consulted inside that window and nothing comparable came back. They are the honest
+    /// "nothing to re-ask yet" counter of the pass, and they keep their coverage bucket (this is not a way to call
+    /// them priced).
     /// </summary>
     public static IQueryable<CatalogFreshnessGameState> PendingNotDue(
         IQueryable<CatalogFreshnessGameState> pending,
         IQueryable<SteamGame> steamGames,
-        DateTime asOfUtc)
+        DateTime asOfUtc,
+        int ageHours = CatalogFreshness.Hours)
     {
-        var freshSnapshots = ChosenSnapshots(steamGames).Where(NotDuePhaseGate(asOfUtc));
+        var freshSnapshots = ChosenSnapshots(steamGames).Where(NotDuePhaseGate(asOfUtc, ageHours));
 
         return from state in pending
                join snapshot in freshSnapshots on state.GameId equals snapshot.GameId
@@ -932,9 +998,11 @@ public static class CatalogFreshnessQueries
     /// The complement of <see cref="DuePhaseGate"/>: every price phase was answered inside the window, so there
     /// is nothing to re-ask yet.
     /// </summary>
-    public static Expression<Func<CatalogFreshnessSteamRow, bool>> NotDuePhaseGate(DateTime asOfUtc)
+    public static Expression<Func<CatalogFreshnessSteamRow, bool>> NotDuePhaseGate(
+        DateTime asOfUtc,
+        int ageHours = CatalogFreshness.Hours)
     {
-        var due = DuePhaseGate(asOfUtc);
+        var due = DuePhaseGate(asOfUtc, ageHours);
 
         return Expression.Lambda<Func<CatalogFreshnessSteamRow, bool>>(
             Expression.Not(due.Body),
