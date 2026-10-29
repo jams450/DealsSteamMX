@@ -25,11 +25,14 @@ public class AppDbContext : DbContext
     public DbSet<WishlistExclusion> WishlistExclusions { get; set; } = null!;
     public DbSet<GameReview> GameReviews { get; set; } = null!;
     public DbSet<UserGameTier> UserGameTiers => Set<UserGameTier>();
+    public DbSet<BundleAlertEvent> BundleAlertEvents => Set<BundleAlertEvent>();
     public DbSet<SteamGame> SteamGames { get; set; } = null!;
     public DbSet<SteamPriceObservation> SteamPriceObservations { get; set; } = null!;
     public DbSet<GameOffer> GameOffers { get; set; } = null!;
     public DbSet<ExternalBundle> ExternalBundles { get; set; } = null!;
     public DbSet<ExternalBundleGame> ExternalBundleGames { get; set; } = null!;
+    public DbSet<BundlePurchase> BundlePurchases { get; set; } = null!;
+    public DbSet<BundlePurchaseGame> BundlePurchaseGames { get; set; } = null!;
     public DbSet<FxRate> FxRates { get; set; } = null!;
     public DbSet<GameMerge> GameMerges => Set<GameMerge>();
     public DbSet<UserGameFavorite> UserGameFavorites => Set<UserGameFavorite>();
@@ -238,6 +241,39 @@ public class AppDbContext : DbContext
         {
             entity.HasIndex(e => new { e.ExternalBundleId, e.SteamGameId }).IsUnique();
             entity.HasIndex(e => new { e.SteamGameId, e.Source });
+        });
+
+        modelBuilder.Entity<BundlePurchase>(entity =>
+        {
+            // The idempotency key (spec S3): one purchase per user and provider bundle. The replay path
+            // reads it before writing anything, so a repeated submit answers instead of importing twice.
+            // The unique index already leads with user_id, so every per-user read is served by it and a
+            // second index would only add write cost (same reasoning as wishlist_exclusions).
+            entity.HasIndex(e => new { e.UserId, e.Source, e.BundleKey }).IsUnique();
+            entity.HasOne(e => e.User)
+                .WithMany()
+                .HasForeignKey(e => e.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasMany(e => e.Games)
+                .WithOne(e => e.Purchase)
+                .HasForeignKey(e => e.BundlePurchaseId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<BundlePurchaseGame>(entity =>
+        {
+            entity.HasIndex(e => new { e.BundlePurchaseId, e.ItemKey }).IsUnique();
+            entity.HasIndex(e => e.GameId);
+            // Acquisition evidence: a merge must repoint game_id, never delete the row (NO ACTION). The
+            // library link is a convenience pointer, so the row survives its row being pruned.
+            entity.HasOne(e => e.Game)
+                .WithMany()
+                .HasForeignKey(e => e.GameId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<UserLibrary>()
+                .WithMany()
+                .HasForeignKey(e => e.UserLibraryId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<GameOffer>(entity =>

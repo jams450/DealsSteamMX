@@ -11,7 +11,12 @@ namespace Deals.API.HostedServices;
 /// producer reads fresh persisted snapshots and fills the outbox, the dispatcher delivers due rows. It never
 /// refreshes a price provider and never calls a provider.
 ///
-/// Concurrency follows <see cref="WishlistSyncJob"/>: a PostgreSQL advisory lock serializes cycles across
+/// The cycle covers <b>two families</b> and runs them under one lock and one <c>job_runs</c> row: the offer alerts
+/// (the operator's favorites + wishlist, unchanged) and the red bundle reminders (every pending bundle inside the
+/// 72-hour window, no interest gate — spec S2). Both families are produced and dispatched by
+/// <c>NtfyDealsJobExecutor</c>; each has its own outbox table and its own counters.
+///
+/// Concurrency follows <see cref="WishlistSyncJob"/>. A PostgreSQL advisory lock serializes cycles across
 /// processes, so two hosts never enqueue or send the same deal at once. The admin dispatcher takes the same
 /// key, so a manual cycle cannot overlap a polling one. A cycle failure is swallowed and never takes the
 /// host down.

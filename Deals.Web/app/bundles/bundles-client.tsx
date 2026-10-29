@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, ExternalLink, Heart, ListPlus } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, ExternalLink, Heart, ListPlus } from "lucide-react";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { formatCurrency } from "@/lib/format/currency";
@@ -13,6 +13,7 @@ import {
   type BundleCatalogItem,
   type BundleCatalogTier
 } from "@/lib/contracts/bundles";
+import { bundleExpiryView } from "./_lib/bundle-expiry";
 import {
   allocatedPerGameMoneyView,
   fxDisclosureText,
@@ -20,9 +21,26 @@ import {
   type DualMoneyView
 } from "./_lib/bundle-money";
 import { getBundleCatalog } from "./_lib/bundles-api";
+import { BundlePurchaseDuplicates } from "./_components/bundle-collection-duplicates";
+import { BundlePurchaseProvider, useBundlePurchaseLauncher } from "./_components/bundle-purchase-context";
+import { BundlePurchaseHistory } from "./_components/bundle-collection-history";
+import { BundlePurchaseDialog, type BundlePurchaseTarget } from "./_components/bundle-purchase-dialog";
 
 const ITAD_ATTRIBUTION_URL = "https://isthereanydeal.com";
+// Un minuto: el mínimo con el que un día restante puede cambiar. Ninguna tarjeta lleva su propio timer.
+const EXPIRY_CLOCK_INTERVAL_MS = 60_000;
 const observedFormatter = new Intl.DateTimeFormat("es-MX", { dateStyle: "medium" });
+
+// Secciones de la página. Pendientes es el catálogo de siempre; el historial y las keys duplicadas se
+// montan la primera vez que se visitan (no cuestan una petición si nadie las abre) y se refrescan solas
+// después de registrar una compra.
+const BUNDLE_TABS = [
+  { id: "pending", label: "Pendientes", badge: "tabler-badge tabler-badge-info" },
+  { id: "history", label: "Historial de compras", badge: "tabler-badge tabler-badge-success" },
+  { id: "duplicates", label: "Keys duplicadas", badge: "tabler-badge tabler-badge-warning" }
+] as const;
+
+type BundleTabId = (typeof BUNDLE_TABS)[number]["id"];
 
 function formatMinor(amountMinor: number, currency: string) {
   return formatCurrency(amountMinor / 100, "es-MX", currency);
@@ -206,12 +224,18 @@ function BundleDetails({ item }: { readonly item: BundleCatalogItem }) {
   return <p className="text-xs text-secondary">{item.details}</p>;
 }
 
-function BundleCard({ item }: { readonly item: BundleCatalogItem }) {
+function BundleCard({ item, now }: { readonly item: BundleCatalogItem; readonly now: number | null }) {
+  // La acción de compra llega por contexto para que esta tarjeta conserve sus props exactas.
+  const launchPurchase = useBundlePurchaseLauncher();
   const href = item.dealUrl ?? item.pageUrl ?? item.detailsUrl;
   const published = formatObserved(item.publishedAt);
   const expires = formatObserved(item.expiresAt);
   const observed = formatObserved(item.observedAt);
   const isGgDeals = item.source === GGDEALS_SOURCE;
+  // `now` llega del padre y vale `null` hasta que el reloj compartido arranca en el cliente: el HTML del
+  // servidor no puede conocer la hora del navegador sin romper la hidratación, así que en ese primer
+  // render no se pinta la etiqueta en lugar de inventar una. Los días y su color salen del módulo puro.
+  const expiry = now === null ? null : bundleExpiryView(item.expiresAt, now);
 
   return (
     <article
@@ -241,6 +265,10 @@ function BundleCard({ item }: { readonly item: BundleCatalogItem }) {
           {item.shopName ? <span className="font-semibold text-secondary">{item.shopName}</span> : null}
           {published ? <span>Publicado {published}</span> : null}
           {expires ? <span>Expira {expires}</span> : null}
+          {expiry ? (
+            // El texto lleva los días y una palabra de estado: el color nunca es el único canal.
+            <span className={expiry.badgeClass}>{expiry.label}</span>
+          ) : null}
           {observed ? <span>Observado {observed}</span> : null}
         </div>
         {isGgDeals ? (
@@ -292,6 +320,18 @@ function BundleCard({ item }: { readonly item: BundleCatalogItem }) {
       ) : (
         <p className="tabler-badge tabler-badge-muted">Sin tiers publicados por el proveedor</p>
       )}
+
+      {launchPurchase ? (
+        <div className="flex flex-wrap items-center gap-2 border-t border-default pt-3">
+          <Button type="button" variant="secondary" onClick={() => launchPurchase(item)}>
+            <Check className="h-4 w-4" aria-hidden="true" />
+            Registrar compra
+          </Button>
+          <span className="text-xs text-muted">
+            Sale de pendientes y sus juegos pasan a tu biblioteca; los que ya tenías quedan en Keys duplicadas.
+          </span>
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -306,6 +346,16 @@ export function BundlesClient() {
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Un solo reloj para todas las tarjetas, compartido desde aquí: arranca en `null` —el primer render es
+  // el del servidor y no conoce la hora del cliente— y el efecto lo enciende y lo mantiene al día.
+  const [now, setNow] = useState<number | null>(null);
+  // Sección activa y compras registradas. `refreshToken` es el aviso al historial y a las keys duplicadas
+  // de que algo cambió: cada sección vuelve a pedir su propia lista cuando lo ve incrementarse.
+  const [activeTab, setActiveTab] = useState<BundleTabId>("pending");
+  const [historyVisited, setHistoryVisited] = useState(false);
+  const [duplicatesVisited, setDuplicatesVisited] = useState(false);
+  const [purchaseTarget, setPurchaseTarget] = useState<BundlePurchaseTarget | null>(null);
+  const [refreshToken, setRefreshToken] = useState(0);
   const requestId = useRef(0);
 
   const load = useCallback(
@@ -343,9 +393,38 @@ export function BundlesClient() {
     [pageSize]
   );
 
+  // S3: al registrar una compra el backend excluye el bundle del catálogo pendiente. Se vuelve a pedir la
+  // página 1 (no la actual) para que el `total` y los conteos reflejen la baja, y se avisa a las secciones
+  // de compras para que no queden desactualizadas si ya están montadas.
+  const handlePurchased = useCallback(() => {
+    setRefreshToken((current) => current + 1);
+    void load(1, "replace");
+  }, [load]);
+
+  // Abrir el diálogo no escribe nada: solo fija el bundle objetivo. Se memoiza porque las tarjetas lo
+  // consumen por contexto y no deben re-renderizarse por una identidad nueva en cada render del padre.
+  const launchPurchase = useCallback((item: BundleCatalogItem) => {
+    setPurchaseTarget({ source: item.source, bundleKey: item.bundleKey, title: item.title });
+  }, []);
+
+  function selectTab(next: BundleTabId) {
+    setActiveTab(next);
+    if (next === "history") setHistoryVisited(true);
+    if (next === "duplicates") setDuplicatesVisited(true);
+  }
+
   useEffect(() => {
     void load(1, "replace");
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Reloj acotado: se enciende al montar y late cada minuto. El cleanup corta el intervalo al desmontar,
+  // así que no queda ningún timer vivo detrás de la página.
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    tick();
+    const interval = window.setInterval(tick, EXPIRY_CLOCK_INTERVAL_MS);
+    return () => clearInterval(interval);
   }, []);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -354,6 +433,55 @@ export function BundlesClient() {
 
   return (
     <div className="space-y-4">
+      <div
+        role="tablist"
+        aria-label="Secciones de bundles"
+        className="flex flex-wrap gap-2"
+        onKeyDown={(event) => {
+          let next: BundleTabId;
+          if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+            const index = BUNDLE_TABS.findIndex((tab) => tab.id === activeTab);
+            const delta = event.key === "ArrowLeft" ? -1 : 1;
+            next = BUNDLE_TABS[(index + delta + BUNDLE_TABS.length) % BUNDLE_TABS.length].id;
+          } else if (event.key === "Home") {
+            next = BUNDLE_TABS[0].id;
+          } else if (event.key === "End") {
+            next = BUNDLE_TABS[BUNDLE_TABS.length - 1].id;
+          } else {
+            return;
+          }
+          event.preventDefault();
+          selectTab(next);
+          document.getElementById(`bundles-tab-${next}`)?.focus();
+        }}
+      >
+        {BUNDLE_TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            id={`bundles-tab-${tab.id}`}
+            aria-selected={activeTab === tab.id}
+            aria-controls={`bundles-panel-${tab.id}`}
+            tabIndex={activeTab === tab.id ? 0 : -1}
+            onClick={() => selectTab(tab.id)}
+            className={`${tab.badge} rounded border px-3 py-2 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)] ${
+              activeTab === tab.id ? "ring-2 ring-current" : "opacity-70 hover:opacity-100"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <div
+        role="tabpanel"
+        id="bundles-panel-pending"
+        aria-labelledby="bundles-tab-pending"
+        hidden={activeTab !== "pending"}
+        tabIndex={0}
+        className="space-y-4"
+      >
       <section className="app-card space-y-1 p-5" aria-labelledby="bundles-heading">
         <p className="text-xs font-semibold uppercase tracking-widest text-muted">Catálogo</p>
         <h2 id="bundles-heading" className="text-xl font-semibold tracking-tight text-primary">
@@ -413,11 +541,13 @@ export function BundlesClient() {
       ) : null}
 
       {items.length > 0 ? (
-        <div className="grid gap-3 xl:grid-cols-2">
-          {items.map((item) => (
-            <BundleCard key={`${item.source}:${item.bundleKey}`} item={item} />
-          ))}
-        </div>
+        <BundlePurchaseProvider value={launchPurchase}>
+          <div className="grid gap-3 xl:grid-cols-2">
+            {items.map((item) => (
+              <BundleCard key={`${item.source}:${item.bundleKey}`} item={item} now={now} />
+            ))}
+          </div>
+        </BundlePurchaseProvider>
       ) : null}
 
       {items.length > 0 ? (
@@ -456,6 +586,41 @@ export function BundlesClient() {
             <span className="sr-only"> (añade la siguiente página a la lista)</span>
           </Button>
         </nav>
+      ) : null}
+      </div>
+
+      {historyVisited ? (
+        <div
+          role="tabpanel"
+          id="bundles-panel-history"
+          aria-labelledby="bundles-tab-history"
+          hidden={activeTab !== "history"}
+          tabIndex={0}
+          className="space-y-4"
+        >
+          <BundlePurchaseHistory refreshToken={refreshToken} />
+        </div>
+      ) : null}
+
+      {duplicatesVisited ? (
+        <div
+          role="tabpanel"
+          id="bundles-panel-duplicates"
+          aria-labelledby="bundles-tab-duplicates"
+          hidden={activeTab !== "duplicates"}
+          tabIndex={0}
+          className="space-y-4"
+        >
+          <BundlePurchaseDuplicates refreshToken={refreshToken} />
+        </div>
+      ) : null}
+
+      {purchaseTarget ? (
+        <BundlePurchaseDialog
+          target={purchaseTarget}
+          onClose={() => setPurchaseTarget(null)}
+          onPurchased={handlePurchased}
+        />
       ) : null}
     </div>
   );

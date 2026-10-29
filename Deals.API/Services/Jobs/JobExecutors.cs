@@ -224,10 +224,21 @@ public sealed class GlobalDealSyncJobExecutor(GlobalDealSyncService syncService)
 /// <c>ntfy.alerts</c>. Both phases are read-only over providers: the producer reads persisted snapshots, the
 /// dispatcher delivers due outbox rows. The two switches exist because sending is the only phase with an
 /// external, human-visible side effect, and an operator validating the job may want the diagnosis without it.
+///
+/// <para>
+/// The cycle drives <b>two families</b> under the same options, the same advisory lock and the same
+/// <c>job_runs</c> row: the offer alerts (<see cref="DealAlertProducer"/>/<see cref="DealAlertDispatcher"/>, with
+/// the operator's favorites + wishlist interest gate) and the red bundle reminders
+/// (<see cref="BundleAlertProducer"/>/<see cref="BundleAlertDispatcher"/>, for every pending bundle, with no
+/// interest gate). Each family keeps its own outbox and its own counters, and its failure is recorded on its
+/// own key: a broken bundle phase cannot swallow the offer phase, and the offer gates are untouched.
+/// </para>
 /// </summary>
 public sealed class NtfyDealsJobExecutor(
     DealAlertProducer producer,
     DealAlertDispatcher dispatcher,
+    BundleAlertProducer bundleProducer,
+    BundleAlertDispatcher bundleDispatcher,
     ILogger<NtfyDealsJobExecutor> logger) : IJobExecutor
 {
     public const string JobKey = JobKeys.NtfyAlerts;
@@ -258,6 +269,7 @@ public sealed class NtfyDealsJobExecutor(
             return new JobExecutionResult(false, new { reason = "no_phase_selected" });
         }
 
+        var anyFailed = false;
         int? candidates = null;
         int? triggered = null;
         int? enqueued = null;
@@ -267,12 +279,53 @@ public sealed class NtfyDealsJobExecutor(
         int? failed = null;
         int? stale = null;
 
+        // Bundle counters live in their own object: the flat counters above are the offer alerts' legacy
+        // shape and must not change meaning just because a second family joined the cycle.
+        var bundles = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["produced"] = options.ProduceAlerts,
+            ["dispatched"] = options.DispatchAlerts,
+            ["candidates"] = null,
+            ["triggered"] = null,
+            ["enqueued"] = null,
+            ["suppressed"] = null,
+            ["claimed"] = null,
+            ["sent"] = null,
+            ["retried"] = null,
+            ["failed"] = null,
+            ["stale"] = null,
+            ["suppressedAtDispatch"] = null,
+            ["produceError"] = null,
+            ["dispatchError"] = null,
+        };
+
         if (options.ProduceAlerts)
         {
             var produce = await producer.ProduceAsync(cancellationToken);
             candidates = produce.Candidates;
             triggered = produce.Triggered;
             enqueued = produce.Enqueued;
+
+            try
+            {
+                var reminder = await bundleProducer.ProduceAsync(cancellationToken);
+                bundles["candidates"] = reminder.Candidates;
+                bundles["triggered"] = reminder.Triggered;
+                bundles["enqueued"] = reminder.Enqueued;
+                bundles["suppressed"] = reminder.Suppressed;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                // Isolated on purpose: a bundle table that is not there yet (manual migration) must not stop the
+                // offer alerts. Only the type name is recorded — a message can embed a URL or a topic.
+                anyFailed = true;
+                bundles["produceError"] = exception.GetType().Name;
+                logger.LogError("[ntfy] bundle produce failed errorType={ErrorType}", exception.GetType().Name);
+            }
         }
 
         if (options.DispatchAlerts)
@@ -283,11 +336,32 @@ public sealed class NtfyDealsJobExecutor(
             retried = dispatch.Retried;
             failed = dispatch.Failed;
             stale = dispatch.Stale;
+
+            try
+            {
+                var reminder = await bundleDispatcher.DispatchAsync(cancellationToken);
+                bundles["claimed"] = reminder.Claimed;
+                bundles["sent"] = reminder.Sent;
+                bundles["retried"] = reminder.Retried;
+                bundles["failed"] = reminder.Failed;
+                bundles["stale"] = reminder.Stale;
+                bundles["suppressedAtDispatch"] = reminder.Suppressed;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                anyFailed = true;
+                bundles["dispatchError"] = exception.GetType().Name;
+                logger.LogError("[ntfy] bundle dispatch failed errorType={ErrorType}", exception.GetType().Name);
+            }
         }
 
         // Deliberately only counters: an outbox error message can embed the base URL or the topic.
         logger.LogInformation(
-            "[ntfy] cycle candidates={Candidates} triggered={Triggered} enqueued={Enqueued} claimed={Claimed} sent={Sent} retried={Retried} failed={Failed} stale={Stale}",
+            "[ntfy] cycle candidates={Candidates} triggered={Triggered} enqueued={Enqueued} claimed={Claimed} sent={Sent} retried={Retried} failed={Failed} stale={Stale} bundlesEnqueued={BundlesEnqueued} bundlesSent={BundlesSent}",
             candidates,
             triggered,
             enqueued,
@@ -295,21 +369,24 @@ public sealed class NtfyDealsJobExecutor(
             sent,
             retried,
             failed,
-            stale);
+            stale,
+            bundles["enqueued"],
+            bundles["sent"]);
 
         // A cycle that produced no alert is not a failure: there was simply nothing to say.
-        return new JobExecutionResult(true, new
+        return new JobExecutionResult(!anyFailed, new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            produced = options.ProduceAlerts,
-            dispatched = options.DispatchAlerts,
-            candidates,
-            triggered,
-            enqueued,
-            claimed,
-            sent,
-            retried,
-            failed,
-            stale
+            ["produced"] = options.ProduceAlerts,
+            ["dispatched"] = options.DispatchAlerts,
+            ["candidates"] = candidates,
+            ["triggered"] = triggered,
+            ["enqueued"] = enqueued,
+            ["claimed"] = claimed,
+            ["sent"] = sent,
+            ["retried"] = retried,
+            ["failed"] = failed,
+            ["stale"] = stale,
+            ["bundles"] = bundles,
         });
     }
 }

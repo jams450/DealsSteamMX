@@ -22,6 +22,14 @@ namespace Deals.BusinessLogic.Services;
 /// Each tier also carries its USD/MXN reading (<see cref="BundleCurrencyProjection"/>). It comes from the
 /// persisted <c>fx_rates</c> rows only — <see cref="IFxRateService.GetLatestRateAsync"/>, never the
 /// provider-fetching member — and each pair is read at most once per request, not once per tier.
+///
+/// <para>
+/// Bundles the current user already purchased are removed <b>before</b> deduplication and pagination
+/// (spec S3), so the pending catalog's count, pages and order describe only what is still pending for that
+/// user. The match is by source family and bundle key (<see cref="BundlePurchaseRules.HidesBundle"/>): an
+/// <c>itad</c> purchase hides the <c>itad_global</c> snapshot of the same bundle, and gg.deals stays its own
+/// key space.
+/// </para>
 /// </summary>
 public sealed class BundleCatalogService(IRepository repository, IFxRateService fxRateService)
 {
@@ -71,7 +79,22 @@ public sealed class BundleCatalogService(IRepository repository, IFxRateService 
             .ToListAsync(cancellationToken);
 
         var deduplicated = BundleCatalogOrder.Deduplicate(snapshots);
-        var catalogPage = BundleCatalogPager.Paginate(deduplicated, page, pageSize);
+
+        // Purchases are read before pagination on purpose: filtering a page would shrink it silently and
+        // make Total disagree with the rows the caller can actually act on.
+        var purchased = await repository.Get<BundlePurchase>()
+            .Where(purchase => purchase.UserId == userId)
+            .Select(purchase => new { purchase.Source, purchase.BundleKey })
+            .ToListAsync(cancellationToken);
+        var pending = deduplicated
+            .Where(snapshot => !purchased.Any(purchase => BundlePurchaseRules.HidesBundle(
+                purchase.Source,
+                purchase.BundleKey,
+                snapshot.Source,
+                snapshot.BundleKey)))
+            .ToList();
+
+        var catalogPage = BundleCatalogPager.Paginate(pending, page, pageSize);
         var wishlist = await ResolveWishlistAsync(userId, cancellationToken);
 
         var items = new List<BundleCatalogItem>(catalogPage.Items.Count);

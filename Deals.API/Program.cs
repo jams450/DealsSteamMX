@@ -1,5 +1,6 @@
 using Deals.API;
 using Deals.API.Extensions;
+using Deals.API.Services.Notifications;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -33,7 +34,8 @@ builder.Services
     .AddApiAuthorization()
     .AddApiRateLimiting()
     .AddApiApplicationServices()
-    .AddApiNtfyNotifications();
+    .AddApiNtfyNotifications()
+    .AddApiBundleAlerts();
 
 var app = builder.Build();
 

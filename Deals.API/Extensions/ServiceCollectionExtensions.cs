@@ -29,6 +29,9 @@ public static class ServiceCollectionExtensions
             new SyncDiagnosticsCollector(provider.GetService<ILogger<SyncDiagnosticsCollector>>()));
         services.AddScoped<ISteamGameService, SteamGameService>();
         services.AddScoped<BundleCatalogService>();
+        // The purchase writes a purchase snapshot, library rows, wishlist exclusions and canonical identity
+        // in one transaction, so it is a scoped service with the shared identity resolver.
+        services.AddScoped<IBundlePurchaseService, BundlePurchaseService>();
         services.AddOptions<GlobalBundleOptions>()
             .Validate(o => o.PageSize is > 0 and <= GlobalBundleOptions.MaxPageSize,
                 "GlobalBundles:PageSize must be between 1 and 50.")

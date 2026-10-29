@@ -293,6 +293,13 @@ public sealed class GameMergeService : IGameMergeService
                 survivorGameId,
                 absorbedGameId);
 
+            // Purchase membership is immutable evidence, but its canonical anchor follows a merge.
+            // The RESTRICT FK prevents accidental loss; never deduplicate these purchased items by game.
+            await _repository.ExecuteSqlRawAsync(
+                "UPDATE public.bundle_purchase_games SET game_id = {0}, updated_at = NOW() WHERE game_id = {1}",
+                survivorGameId,
+                absorbedGameId);
+
             await _repository.ExecuteSqlRawAsync(
                 "UPDATE public.game_reviews SET game_id = {0}, updated_at = NOW() WHERE game_id = {1}",
                 survivorGameId,

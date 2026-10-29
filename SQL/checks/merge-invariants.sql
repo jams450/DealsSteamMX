@@ -38,3 +38,11 @@ WHERE NOT EXISTS (
     WHERE r.user_id = t.user_id AND r.game_id = t.game_id
       AND COALESCE(r.finished_month, r.started_month) IS NOT NULL
       AND EXTRACT(YEAR FROM COALESCE(r.finished_month, r.started_month)) = t.year);
+
+-- 6. El historial de compra mantiene un ancla canónica existente después de una fusión.
+
+SELECT p.bundle_purchase_game_id, p.game_id
+
+FROM public.bundle_purchase_games p
+
+WHERE NOT EXISTS (SELECT 1 FROM public.games g WHERE g.game_id = p.game_id);

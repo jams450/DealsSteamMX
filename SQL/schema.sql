@@ -425,6 +425,104 @@ CREATE INDEX idx_user_game_tiers_order ON user_game_tiers(user_id, year, tier, p
 CREATE INDEX idx_user_game_tiers_game ON user_game_tiers(game_id);
 CREATE INDEX idx_user_game_tiers_review ON user_game_tiers(game_review_id);
 
+-- Bundle acquisition (odd/tasks/bundle-expiry-acquisition.md S3-S6). Una fila por compra reportada por el
+-- usuario: es a la vez el registro de adquisición y la clave de idempotencia, así que un segundo envío del
+-- mismo bundle contesta desde esta fila en vez de volver a importar. Guarda su propio snapshot del
+-- proveedor (snapshot_json/snapshot_hash) y los datos del tier comprado, de modo que la membresía comprada
+-- sigue siendo legible aunque el refresh upstream reescriba external_bundles.tiers_json. Sin FK a
+-- external_bundles a propósito: la compra es evidencia y sobrevive a una purga del proveedor.
+-- platform es la plataforma del tier; el override por juego vive en bundle_purchase_games.platform.
+CREATE TABLE bundle_purchases (
+    bundle_purchase_id BIGSERIAL PRIMARY KEY,
+    user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    source VARCHAR(16) NOT NULL,
+    bundle_key VARCHAR(128) NOT NULL,
+    title VARCHAR(512) NOT NULL,
+    shop_id VARCHAR(32),
+    shop_name VARCHAR(128),
+    page_url VARCHAR(1024),
+    deal_url VARCHAR(1024),
+    published_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
+    observed_at TIMESTAMPTZ NOT NULL,
+    tier_key VARCHAR(64) NOT NULL,
+    tier_index INT NOT NULL,
+    tier_price_minor INT,
+    tier_currency VARCHAR(3),
+    tier_addon BOOLEAN NOT NULL DEFAULT FALSE,
+    tier_items_complete BOOLEAN NOT NULL DEFAULT FALSE,
+    tier_selection_count INT,
+    selection_mode VARCHAR(8) NOT NULL,
+    selected_count INT NOT NULL,
+    platform VARCHAR(32) NOT NULL,
+    acquired_at DATE,
+    acquired_store VARCHAR(32),
+    acquired_store_type VARCHAR(16),
+    acquisition_provider VARCHAR(16),
+    snapshot_hash VARCHAR(64) NOT NULL,
+    snapshot_json JSONB NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100),
+    updated_by VARCHAR(100),
+    -- Una compra por usuario y bundle del proveedor: el replay no puede importar dos veces.
+    CONSTRAINT uq_bundle_purchases UNIQUE (user_id, source, bundle_key),
+    CONSTRAINT ck_bundle_purchases_selection_mode CHECK (selection_mode IN ('fixed', 'choice')),
+    -- Un tier fijo no tiene conteo de selección; uno de elección lo exige. Cualquier otra combinación
+    -- describiría una selección que nadie validó.
+    CONSTRAINT ck_bundle_purchases_selection_count CHECK (
+        (selection_mode = 'fixed' AND tier_selection_count IS NULL)
+        OR (selection_mode = 'choice' AND tier_selection_count IS NOT NULL)),
+    CONSTRAINT ck_bundle_purchases_selected_count CHECK (selected_count > 0),
+    CONSTRAINT ck_bundle_purchases_tier_key_nonblank CHECK (length(btrim(tier_key)) > 0),
+    CONSTRAINT ck_bundle_purchases_snapshot_hash_nonblank CHECK (length(btrim(snapshot_hash)) > 0),
+    CONSTRAINT ck_bundle_purchases_platform_nonblank CHECK (length(btrim(platform)) > 0),
+    -- Vocabularios cerrados, espejo de WishlistAcquiredStoreTypes / WishlistAcquisitionProviders en C#.
+    CONSTRAINT ck_bundle_purchases_acquired_store_type CHECK (
+        acquired_store_type IS NULL
+        OR acquired_store_type IN ('official', 'keyshop', 'unknown')),
+    CONSTRAINT ck_bundle_purchases_acquisition_provider CHECK (
+        acquisition_provider IS NULL
+        OR acquisition_provider IN ('itad', 'ggdeals', 'direct', 'other')),
+    -- Los dos hechos de origen describen la tienda de adquisición: no existen sin ella.
+    CONSTRAINT ck_bundle_purchases_acquisition_source CHECK (
+        (acquired_store_type IS NULL AND acquisition_provider IS NULL)
+        OR acquired_store IS NOT NULL)
+);
+-- Sin índice aparte por user_id: uq_bundle_purchases ya empieza por user_id y sirve tanto la lectura del
+-- inventario como la búsqueda de la compra que oculta un bundle del catálogo pendiente.
+
+-- Membresía comprada (S5): una fila por ítem seleccionado del tier, con el juego canónico resuelto y lo que
+-- hizo el import. Una fila 'duplicate' NO se omite: "ya lo tenías en esta plataforma" es un hecho del
+-- bundle y es lo que alimenta el inventario de duplicados (uno por juego comprado). canonical_source dice
+-- cómo se decidió la identidad: el UUID de ITAD (namespace 'itad') o un vínculo canónico manual explícito.
+-- game_id es NO ACTION: una fusión lo repunta (GameMergeService) y nunca borra la evidencia por cascada.
+CREATE TABLE bundle_purchase_games (
+    bundle_purchase_game_id BIGSERIAL PRIMARY KEY,
+    bundle_purchase_id BIGINT NOT NULL REFERENCES bundle_purchases(bundle_purchase_id) ON DELETE CASCADE,
+    item_key VARCHAR(128) NOT NULL,
+    title VARCHAR(256) NOT NULL,
+    item_type VARCHAR(32),
+    itad_game_id VARCHAR(36),
+    game_id BIGINT NOT NULL REFERENCES games(game_id),
+    canonical_source VARCHAR(8) NOT NULL,
+    platform VARCHAR(32) NOT NULL,
+    outcome VARCHAR(16) NOT NULL,
+    user_library_id BIGINT REFERENCES user_library(user_library_id) ON DELETE SET NULL,
+    wishlist_removed BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100),
+    updated_by VARCHAR(100),
+    CONSTRAINT uq_bundle_purchase_games UNIQUE (bundle_purchase_id, item_key),
+    CONSTRAINT ck_bundle_purchase_games_canonical_source CHECK (canonical_source IN ('itad', 'manual')),
+    CONSTRAINT ck_bundle_purchase_games_outcome CHECK (outcome IN ('imported', 'duplicate')),
+    CONSTRAINT ck_bundle_purchase_games_platform_nonblank CHECK (length(btrim(platform)) > 0),
+    CONSTRAINT ck_bundle_purchase_games_item_key_nonblank CHECK (length(btrim(item_key)) > 0)
+);
+
+CREATE INDEX idx_bundle_purchase_games_game ON bundle_purchase_games(game_id);
+
 -- Manual canonical merge (log). Identity is repointed, never aliased: the absorbed games row is
 -- deleted after every referrer has moved. No FK on purpose: absorbed_game_id no longer exists and
 -- the log must survive its own subject. Undo is deferred to v1.1; this log is the only record of
@@ -552,3 +650,55 @@ CREATE INDEX IF NOT EXISTS idx_global_deals_feed
     ON public.global_deals(pricing_type, discount_percent DESC, observed_at DESC);
 
 ANALYZE public.global_deals;
+
+-- Bundle expiry reminder outbox (2026-10-22_bundle_alert_events.sql).
+CREATE TABLE IF NOT EXISTS public.bundle_alert_events (
+    bundle_alert_event_id BIGSERIAL PRIMARY KEY,
+    dedup_key             VARCHAR(320) NOT NULL,
+    user_id               INT          NOT NULL REFERENCES public.users(user_id) ON DELETE CASCADE,
+    source                VARCHAR(16)  NOT NULL,
+    source_family         VARCHAR(16)  NOT NULL,
+    bundle_key            VARCHAR(128) NOT NULL,
+    expires_at            TIMESTAMPTZ  NOT NULL,
+    trigger_version       INT          NOT NULL,
+    title                 VARCHAR(512) NOT NULL,
+    message               VARCHAR(1024) NOT NULL,
+    click_url             VARCHAR(1024) NULL,
+    status                VARCHAR(16)  NOT NULL DEFAULT 'pending',
+    attempts              INT          NOT NULL DEFAULT 0,
+    next_attempt_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_error            VARCHAR(256) NULL,
+    sent_at               TIMESTAMPTZ  NULL,
+    created_at            TIMESTAMPTZ  DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMPTZ  DEFAULT CURRENT_TIMESTAMP,
+    created_by            VARCHAR(100),
+    updated_by            VARCHAR(100),
+    CONSTRAINT uq_bundle_alert_events_dedup UNIQUE (dedup_key),
+    -- El vocabulario del ciclo de vida. 'suppressed' tiene su propio valor justamente para que una compra no se
+    -- lea como fallo ni como bundle movido en la auditoría.
+    CONSTRAINT ck_bundle_alert_events_status
+        CHECK (status IN ('pending', 'sent', 'failed', 'stale', 'suppressed')),
+    -- Un aviso sin fecha no existe: la política solo encola fechas futuras dentro de la ventana roja. El NOT NULL
+    -- de expires_at es el que lo impide; esta consulta 2 de SQL/checks/bundle_alert_events.sql lo comprueba.
+    CONSTRAINT ck_bundle_alert_events_attempts CHECK (attempts >= 0),
+    -- El click es un enlace público HTTPS o nada. Un esquema raro no llega ni a la base.
+    CONSTRAINT ck_bundle_alert_events_click_url
+        CHECK (click_url IS NULL OR click_url LIKE 'https://%')
+);
+
+-- Barrido del despachador: solo filas pendientes cuyo plazo de reintento ya pasó, las más viejas primero.
+CREATE INDEX IF NOT EXISTS idx_bundle_alert_events_due
+    ON public.bundle_alert_events(status, next_attempt_at);
+
+-- Supresión y auditoría por operador: "¿qué avisos tiene esta cuenta para este bundle?".
+CREATE INDEX IF NOT EXISTS idx_bundle_alert_events_user_bundle
+    ON public.bundle_alert_events(user_id, bundle_key);
+
+ANALYZE public.bundle_alert_events;
+
+COMMENT ON TABLE public.bundle_alert_events IS
+    'Outbox de recordatorios rojos de bundle (spec S2). Una fila por operador + familia de fuente + bundle_key + expires_at.';
+COMMENT ON COLUMN public.bundle_alert_events.expires_at IS
+    'Snapshot del vencimiento por el que se encoló el aviso; se revalida contra external_bundles antes de enviar.';
+COMMENT ON COLUMN public.bundle_alert_events.status IS
+    'pending | sent | failed | stale | suppressed';
