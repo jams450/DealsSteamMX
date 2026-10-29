@@ -105,7 +105,7 @@ export function DealCard({ item }: { readonly item: DiscoverItem }) {
             {classification?.label ?? "Sin clasificar"}
           </span>
           {item.score !== null ? (
-            <span className={cn("tabler-badge", item.score > 7 ? "tabler-badge-success" : "tabler-badge-info")}>
+            <span className="text-lg font-bold tabular-nums text-primary">
               {`Nota ${item.score.toFixed(1)}/10`}
             </span>
           ) : null}
@@ -116,11 +116,11 @@ export function DealCard({ item }: { readonly item: DiscoverItem }) {
         <div className="flex flex-wrap items-baseline gap-2">
           {item.usesFxEstimate ? (
             <>
-              <span className="deal-price text-lg text-primary">{`≈ ${formatMinor(item.mxnPriceMinor, "MXN")}`}</span>
+              <span className="deal-price text-2xl text-[color:var(--color-success)]">{`≈ ${formatMinor(item.mxnPriceMinor, "MXN")}`}</span>
               <span className="tabler-badge tabler-badge-warning">Estimado</span>
             </>
           ) : (
-            <span className="deal-price text-lg text-primary">{formatMinor(item.mxnPriceMinor, "MXN")}</span>
+            <span className="deal-price text-2xl text-[color:var(--color-success)]">{formatMinor(item.mxnPriceMinor, "MXN")}</span>
           )}
         </div>
         {item.usesFxEstimate ? (

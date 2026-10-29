@@ -46,13 +46,12 @@ test("una ruta anidada con entrada propia no activa también a su padre", () => 
   assert.equal(isRouteActive("/search", "/"), false);
 });
 
-// PRESERVE: mudar la barra al riel no puede perder ni renombrar un destino.
-test("la mudanza conserva los doce destinos y sus etiquetas en el mismo orden", () => {
+// El feed global retirado ya no es un destino visible; el resto conserva orden y etiquetas.
+test("el riel conserva los destinos activos y omite ofertas globales", () => {
   assert.deepEqual(appNavItems.map((item) => item.href), [
     "/",
     "/search",
     "/discover",
-    "/deals",
     "/wishlist",
     "/bundles",
     "/library",
@@ -66,7 +65,6 @@ test("la mudanza conserva los doce destinos y sus etiquetas en el mismo orden", 
     "Inicio",
     "Comparar",
     "Descubrir",
-    "Ofertas globales",
     "Wishlist",
     "Bundles",
     "Biblioteca",

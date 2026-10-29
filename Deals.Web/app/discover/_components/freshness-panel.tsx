@@ -1,6 +1,6 @@
 "use client";
 
-// Panel «Estado de actualización de precios» de la LISTA DE DESEOS del usuario dentro de `/discover`
+// Panel «Estado de actualización de precios» de la LISTA DE DESEOS del usuario dentro de `/wishlist`
 // (spec S4/S7/S9, tarea T3).
 //
 // Es una sección de LECTURA: lee `GET /api/bff/discover/freshness` (snapshots persistidos) y no llama a

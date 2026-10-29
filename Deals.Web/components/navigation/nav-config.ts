@@ -25,8 +25,7 @@ export const navGroups: readonly NavGroup[] = [
     items: [
       { href: "/", label: "Inicio", icon: Home },
       { href: "/search", label: "Comparar", icon: Search },
-      { href: "/discover", label: "Descubrir", icon: Compass },
-      { href: "/deals", label: "Ofertas globales", icon: Compass }
+      { href: "/discover", label: "Descubrir", icon: Compass }
     ]
   },
   {

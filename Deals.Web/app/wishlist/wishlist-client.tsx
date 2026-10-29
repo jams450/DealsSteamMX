@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ArrowDown, ArrowUp, Gamepad2, RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
+import { CatalogFreshnessPanel } from "@/app/discover/_components/freshness-panel";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { PriceFact, PriceValue, formatMinor } from "@/components/ui/price-value";
@@ -1492,6 +1493,16 @@ function WishlistItems({
 }
 
 export function WishlistClient() {
+  const [activeTab, setActiveTab] = useState<"games" | "freshness">("games");
+  const [freshnessVisited, setFreshnessVisited] = useState(false);
+  const tabs = [
+    { id: "games", label: "Mis juegos" },
+    { id: "freshness", label: "Estado de actualización de precios" }
+  ] as const;
+  function selectTab(next: "games" | "freshness") {
+    setActiveTab(next);
+    if (next === "freshness") setFreshnessVisited(true);
+  }
   const { toasts, dismissToast, success, error: toastError } = useToasts();
   const [wishlist, setWishlist] = useState<WishlistResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1803,6 +1814,23 @@ export function WishlistClient() {
   return (
     <div className="space-y-4">
       <ToastStack toasts={toasts} onDismiss={dismissToast} />
+      <div role="tablist" aria-label="Secciones de wishlist" className="flex flex-wrap gap-2" onKeyDown={(event) => {
+        let next: "games" | "freshness";
+        if (event.key === "ArrowLeft" || event.key === "ArrowRight") next = activeTab === "games" ? "freshness" : "games";
+        else if (event.key === "Home") next = "games";
+        else if (event.key === "End") next = "freshness";
+        else return;
+        event.preventDefault();
+        selectTab(next);
+        document.getElementById(`wishlist-tab-${next}`)?.focus();
+      }}>
+        {tabs.map((tab) => <button key={tab.id} type="button" role="tab" id={`wishlist-tab-${tab.id}`} aria-selected={activeTab === tab.id} aria-controls={`wishlist-panel-${tab.id}`} tabIndex={activeTab === tab.id ? 0 : -1} onClick={() => selectTab(tab.id)} className={cn(
+          "tabler-badge rounded border px-3 py-2 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-border-focus)]",
+          tab.id === "games" ? "tabler-badge-info" : "tabler-badge-success",
+          activeTab === tab.id ? "ring-2 ring-current" : "opacity-70 hover:opacity-100"
+        )}>{tab.label}</button>)}
+      </div>
+      <div role="tabpanel" id="wishlist-panel-games" aria-labelledby="wishlist-tab-games" hidden={activeTab !== "games"} tabIndex={0} className="space-y-4">
       <section className="app-card-accent space-y-4 p-5" aria-labelledby="wishlist-summary-heading">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-1">
@@ -1903,6 +1931,10 @@ export function WishlistClient() {
           onClearFilters={clearFilters}
         />
       ) : null}
+      </div>
+      <div role="tabpanel" id="wishlist-panel-freshness" aria-labelledby="wishlist-tab-freshness" hidden={activeTab !== "freshness"} tabIndex={0}>
+        {freshnessVisited ? <CatalogFreshnessPanel /> : null}
+      </div>
     </div>
   );
 }

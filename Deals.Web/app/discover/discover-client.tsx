@@ -30,7 +30,6 @@ import {
   type DiscoverPage
 } from "@/lib/contracts/discover";
 import { DealCard } from "./_components/deal-card";
-import { CatalogFreshnessPanel } from "./_components/freshness-panel";
 import { getDiscoverPage } from "./_lib/discover-api";
 
 const ITAD_ATTRIBUTION_URL = "https://isthereanydeal.com";
@@ -306,7 +305,7 @@ export function DiscoverClient() {
               ) : null}
 
               {showing && showing.items.length > 0 ? (
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <div className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
                   {showing.items.map((item) => (
                     <DealCard key={item.gameId} item={item} />
                   ))}
@@ -345,8 +344,6 @@ export function DiscoverClient() {
         </div>
       ))}
 
-      {/* Panel independiente de las tres pestañas: estado de actualización de precios de tu lista de deseos (lectura, sin ofertas). */}
-      <CatalogFreshnessPanel />
     </div>
   );
 }
