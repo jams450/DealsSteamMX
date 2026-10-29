@@ -174,10 +174,17 @@ public class AppDbContext : DbContext
 
         modelBuilder.Entity<UserGameTier>(entity =>
         {
-            entity.HasKey(e => new { e.UserId, e.Year, e.GameId });
+            // La identidad es la partida reseñada, no el juego: dos partidas del mismo juego — incluso en
+            // la misma plataforma — son dos tarjetas con rango independiente (spec S5).
+            entity.HasKey(e => new { e.UserId, e.Year, e.GameReviewId });
             entity.HasIndex(e => new { e.UserId, e.Year, e.Tier, e.Position });
+            // Ancla de fusión: GameMergeService repunta game_id y las reseñas juntas, y el check
+            // SQL/checks/game_tiers_reviews.sql comprueba que siguen de acuerdo.
+            entity.HasIndex(e => e.GameId);
+            entity.HasIndex(e => e.GameReviewId);
             entity.HasOne<User>().WithMany().HasForeignKey(e => e.UserId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne<Game>().WithMany().HasForeignKey(e => e.GameId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<GameReview>().WithMany().HasForeignKey(e => e.GameReviewId).OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<Game>(entity =>

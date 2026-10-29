@@ -47,8 +47,9 @@ export async function PUT(request: Request) {
   if (!isAdmin(session.user.role)) return forbidden(request);
   const year = parseYear(new URL(request.url).searchParams.get("year"));
   if (year === null) return badRequest(request, "year debe ser un año de cuatro dígitos");
+  // La partida reseñada es la identidad del puesto: un gameId no distingue dos partidas del mismo juego.
   const payload = parseGameTierUpdate(await request.json().catch(() => null));
-  if (payload === null) return badRequest(request, "Envía gameId, tier S–F y position válidos");
+  if (payload === null) return badRequest(request, "Envía reviewId, tier S–F y position válidos");
 
   const { response, session: updatedSession } = await fetchApiWithAutoRefresh(session, `${getApiBaseUrl()}/api/game-tiers?year=${year}`, {
     method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(payload), cache: "no-store"

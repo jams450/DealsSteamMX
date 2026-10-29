@@ -398,10 +398,16 @@ CREATE TABLE user_game_favorites (
 
 CREATE INDEX idx_user_game_favorites_game ON user_game_favorites(game_id);
 
--- Annual review tier placements are per user, year, and canonical game. Unranked reviewed games have no row.
+-- Annual review tier placements are per user, year, and reviewed play. The identity is the review, not
+-- the game: a game played twice in the same year — even twice on the same platform — ranks twice, and each
+-- card saves independently (docs/2026-10-20_REVIEW_TIERS.md, specs S3-S6). `game_id` stays as the merge
+-- anchor: GameMergeService repoints it together with the review, and SQL/checks/game_tiers_reviews.sql
+-- asserts both rows agree. Unranked reviewed plays have no row.
+-- Migración manual para una base existente: SQL/migrations/2026-10-20_user_game_tiers_per_review.sql.
 CREATE TABLE user_game_tiers (
     user_id INT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     year INT NOT NULL,
+    game_review_id BIGINT NOT NULL REFERENCES game_reviews(game_review_id) ON DELETE CASCADE,
     game_id BIGINT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
     tier VARCHAR(1) NOT NULL,
     position INT NOT NULL,
@@ -409,10 +415,15 @@ CREATE TABLE user_game_tiers (
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     created_by VARCHAR(100),
     updated_by VARCHAR(100),
-    PRIMARY KEY (user_id, year, game_id)
+    PRIMARY KEY (user_id, year, game_review_id)
 );
 
 CREATE INDEX idx_user_game_tiers_order ON user_game_tiers(user_id, year, tier, position);
+
+-- El FK a games se recorre en cada fusión y el de game_reviews en cada borrado de reseña: sin estos
+-- índices ambos son un scan completo de la tabla.
+CREATE INDEX idx_user_game_tiers_game ON user_game_tiers(game_id);
+CREATE INDEX idx_user_game_tiers_review ON user_game_tiers(game_review_id);
 
 -- Manual canonical merge (log). Identity is repointed, never aliased: the absorbed games row is
 -- deleted after every referrer has moved. No FK on purpose: absorbed_game_id no longer exists and

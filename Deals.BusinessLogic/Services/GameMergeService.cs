@@ -12,12 +12,12 @@ namespace Deals.BusinessLogic.Services;
 /// transaction before deleting it. Everything runs as raw SQL (no tracked entities): the order of the
 /// statements is the correctness argument, not the change tracker's.
 ///
-/// Referrer order is mandatory: <c>user_game_favorites</c> and <c>user_game_tiers</c> carry a composite
-/// primary key that would raise 23505 on a collision and a CASCADE foreign key that would delete the
-/// rows outright, while <c>steam_games</c> and <c>user_library</c> are NO ACTION and would raise 23503.
-/// A CASCADE referrer that is not repointed is not merely lost: the row disappears with the deleted
-/// game, silently, so every new table keyed by <c>game_id</c> has to be added here in the same change
-/// that creates it.
+/// Referrer order is mandatory: <c>user_game_favorites</c> carries a composite primary key that would
+/// raise 23505 on a collision, while <c>steam_games</c> and <c>user_library</c> are NO ACTION and would
+/// raise 23503. The CASCADE referrers (<c>user_game_favorites</c>, <c>user_game_tiers</c>) lose the row
+/// outright if it is not repointed: it disappears with the deleted game. <c>user_game_tiers</c> is keyed
+/// by the reviewed play (<c>game_review_id</c>), so it cannot collide; only its <c>game_id</c> anchor is
+/// repointed. A new table keyed by <c>game_id</c> has to be added here in the same change that creates it.
 /// </summary>
 public sealed class GameMergeService : IGameMergeService
 {
@@ -315,21 +315,10 @@ public sealed class GameMergeService : IGameMergeService
                 survivorGameId,
                 absorbedGameId);
 
-            // The tier list has the same composite key (user_id, year, game_id) and the same CASCADE
-            // foreign key, with one difference that decides the collision rule: a placement carries data
-            // (tier, position), so dropping one of the two is a real loss. The survivor is the game the
-            // human chose to keep, so its placement wins and the absorbed duplicate is counted instead of
-            // silently disappearing.
-            var droppedAbsorbedTiers = await _repository.ExecuteSqlRawAsync(
-                """
-                DELETE FROM public.user_game_tiers a
-                USING public.user_game_tiers b
-                WHERE a.game_id = {1} AND b.game_id = {0}
-                  AND b.user_id = a.user_id AND b.year = a.year
-                """,
-                survivorGameId,
-                absorbedGameId);
-
+            // Tier placements are keyed by (user, year, game_review_id), so the review repoint above
+            // already decides which card survives and there is no (user, year) collision to delete. Only the
+            // merge anchor moves, which is what keeps game_tiers_reviews.sql asserting that a placement's
+            // game_id still matches its review's game_id.
             var movedTierRows = await _repository.ExecuteSqlRawAsync(
                 "UPDATE public.user_game_tiers SET game_id = {0}, updated_at = NOW() WHERE game_id = {1}",
                 survivorGameId,
@@ -352,8 +341,10 @@ public sealed class GameMergeService : IGameMergeService
                     'dropped_survivor_offers', {2},
                     'dropped_absorbed_offers', {3},
                     'moved_tier_rows', {4},
-                    'dropped_absorbed_tiers', {5}), 'post_write')
-                """, auditId, deduplicatedExternalIds, droppedSurvivorOffers, droppedAbsorbedOffers, movedTierRows, droppedAbsorbedTiers);
+                    -- Kept at 0 for the audit shape the older merges already wrote: with a review-keyed
+                    -- placement there is no collision left to drop.
+                    'dropped_absorbed_tiers', 0), 'post_write')
+                """, auditId, deduplicatedExternalIds, droppedSurvivorOffers, droppedAbsorbedOffers, movedTierRows);
 
             // 11. Both NO ACTION referrers are already repointed, so this cannot raise 23503.
             await _repository.ExecuteSqlRawAsync(
